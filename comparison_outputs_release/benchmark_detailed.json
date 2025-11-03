@@ -1,0 +1,13 @@
+{
+  "rust": {
+    "max_s": 1.13004025,
+    "mean_ms_per_sample": 0.022600804999999998,
+    "mean_s": 1.13004025,
+    "median_s": 1.13004025,
+    "min_s": 1.13004025,
+    "runs": 1.0,
+    "sample_count": 50000.0,
+    "samples_per_second": 44246.21158405641,
+    "total_s": 1.13004025
+  }
+}
