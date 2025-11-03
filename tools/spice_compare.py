@@ -528,22 +528,29 @@ def main() -> None:
         )
 
     if rust_timings:
-        def ns_to_s(value: Optional[float]) -> Optional[float]:
+        def format_ns(value: Optional[int]) -> Optional[str]:
             if value is None:
                 return None
-            return float(value) / 1e9
+            val = float(value)
+            if val >= 1e9:
+                return f"{val / 1e9:.3f}s"
+            if val >= 1e6:
+                return f"{val / 1e6:.3f}ms"
+            if val >= 1e3:
+                return f"{val / 1e3:.3f}µs"
+            return f"{val:.0f}ns"
 
-        preprocess_s = ns_to_s(rust_timings.get("rust_preprocess_ns"))
-        simulate_s = ns_to_s(rust_timings.get("rust_simulate_ns"))
-        analysis_s = ns_to_s(rust_timings.get("rust_analysis_ns"))
-        serialization_s = ns_to_s(rust_timings.get("rust_serialization_ns"))
+        preprocess = format_ns(rust_timings.get("rust_preprocess_ns"))
+        simulate = format_ns(rust_timings.get("rust_simulate_ns"))
+        analysis = format_ns(rust_timings.get("rust_analysis_ns"))
+        serialization = format_ns(rust_timings.get("rust_serialization_ns"))
         joined = ", ".join(
-            f"{label}={value:.3f}s"
+            f"{label}={value}"
             for label, value in [
-                ("pre", preprocess_s),
-                ("sim", simulate_s),
-                ("analysis", analysis_s),
-                ("serialize", serialization_s),
+                ("pre", preprocess),
+                ("sim", simulate),
+                ("analysis", analysis),
+                ("serialize", serialization),
             ]
             if value is not None
         )

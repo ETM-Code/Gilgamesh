@@ -26,6 +26,17 @@ pub struct SimulationSample {
     pub v_syn: Vec<f64>,
 }
 
+pub struct RuntimeSample<'a> {
+    pub time_s: f64,
+    pub v_mem: f64,
+    pub u_deflection: f64,
+    pub v_comp: f64,
+    pub v_ana: f64,
+    pub v_outmix: f64,
+    pub theta_over_vref: f64,
+    pub v_syn: &'a [f64],
+}
+
 #[derive(Debug, Clone)]
 pub struct EquivalentNeuron {
     pub membrane: Membrane,
@@ -65,6 +76,50 @@ struct SpikeWindow {
 struct SynapseRuntime {
     weight_inv: f64,
     spikes: Vec<SpikeWindow>,
+}
+
+struct SimulationRecorder {
+    capture: bool,
+    samples: Vec<SimulationSample>,
+    synapse_names: Arc<Vec<Arc<str>>>,
+}
+
+impl SimulationRecorder {
+    fn new(names: Arc<Vec<Arc<str>>>, capture: bool, capacity: usize) -> Self {
+        let samples = if capture {
+            Vec::with_capacity(capacity)
+        } else {
+            Vec::new()
+        };
+        Self {
+            capture,
+            samples,
+            synapse_names: names,
+        }
+    }
+
+    fn record(&mut self, sample: RuntimeSample<'_>) {
+        if !self.capture {
+            return;
+        }
+        self.samples.push(SimulationSample {
+            time_s: sample.time_s,
+            v_mem: sample.v_mem,
+            u_deflection: sample.u_deflection,
+            v_comp: sample.v_comp,
+            v_ana: sample.v_ana,
+            v_outmix: sample.v_outmix,
+            theta_over_vref: sample.theta_over_vref,
+            v_syn: sample.v_syn.to_vec(),
+        });
+    }
+
+    fn finish(self) -> SimulationResult {
+        SimulationResult {
+            samples: self.samples,
+            synapse_names: self.synapse_names,
+        }
+    }
 }
 
 impl From<&AnalogOutCfg> for AnalogModel {
@@ -119,11 +174,20 @@ impl EquivalentNeuron {
 
     pub fn run(&self) -> SimulationResult {
         let expected_steps = (self.sim.tstop_s / self.sim.tstep_s).ceil() as usize + 1;
-        let mut samples = Vec::with_capacity(expected_steps);
+        let mut recorder =
+            SimulationRecorder::new(Arc::clone(&self.synapse_names), true, expected_steps);
+        self.simulate(|sample| recorder.record(sample));
+        recorder.finish()
+    }
 
+    pub fn simulate<F>(&self, mut on_sample: F)
+    where
+        F: FnMut(RuntimeSample<'_>),
+    {
         let synapse_count = self.synapses.len();
         let mut spike_indices = vec![0usize; synapse_count];
         let mut syn_voltages = vec![self.supplies.vref; synapse_count];
+        let mut total_current = 0.0;
         let vref = self.supplies.vref;
 
         let base_dt = self.sim.min_dt_s.unwrap_or(self.sim.tstep_s);
@@ -143,7 +207,6 @@ impl EquivalentNeuron {
         const TIME_EPS: f64 = 1e-12;
 
         while time < self.sim.tstop_s - TIME_EPS {
-            let mut i_syn = 0.0;
             let mut next_syn_event = f64::INFINITY;
 
             for (idx, syn) in self.synapses.iter().enumerate() {
@@ -154,6 +217,7 @@ impl EquivalentNeuron {
                 }
 
                 let mut voltage = vref;
+                let prev_voltage = syn_voltages[idx];
                 if *tooling < syn.spikes.len() {
                     let window = &syn.spikes[*tooling];
                     if time < window.start - TIME_EPS {
@@ -165,11 +229,14 @@ impl EquivalentNeuron {
                     }
                 }
 
-                syn_voltages[idx] = voltage;
-                i_syn += (voltage - vref) * syn.weight_inv;
+                if (voltage - prev_voltage).abs() > 1e-12 {
+                    total_current -= (prev_voltage - vref) * syn.weight_inv;
+                    total_current += (voltage - vref) * syn.weight_inv;
+                    syn_voltages[idx] = voltage;
+                }
             }
 
-            let u_inf = self.membrane.r_leak_ohm * i_syn;
+            let u_inf = self.membrane.r_leak_ohm * total_current;
 
             // Determine adaptive step duration
             let mut dt = if v_comp > self.comparator.vlow_v + 1e-9 {
@@ -248,7 +315,7 @@ impl EquivalentNeuron {
 
             time += dt;
 
-            samples.push(SimulationSample {
+            on_sample(RuntimeSample {
                 time_s: time,
                 v_mem,
                 u_deflection: u_next,
@@ -256,8 +323,9 @@ impl EquivalentNeuron {
                 v_ana,
                 v_outmix,
                 theta_over_vref: theta_next,
-                v_syn: syn_voltages.clone(),
+                v_syn: &syn_voltages,
             });
+
             u = u_next;
             theta = theta_next;
             v_comp = v_comp_next;
@@ -266,11 +334,10 @@ impl EquivalentNeuron {
                 break;
             }
         }
+    }
 
-        SimulationResult {
-            samples,
-            synapse_names: Arc::clone(&self.synapse_names),
-        }
+    pub fn simulate_core(&self) {
+        self.simulate(|_| {});
     }
 
     fn analog_output(&self, v_mem: f64) -> f64 {
