@@ -1,3 +1,5 @@
 .vscode
 **/.DS_Store
 target/
+comparison_outputs/
+comparison_runs/

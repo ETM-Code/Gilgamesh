@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::simulators::config::{NetworkConfig, NeuronConfig};
 use crate::simulators::lif_equivalent::{EquivalentNeuron, SimulationResult, SimulationSample};
@@ -38,6 +39,8 @@ pub struct ComparisonResult {
     pub equivalent: SimulationResult,
     pub metrics: Vec<SignalComparison>,
     pub signal_series: HashMap<String, Vec<SignalSamplePair>>,
+    #[serde(default)]
+    pub timings: TimingBreakdown,
 }
 
 impl ComparisonResult {
@@ -46,6 +49,21 @@ impl ComparisonResult {
         std::fs::write(path, json)?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TimingBreakdown {
+    pub rust_preprocess_ns: u128,
+    pub rust_simulate_ns: u128,
+    pub rust_analysis_ns: u128,
+    pub rust_serialization_ns: u128,
+    pub spice_parse_ns: u128,
+    #[serde(default)]
+    pub spice_preprocess_ns: Option<u128>,
+    #[serde(default)]
+    pub spice_simulate_ns: Option<u128>,
+    #[serde(default)]
+    pub spice_post_ns: Option<u128>,
 }
 
 pub fn run_comparison(cfg: &ComparisonConfig) -> Result<ComparisonResult> {
@@ -70,17 +88,35 @@ pub fn run_comparison(cfg: &ComparisonConfig) -> Result<ComparisonResult> {
     let neuron_cfg = NeuronConfig::load(&neuron_path)
         .with_context(|| format!("failed to load neuron config at {}", neuron_path.display()))?;
 
-    let equivalent = EquivalentNeuron::from_configs(&neuron_cfg, &network_cfg).run();
+    let build_start = Instant::now();
+    let equivalent_model = EquivalentNeuron::from_configs(&neuron_cfg, &network_cfg);
+    let rust_preprocess_ns = build_start.elapsed().as_nanos();
 
+    let sim_start = Instant::now();
+    let equivalent = equivalent_model.run();
+    let rust_simulate_ns = sim_start.elapsed().as_nanos();
+
+    let spice_start = Instant::now();
     let spice_trace = SpiceTrace::from_ascii(&cfg.spice_csv)
         .with_context(|| format!("failed to load SPICE CSV at {}", cfg.spice_csv.display()))?;
+    let spice_parse_ns = spice_start.elapsed().as_nanos();
 
+    let analysis_start = Instant::now();
     let (metrics, signal_series) = compare_against_spice(&equivalent, &spice_trace)?;
+    let rust_analysis_ns = analysis_start.elapsed().as_nanos();
 
     Ok(ComparisonResult {
         equivalent,
         metrics,
         signal_series,
+        timings: TimingBreakdown {
+            rust_preprocess_ns,
+            rust_simulate_ns,
+            rust_analysis_ns,
+            rust_serialization_ns: 0,
+            spice_parse_ns,
+            ..TimingBreakdown::default()
+        },
     })
 }
 

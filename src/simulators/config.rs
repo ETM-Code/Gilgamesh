@@ -102,6 +102,16 @@ fn default_r2() -> f64 {
 pub struct SimCfg {
     pub tstop_s: f64,
     pub tstep_s: f64,
+    #[serde(default)]
+    pub min_dt_s: Option<f64>,
+    #[serde(default)]
+    pub max_dt_s: Option<f64>,
+    #[serde(default = "default_max_step_factor")]
+    pub max_step_factor: f64,
+}
+
+fn default_max_step_factor() -> f64 {
+    20.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

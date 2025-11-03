@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -25,6 +26,8 @@ enum Commands {
         json_out: Option<PathBuf>,
         #[arg(long)]
         equivalent_csv: Option<PathBuf>,
+        #[arg(long)]
+        no_output: bool,
     },
 }
 
@@ -38,6 +41,7 @@ fn main() -> Result<()> {
             neuron,
             json_out,
             equivalent_csv,
+            no_output,
         } => {
             let config = ComparisonConfig {
                 network_config: network,
@@ -45,14 +49,38 @@ fn main() -> Result<()> {
                 spice_csv,
             };
 
-            let result = run_comparison(&config)?;
+            let mut result = run_comparison(&config)?;
 
-            if let Some(path) = equivalent_csv {
-                result.equivalent.to_csv(&path)?;
+            let mut serialization_ns: u128 = 0;
+
+            if !no_output {
+                if let Some(path) = equivalent_csv {
+                    let start = Instant::now();
+                    result.equivalent.to_csv(&path)?;
+                    serialization_ns += start.elapsed().as_nanos();
+                }
+
+                if let Some(path) = json_out {
+                    result.timings.rust_serialization_ns = serialization_ns;
+                    let start = Instant::now();
+                    result.write_json(&path)?;
+                    serialization_ns += start.elapsed().as_nanos();
+                    result.timings.rust_serialization_ns = serialization_ns;
+                    // Rewrite so the emitted JSON captures the updated serialization time.
+                    result.write_json(&path)?;
+                }
             }
 
-            if let Some(path) = json_out {
-                result.write_json(&path)?;
+            result.timings.rust_serialization_ns = serialization_ns;
+
+            if no_output {
+                println!(
+                    "[timings] pre={}ns sim={}ns analysis={}ns serialize={}ns",
+                    result.timings.rust_preprocess_ns,
+                    result.timings.rust_simulate_ns,
+                    result.timings.rust_analysis_ns,
+                    result.timings.rust_serialization_ns
+                );
             }
 
             for metric in &result.metrics {
