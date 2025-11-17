@@ -1,42 +1,46 @@
 {
   "rust": {
-    "max_s": 0.3443751251325011,
-    "mean_ms_per_sample": 0.004409710824980117,
-    "mean_s": 0.1906229795422405,
-    "median_s": 0.1906229795422405,
-    "min_s": 0.036870833951979876,
-    "runs": 2.0,
+    "max_s": 2.7850214159989264,
+    "mean_ms_per_sample": 0.06442633052648576,
+    "mean_s": 2.7850214159989264,
+    "median_s": 2.7850214159989264,
+    "min_s": 2.7850214159989264,
+    "runs": 1.0,
     "sample_count": 43228.0,
-    "samples_per_second": 226772.23965236061,
-    "total_s": 0.381245959084481
+    "samples_per_second": 15521.604161343606,
+    "total_s": 2.7850214159989264
   },
-  "rust_speedup_vs_spice": 1.137675555051511,
+  "rust_speedup_vs_spice": 0.09637364562223862,
   "rust_timings": {
-    "rust_analysis_ns": 8128667,
-    "rust_preprocess_ns": 1625,
-    "rust_serialization_ns": 0,
-    "rust_simulate_ns": 5051375
+    "rust_analysis_ns": 65862291,
+    "rust_preprocess_ns": 58333,
+    "rust_serialization_ns": 863816042,
+    "rust_simulate_ns": 22166542,
+    "spice_parse_ns": 376139083,
+    "spice_post_ns": null,
+    "spice_preprocess_ns": 540643958,
+    "spice_simulate_ns": 268402666
   },
   "spice": {
     "preprocess": {
-      "max_s": 0.6111346248071641,
-      "mean_s": 0.49514443741645664,
-      "median_s": 0.49514443741645664,
-      "min_s": 0.3791542500257492,
-      "runs": 2.0,
-      "total_s": 0.9902888748329133
+      "max_s": 0.5406439580037841,
+      "mean_s": 0.5406439580037841,
+      "median_s": 0.5406439580037841,
+      "min_s": 0.5406439580037841,
+      "runs": 1.0,
+      "total_s": 0.5406439580037841
     },
     "simulate": {
-      "max_s": 0.2267947921063751,
-      "mean_s": 0.21686710405629128,
-      "median_s": 0.21686710405629128,
-      "min_s": 0.20693941600620747,
-      "runs": 2.0,
-      "total_s": 0.43373420811258256
+      "max_s": 0.2684026669958257,
+      "mean_s": 0.2684026669958257,
+      "median_s": 0.2684026669958257,
+      "min_s": 0.2684026669958257,
+      "runs": 1.0,
+      "total_s": 0.2684026669958257
     }
   },
   "spice_timings": {
-    "preprocess_ns": 495144437,
-    "simulate_ns": 216867104
+    "preprocess_ns": 540643958,
+    "simulate_ns": 268402666
   }
 }
