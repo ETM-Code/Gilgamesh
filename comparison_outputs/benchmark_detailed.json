@@ -1,46 +1,46 @@
 {
   "rust": {
-    "max_s": 2.7850214159989264,
-    "mean_ms_per_sample": 0.06442633052648576,
-    "mean_s": 2.7850214159989264,
-    "median_s": 2.7850214159989264,
-    "min_s": 2.7850214159989264,
+    "max_s": 2.771218374997261,
+    "mean_ms_per_sample": 0.06512086417570817,
+    "mean_s": 2.771218374997261,
+    "median_s": 2.771218374997261,
+    "min_s": 2.771218374997261,
     "runs": 1.0,
-    "sample_count": 43228.0,
-    "samples_per_second": 15521.604161343606,
-    "total_s": 2.7850214159989264
+    "sample_count": 42555.0,
+    "samples_per_second": 15356.061573473818,
+    "total_s": 2.771218374997261
   },
-  "rust_speedup_vs_spice": 0.09637364562223862,
+  "rust_speedup_vs_spice": 0.10269174474641468,
   "rust_timings": {
-    "rust_analysis_ns": 65862291,
-    "rust_preprocess_ns": 58333,
-    "rust_serialization_ns": 863816042,
-    "rust_simulate_ns": 22166542,
-    "spice_parse_ns": 376139083,
+    "rust_analysis_ns": 66154625,
+    "rust_preprocess_ns": 75416,
+    "rust_serialization_ns": 846966125,
+    "rust_simulate_ns": 11789416,
+    "spice_parse_ns": 372359042,
     "spice_post_ns": null,
-    "spice_preprocess_ns": 540643958,
-    "spice_simulate_ns": 268402666
+    "spice_preprocess_ns": 593535916,
+    "spice_simulate_ns": 284581250
   },
   "spice": {
     "preprocess": {
-      "max_s": 0.5406439580037841,
-      "mean_s": 0.5406439580037841,
-      "median_s": 0.5406439580037841,
-      "min_s": 0.5406439580037841,
+      "max_s": 0.5935359160066582,
+      "mean_s": 0.5935359160066582,
+      "median_s": 0.5935359160066582,
+      "min_s": 0.5935359160066582,
       "runs": 1.0,
-      "total_s": 0.5406439580037841
+      "total_s": 0.5935359160066582
     },
     "simulate": {
-      "max_s": 0.2684026669958257,
-      "mean_s": 0.2684026669958257,
-      "median_s": 0.2684026669958257,
-      "min_s": 0.2684026669958257,
+      "max_s": 0.2845812500017928,
+      "mean_s": 0.2845812500017928,
+      "median_s": 0.2845812500017928,
+      "min_s": 0.2845812500017928,
       "runs": 1.0,
-      "total_s": 0.2684026669958257
+      "total_s": 0.2845812500017928
     }
   },
   "spice_timings": {
-    "preprocess_ns": 540643958,
-    "simulate_ns": 268402666
+    "preprocess_ns": 593535916,
+    "simulate_ns": 284581250
   }
 }
