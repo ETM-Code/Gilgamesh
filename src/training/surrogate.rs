@@ -4,11 +4,36 @@
 //! almost everywhere, we use surrogate gradients during backpropagation.
 
 /// Trait for surrogate gradient functions.
-pub trait SurrogateGradient: Clone + Send + Sync {
+pub trait SurrogateGradient {
     /// Compute the surrogate gradient at membrane potential `u` relative to threshold `theta`.
     ///
     /// Returns a value in approximately [0, 1] representing how "close" to spiking the neuron was.
     fn gradient(&self, u: f64, theta: f64) -> f64;
+}
+
+/// Enum wrapper for surrogate gradient functions (for use in configs).
+#[derive(Debug, Clone, Copy)]
+pub enum SurrogateType {
+    /// FastSigmoid with specified slope.
+    FastSigmoid(FastSigmoid),
+    /// Triangular with specified width.
+    Triangular(Triangular),
+}
+
+impl Default for SurrogateType {
+    fn default() -> Self {
+        SurrogateType::FastSigmoid(FastSigmoid::default())
+    }
+}
+
+impl SurrogateType {
+    /// Compute the surrogate gradient.
+    pub fn gradient(&self, u: f64, theta: f64) -> f64 {
+        match self {
+            SurrogateType::FastSigmoid(s) => s.gradient(u, theta),
+            SurrogateType::Triangular(s) => s.gradient(u, theta),
+        }
+    }
 }
 
 /// FastSigmoid surrogate gradient.

@@ -14,4 +14,4 @@ pub mod surrogate;
 pub use fidelity::{FidelityLevel, FidelityConfig, ThresholdMode, AdaptiveFidelityScheduler};
 pub use qat::QATWeight;
 pub use quantize::{quantize_network_weights, apply_quantized_weights, QuantizeConfig, QuantizationResult};
-pub use surrogate::{FastSigmoid, SurrogateGradient};
+pub use surrogate::{FastSigmoid, SurrogateGradient, SurrogateType};

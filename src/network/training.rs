@@ -1,5 +1,6 @@
 use crate::network::compiled::{CompiledNetwork, LayerRuntimeType, StimulusChannel};
-use crate::network::runtime::{simulate_network, SimulationOptions};
+use crate::network::runtime::{simulate_network, SimulationOptions, SimulationResult};
+use crate::training::surrogate::SurrogateType;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,6 +34,43 @@ impl TrainingExample {
     }
 }
 
+/// Configuration for surrogate gradient during backpropagation.
+#[derive(Debug, Clone, Copy)]
+pub struct SurrogateConfig {
+    /// The surrogate gradient function to use.
+    pub surrogate: SurrogateType,
+    /// Whether surrogate gradient is enabled.
+    pub enabled: bool,
+}
+
+impl Default for SurrogateConfig {
+    fn default() -> Self {
+        Self {
+            surrogate: SurrogateType::default(),
+            enabled: true,
+        }
+    }
+}
+
+impl SurrogateConfig {
+    /// Create a new config with FastSigmoid surrogate.
+    pub fn fast_sigmoid(slope: f64) -> Self {
+        use crate::training::surrogate::FastSigmoid;
+        Self {
+            surrogate: SurrogateType::FastSigmoid(FastSigmoid::new(slope)),
+            enabled: true,
+        }
+    }
+
+    /// Create a config with surrogate gradients disabled (for comparison).
+    pub fn disabled() -> Self {
+        Self {
+            surrogate: SurrogateType::default(),
+            enabled: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainerConfig {
     #[serde(default = "default_learning_rate")]
@@ -51,6 +89,9 @@ pub struct TrainerConfig {
     pub input_scale: f64,
     #[serde(default)]
     pub sample_limit: Option<usize>,
+    /// Surrogate gradient configuration (not serializable, set programmatically).
+    #[serde(skip)]
+    pub surrogate: SurrogateConfig,
 }
 
 impl Default for TrainerConfig {
@@ -64,6 +105,7 @@ impl Default for TrainerConfig {
             pulse_width: default_pulse_width(),
             input_scale: default_input_scale(),
             sample_limit: None,
+            surrogate: SurrogateConfig::default(),
         }
     }
 }
@@ -254,6 +296,7 @@ where
             let mut sim_opts = example.simulation.clone();
             sim_opts.record_readout = true;
             sim_opts.return_average = true;
+            sim_opts.return_spike_proximity = config.surrogate.enabled;
 
             if let Some(encoder) = &example.encoder {
                 let stimuli = encoder.build_stimuli(spacing, pulse_width, input_scale);
@@ -300,7 +343,15 @@ where
                 }
             }
 
-            backpropagate(network, &mut grad, &mut neuron_error, avg, example.weight);
+            backpropagate(
+                network,
+                &mut grad,
+                &mut neuron_error,
+                avg,
+                &result,
+                &config.surrogate,
+                example.weight,
+            );
 
             total_weight += example.weight;
         }
@@ -327,12 +378,18 @@ fn backpropagate(
     grad: &mut [f64],
     neuron_error: &mut [f64],
     avg_activity: &[f64],
+    result: &SimulationResult,
+    surrogate_config: &SurrogateConfig,
     weight: f64,
 ) {
     let layers = &network.layers;
     let row_ptr = &network.incoming.row_ptr;
     let src = &network.incoming.src;
     let g = &network.incoming.g;
+    let thresholds = &network.neuron.theta0;
+
+    // Get spike proximity if available for surrogate gradient
+    let spike_proximity = result.spike_proximity.as_ref();
 
     for layer in layers.iter().rev() {
         let start = layer.offset;
@@ -347,12 +404,31 @@ fn backpropagate(
             if err.abs() < EPS {
                 continue;
             }
+
+            // Compute surrogate gradient scaling for this neuron
+            let surrogate_scale = if surrogate_config.enabled {
+                if let Some(prox) = spike_proximity {
+                    // prox[neuron] is the average normalized distance from threshold: (u - theta) / theta
+                    // Convert back to absolute distance for surrogate: u - theta = prox * theta
+                    let theta = thresholds[neuron];
+                    let u_minus_theta = prox[neuron] * theta;
+                    // Compute surrogate gradient at this average distance
+                    surrogate_config.surrogate.gradient(u_minus_theta + theta, theta)
+                } else {
+                    1.0 // No proximity data, use unit scaling
+                }
+            } else {
+                1.0 // Surrogate disabled
+            };
+
+            let scaled_err = err * surrogate_scale;
+
             let in_start = row_ptr[neuron];
             let in_end = row_ptr[neuron + 1];
             for edge_idx in in_start..in_end {
                 let pre = src[edge_idx];
-                grad[edge_idx] += weight * err * avg_activity[pre];
-                neuron_error[pre] += err * g[edge_idx];
+                grad[edge_idx] += weight * scaled_err * avg_activity[pre];
+                neuron_error[pre] += scaled_err * g[edge_idx];
             }
             neuron_error[neuron] = 0.0;
         }

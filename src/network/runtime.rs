@@ -13,6 +13,9 @@ pub struct SimulationOptions {
     pub stimuli_override: Option<Vec<StimulusChannel>>,
     #[serde(default)]
     pub trace_neurons: Vec<usize>,
+    /// Track spike proximity (distance from threshold) for surrogate gradient training.
+    #[serde(default)]
+    pub return_spike_proximity: bool,
 }
 
 impl Default for SimulationOptions {
@@ -24,6 +27,7 @@ impl Default for SimulationOptions {
             return_average: true,
             stimuli_override: None,
             trace_neurons: Vec::new(),
+            return_spike_proximity: false,
         }
     }
 }
@@ -37,6 +41,9 @@ pub struct SimulationResult {
     pub final_state: NetworkState,
     pub final_readouts: HashMap<String, Vec<f64>>,
     pub neuron_traces: HashMap<usize, Vec<f64>>,
+    /// Average normalized distance from threshold: mean((u - theta) / theta) per neuron.
+    /// Useful for surrogate gradient computation in backprop.
+    pub spike_proximity: Option<Vec<f64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,6 +132,11 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
     } else {
         None
     };
+    let mut spike_proximity = if opts.return_spike_proximity {
+        Some(vec![0.0; neuron_count])
+    } else {
+        None
+    };
     let mut spikes = Vec::new();
     let mut external_drive = vec![0.0; neuron_count];
     let stimuli_sources = opts
@@ -196,6 +208,14 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             if let Some(avg) = average_activity.as_mut() {
                 avg[neuron] += state.u[neuron];
             }
+            // Track spike proximity for surrogate gradient
+            if let Some(prox) = spike_proximity.as_mut() {
+                let theta = network.neuron.theta0[neuron];
+                if theta > 0.0 {
+                    // Normalized distance from threshold: (u - theta) / theta
+                    prox[neuron] += (state.u[neuron] - theta) / theta;
+                }
+            }
         }
 
         state.time = next_time;
@@ -230,6 +250,13 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
         }
     }
 
+    if let Some(prox) = spike_proximity.as_mut() {
+        let denom = steps.max(1) as f64;
+        for value in prox.iter_mut() {
+            *value /= denom;
+        }
+    }
+
     let final_readouts = readout_state.into_iter().map(|(k, v)| (k, v)).collect();
 
     SimulationResult {
@@ -240,6 +267,7 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
         final_state: state,
         final_readouts,
         neuron_traces,
+        spike_proximity,
     }
 }
 
