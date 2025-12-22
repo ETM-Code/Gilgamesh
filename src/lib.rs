@@ -1,3 +1,4 @@
+pub mod hardware;
 pub mod math_functions;
 pub mod network;
 pub mod simulators;
