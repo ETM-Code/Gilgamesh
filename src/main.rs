@@ -146,11 +146,10 @@ fn main() -> Result<()> {
                 if let Some(path) = json_out {
                     result.timings.rust_serialization_ns = serialization_ns;
                     let start = Instant::now();
+                    // Serialize once; the timing in the file reflects work up to this point,
+                    // avoiding the extra write we previously performed to update the timings.
                     result.write_json(&path)?;
                     serialization_ns += start.elapsed().as_nanos();
-                    result.timings.rust_serialization_ns = serialization_ns;
-                    // Rewrite so the emitted JSON captures the updated serialization time.
-                    result.write_json(&path)?;
                 }
             }
 
@@ -591,8 +590,8 @@ fn save_checkpoint(
         .with_context(|| format!("failed to create checkpoint directory {}", dir.display()))?;
 
     let mut network_with_checkpoint = network.clone();
-    network_with_checkpoint.training_checkpoint = Some(
-        gilgamesh::network::compiled::TrainingCheckpoint {
+    network_with_checkpoint.training_checkpoint =
+        Some(gilgamesh::network::compiled::TrainingCheckpoint {
             epoch,
             learning_rate: config.learning_rate,
             row_spacing_start: config.row_spacing_start,
@@ -600,8 +599,7 @@ fn save_checkpoint(
             pulse_width: config.pulse_width,
             input_scale: config.input_scale,
             regularization: config.regularization,
-        },
-    );
+        });
 
     let filename = format!("checkpoint_epoch_{:04}.json", epoch);
     let path = dir.join(&filename);

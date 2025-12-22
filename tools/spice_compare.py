@@ -392,11 +392,20 @@ def main() -> None:
         default=1,
         help="How many times to execute each simulator when measuring runtime.",
     )
-    parser.add_argument(
+    profile_group = parser.add_mutually_exclusive_group()
+    profile_group.add_argument(
         "--release",
+        dest="release",
         action="store_true",
-        help="Run the Rust comparator with cargo --release for benchmarking.",
+        help="Run the Rust comparator with cargo --release (default).",
     )
+    profile_group.add_argument(
+        "--debug",
+        dest="release",
+        action="store_false",
+        help="Run the Rust comparator without optimizations (slower).",
+    )
+    parser.set_defaults(release=True)
     parser.add_argument(
         "--no-prebuild",
         action="store_true",
@@ -574,13 +583,19 @@ def main() -> None:
         if result is not None:
             comparison_json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    if "spice" in benchmark and "rust" in benchmark:
-        mean_spice = benchmark["spice"].get("simulate", {}).get("mean_s")
-        mean_rust = benchmark["rust"].get("mean_s")
-        if mean_spice and mean_rust and mean_rust > 0:
-            benchmark["rust_speedup_vs_spice"] = mean_spice / mean_rust
+    if "spice" in benchmark:
+        mean_spice_sim = benchmark["spice"].get("simulate", {}).get("mean_s")
+        mean_rust_sim: Optional[float] = None
+
+        if rust_timings and rust_timings.get("rust_simulate_ns"):
+            mean_rust_sim = rust_timings["rust_simulate_ns"] / 1e9
+        elif "rust" in benchmark:
+            mean_rust_sim = benchmark["rust"].get("mean_s")
+
+        if mean_spice_sim and mean_rust_sim and mean_rust_sim > 0:
+            benchmark["rust_speedup_vs_spice_sim"] = mean_spice_sim / mean_rust_sim
             print(
-                f"[bench] Rust speedup vs SPICE (mean): {benchmark['rust_speedup_vs_spice']:.2f}×"
+                f"[bench] Rust speedup vs SPICE (simulate): {benchmark['rust_speedup_vs_spice_sim']:.2f}×"
             )
 
     write_benchmark_report(benchmark, output_dir / f"benchmark_{args.mode}.json")

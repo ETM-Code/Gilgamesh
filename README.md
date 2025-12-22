@@ -110,3 +110,35 @@ cargo run -- train --epochs 1 --sample-limit 10
 ```
 
 For further analysis you can read `visualization.json` in a Python notebook or other tools, leveraging the timestamps, readout vectors, and neuron traces that the runtime captures.
+
+## SPICE vs. Rust Comparator (Python harness)
+
+Prereqs: ngspice on PATH; Python 3.11 recommended. Install matplotlib if you want plots (otherwise they are skipped).
+
+Typical commands (from repo root):
+
+```bash
+# Generate SPICE CSV + compare with Rust (detailed mode, release build, write JSON/CSV/plots)
+python3 tools/spice_compare.py --mode detailed
+
+# Reuse an existing SPICE CSV (skip ngspice) and still emit outputs
+python3 tools/spice_compare.py --mode detailed --skip-spice
+
+# Benchmark only the Rust core (no artifacts), assuming SPICE CSV already exists
+python3 tools/spice_compare.py --core-only --skip-spice --no-prebuild
+
+# Force debug build instead of release (slower, for debugging)
+python3 tools/spice_compare.py --debug --mode detailed
+
+# Use a different SPICE CSV
+python3 tools/spice_compare.py --mode detailed --spice-csv /path/to/lif_detailed.csv
+
+# Specify network/neuron JSONs explicitly
+python3 tools/spice_compare.py --network SPICE/neuronSim/defaults/network_default.json \
+  --neuron SPICE/neuronSim/defaults/neuron_default.json --mode detailed
+```
+
+Notes:
+- Artifacts default to `comparison_outputs/` (comparison JSON, equivalent CSV, plots if matplotlib is present).
+- `--core-only` prints metrics and timings (including simulate-only speedup) without writing JSON/CSV. Add `--no-prebuild` to skip `cargo build` if the binary is already built.
+- If `python3` points to 3.14 on your system, prefer the 3.11 interpreter you used earlier, e.g. `/opt/homebrew/opt/python@3.11/bin/python3.11 tools/spice_compare.py ...`.

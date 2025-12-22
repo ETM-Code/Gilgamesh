@@ -26,7 +26,7 @@ pub struct SignalComparison {
     pub sample_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignalSamplePair {
     pub time_s: f64,
     pub equivalent: f64,
@@ -126,13 +126,21 @@ struct SpiceTrace {
 }
 
 impl SpiceTrace {
+    /// Parse the SPICE ASCII CSV, retaining only the time column and the signals we compare.
     fn from_ascii(path: &Path) -> Result<Self> {
         let file = File::open(path)
             .with_context(|| format!("unable to open SPICE output file {}", path.display()))?;
         let reader = BufReader::new(file);
 
         let mut header: Option<Vec<String>> = None;
-        let mut data: Vec<Vec<f64>> = Vec::new();
+        // Column indexes for the signals we care about.
+        let mut time_idx: Option<usize> = None;
+        let mut signal_indexes: Vec<(usize, String)> = Vec::new();
+        let mut index_lookup: HashMap<usize, usize> = HashMap::new();
+
+        let mut times: Vec<f64> = Vec::new();
+        let mut signals: Vec<Vec<f64>> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -146,105 +154,88 @@ impl SpiceTrace {
                 if cols.is_empty() {
                     bail!("SPICE header row is empty in {}", path.display());
                 }
+
+                time_idx = cols.iter().position(|c| c == "time");
+                if time_idx.is_none() {
+                    bail!("missing 'time' column in {}", path.display());
+                }
+
+                for spec in SIGNAL_SPECS {
+                    if let Some(pos) = cols.iter().position(|c| c == spec.spice_column) {
+                        signal_indexes.push((pos, spec.spice_column.to_string()));
+                    }
+                }
+
+                if signal_indexes.is_empty() {
+                    bail!(
+                        "no expected signals ({:?}) found in {}",
+                        SIGNAL_SPECS
+                            .iter()
+                            .map(|s| s.spice_column)
+                            .collect::<Vec<_>>(),
+                        path.display()
+                    );
+                }
+
+                signal_indexes.sort_by_key(|(idx, _)| *idx);
+                for (vec_idx, (col_idx, name)) in signal_indexes.iter().enumerate() {
+                    index_lookup.insert(*col_idx, vec_idx);
+                    names.push(name.clone());
+                    signals.push(Vec::new());
+                }
+
                 header = Some(cols);
                 continue;
             }
 
-            let header_ref = header.as_ref().unwrap();
-            let values: Vec<f64> = trimmed
-                .split_whitespace()
-                .map(|s| s.parse::<f64>())
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .with_context(|| format!("failed to parse numeric data in {}", path.display()))?;
+            let mut time_val: Option<f64> = None;
 
-            if values.len() != header_ref.len() {
-                bail!(
-                    "row with {} columns does not match header length {} in {}",
-                    values.len(),
-                    header_ref.len(),
-                    path.display()
-                );
+            for (col_idx, field) in trimmed.split_whitespace().enumerate() {
+                if Some(col_idx) == time_idx {
+                    time_val = Some(field.parse::<f64>().with_context(|| {
+                        format!("failed to parse time value in {}", path.display())
+                    })?);
+                    continue;
+                }
+
+                if let Some(&vec_idx) = index_lookup.get(&col_idx) {
+                    let value = field.parse::<f64>().with_context(|| {
+                        format!("failed to parse numeric data in {}", path.display())
+                    })?;
+                    signals[vec_idx].push(value);
+                }
             }
 
-            if data.is_empty() {
-                data = vec![Vec::new(); values.len()];
-            }
-
-            for (idx, val) in values.into_iter().enumerate() {
-                data[idx].push(val);
+            if let Some(t) = time_val {
+                times.push(t);
             }
         }
 
-        let header =
-            header.ok_or_else(|| anyhow::anyhow!("missing header in {}", path.display()))?;
-
-        if data.is_empty() {
-            bail!("no data rows found in {}", path.display());
-        }
-
-        let mut signals = HashMap::new();
-        let mut seen: HashMap<String, usize> = HashMap::new();
-
-        if data.is_empty() || data[0].is_empty() {
+        if times.is_empty() {
             bail!("SPICE trace is missing time samples in {}", path.display());
         }
 
-        let times = data[0].clone();
-        if let Some(first_name) = header.get(0) {
-            seen.insert(first_name.clone(), 1);
-        }
-
-        for (idx, name) in header.into_iter().enumerate().skip(1) {
-            let canonical = sanitise_column_name(&name, &mut seen);
-            signals.insert(canonical, data[idx].clone());
-        }
-
-        Ok(SpiceTrace { times, signals })
-    }
-
-    fn interpolate(&self, signal: &str, time: f64) -> Option<f64> {
-        let values = self.signals.get(signal)?;
-        if self.times.is_empty() {
-            return None;
-        }
-        let first = *self.times.first()?;
-        let last = *self.times.last()?;
-        if time < first || time > last {
-            return None;
-        }
-
-        match self
-            .times
-            .binary_search_by(|probe| probe.partial_cmp(&time).unwrap_or(std::cmp::Ordering::Less))
-        {
-            Ok(idx) => values.get(idx).copied(),
-            Err(idx) => {
-                if idx == 0 || idx >= self.times.len() {
-                    return None;
-                }
-                let t0 = self.times[idx - 1];
-                let t1 = self.times[idx];
-                let v0 = values[idx - 1];
-                let v1 = values[idx];
-                if (t1 - t0).abs() < f64::EPSILON {
-                    Some(v0)
-                } else {
-                    let alpha = (time - t0) / (t1 - t0);
-                    Some(v0 + (v1 - v0) * alpha)
-                }
+        for (idx, values) in signals.iter().enumerate() {
+            if values.len() != times.len() {
+                bail!(
+                    "signal '{}' has {} samples but time has {} in {}",
+                    names[idx],
+                    values.len(),
+                    times.len(),
+                    path.display()
+                );
             }
         }
-    }
-}
 
-fn sanitise_column_name(name: &str, seen: &mut HashMap<String, usize>) -> String {
-    let entry = seen.entry(name.to_string()).or_insert(0);
-    if *entry == 0 {
-        *entry += 1;
-        name.to_string()
-    } else {
-        *entry += 1;
-        format!("{}_{}", name, *entry)
+        let mut signal_map = HashMap::new();
+        for (name, values) in names.into_iter().zip(signals.into_iter()) {
+            signal_map.insert(name, values);
+        }
+
+        Ok(SpiceTrace {
+            times,
+            signals: signal_map,
+        })
     }
 }
 
@@ -253,6 +244,11 @@ struct SignalSpec {
     spice_column: &'static str,
     extractor: fn(&SimulationSample) -> f64,
 }
+
+/// Upper bound on how many comparison samples we keep per signal for plotting.
+/// Metrics are always computed on the full-resolution data.
+// Keep more points for plotting when enabled; metrics still use full data.
+const MAX_SERIES_SAMPLES: usize = 10_000;
 
 const SIGNAL_SPECS: &[SignalSpec] = &[
     SignalSpec {
@@ -295,26 +291,55 @@ fn compare_against_spice(
         let mut count = 0usize;
         let mut series = Vec::new();
 
+        // Walk the SPICE samples once per signal using a forward tooling to avoid
+        // repeated binary searches.
+        let spice_values = match spice.signals.get(spec.spice_column) {
+            Some(v) => v,
+            None => continue,
+        };
+        let mut tooling = 0usize;
+        let last_idx = spice.times.len().saturating_sub(1);
+
         for sample in &equivalent.samples {
             let eq_val = (spec.extractor)(sample);
             let time = sample.time_s;
-            if let Some(spice_val) = spice.interpolate(spec.spice_column, time) {
-                let delta = eq_val - spice_val;
-                let abs_delta = delta.abs();
-                sum_sq += delta * delta;
-                sum_abs += abs_delta;
-                if abs_delta > max_abs {
-                    max_abs = abs_delta;
-                    max_time = time;
-                }
-                count += 1;
-                series.push(SignalSamplePair {
-                    time_s: time,
-                    equivalent: eq_val,
-                    spice: spice_val,
-                    delta,
-                });
+            if time < spice.times.first().copied().unwrap_or_default()
+                || time > spice.times.last().copied().unwrap_or_default()
+            {
+                continue;
             }
+
+            while tooling + 1 < last_idx && spice.times[tooling + 1] < time {
+                tooling += 1;
+            }
+
+            let t0 = spice.times[tooling];
+            let t1 = spice.times[(tooling + 1).min(last_idx)];
+            let v0 = spice_values[tooling];
+            let v1 = spice_values[(tooling + 1).min(last_idx)];
+
+            let spice_val = if (t1 - t0).abs() < f64::EPSILON {
+                v0
+            } else {
+                let alpha = ((time - t0) / (t1 - t0)).clamp(0.0, 1.0);
+                v0 + (v1 - v0) * alpha
+            };
+
+            let delta = eq_val - spice_val;
+            let abs_delta = delta.abs();
+            sum_sq += delta * delta;
+            sum_abs += abs_delta;
+            if abs_delta > max_abs {
+                max_abs = abs_delta;
+                max_time = time;
+            }
+            count += 1;
+            series.push(SignalSamplePair {
+                time_s: time,
+                equivalent: eq_val,
+                spice: spice_val,
+                delta,
+            });
         }
 
         if count == 0 {
@@ -331,8 +356,37 @@ fn compare_against_spice(
             max_abs_error_time: max_time,
             sample_count: count,
         });
-        series_map.insert(spec.id.to_string(), series);
+        series_map.insert(
+            spec.id.to_string(),
+            downsample_series(series, MAX_SERIES_SAMPLES),
+        );
     }
 
     Ok((metrics, series_map))
+}
+
+fn downsample_series(series: Vec<SignalSamplePair>, max_samples: usize) -> Vec<SignalSamplePair> {
+    if series.len() <= max_samples || max_samples == 0 {
+        return series;
+    }
+
+    let stride = ((series.len() as f64) / (max_samples as f64)).ceil() as usize;
+    if stride <= 1 {
+        return series;
+    }
+
+    let mut reduced = Vec::with_capacity(series.len() / stride + 1);
+    let mut idx = 0usize;
+    while idx < series.len() {
+        reduced.push(series[idx].clone());
+        idx += stride;
+    }
+
+    if let Some(last) = series.last() {
+        if reduced.last() != Some(last) {
+            reduced.push(last.clone());
+        }
+    }
+
+    reduced
 }

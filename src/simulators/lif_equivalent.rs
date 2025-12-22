@@ -306,7 +306,7 @@ impl EquivalentNeuron {
                     (v_comp_next - (self.supplies.vref + theta_next) - DEFAULT_DIODE_DROP_V)
                         .max(0.0);
                 let dtheta = (overdrive / DEFAULT_INJECTION_R_OHM) * (dt / self.threshold.c_adapt);
-                theta_next += dtheta;
+                theta_next = (theta_next + dtheta).min(self.threshold.theta_high);
             }
 
             let v_mem = self.supplies.vref - u_next;
