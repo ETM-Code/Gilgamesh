@@ -6,6 +6,7 @@
 //! - MEDIUM: Balanced (dt=20µs, full hardware models)
 //! - DETAILED: High accuracy (dt=5µs, noise models)
 
+use crate::network::runtime::SimulationOptions;
 use serde::{Deserialize, Serialize};
 
 /// Fidelity level for simulation.
@@ -60,6 +61,24 @@ pub enum ThresholdMode {
 impl Default for ThresholdMode {
     fn default() -> Self {
         ThresholdMode::Constant
+    }
+}
+
+impl FidelityConfig {
+    /// Apply this fidelity configuration to simulation options.
+    ///
+    /// Updates dt and other simulation parameters based on fidelity level.
+    pub fn apply_to(&self, opts: &mut SimulationOptions) {
+        opts.dt = self.dt;
+        // Note: analog_output, quantization, and noise are handled
+        // separately in the training loop, not in SimulationOptions
+    }
+
+    /// Create new simulation options with this fidelity's dt.
+    pub fn simulation_options(&self) -> SimulationOptions {
+        let mut opts = SimulationOptions::default();
+        self.apply_to(&mut opts);
+        opts
     }
 }
 
