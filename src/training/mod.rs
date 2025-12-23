@@ -11,6 +11,7 @@
 pub mod config;
 pub mod fidelity;
 pub mod multifidelity;
+pub mod presets;
 pub mod qat;
 pub mod quantize;
 pub mod surrogate;
@@ -18,6 +19,7 @@ pub mod surrogate;
 pub use config::{TrainingToml, TrainingParams, ArchitecturePreset, FidelityParams, SurrogateParams};
 pub use fidelity::{FidelityLevel, FidelityConfig, ThresholdMode, AdaptiveFidelityScheduler};
 pub use multifidelity::{train_multifidelity, MultiFidelityConfig, MultiFidelityLog};
+pub use presets::{build_design_from_preset, NeuronParams};
 pub use qat::QATWeight;
 pub use quantize::{quantize_network_weights, apply_quantized_weights, QuantizeConfig, QuantizationResult};
 pub use surrogate::{FastSigmoid, SurrogateGradient, SurrogateType};
