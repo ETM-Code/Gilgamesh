@@ -222,11 +222,27 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
                 let pre_theta = network.neuron.theta0[pre];
                 let pre_signal = if pre_theta < 1.0 {
                     // Spiking neuron: check if stretched output pulse is still active
-                    // This models the monostable one-shot pulse stretcher from hardware
-                    if state.pulse_end_time[pre] > state.time {
-                        1.0 // Pulse is active
+                    // Models the RC pulse stretcher from hardware (exponential decay)
+                    let pulse_duration = network.neuron.pulse_stretch_duration
+                        .get(pre).copied().unwrap_or(0.0);
+
+                    if pulse_duration > 0.0 && state.pulse_end_time[pre] > 0.0 {
+                        // RC exponential decay: V(t) = V0 * exp(-t/tau)
+                        // pulse_end_time stores the spike time (when pulse started)
+                        let spike_time = state.pulse_end_time[pre] - pulse_duration;
+                        let elapsed = state.time - spike_time;
+
+                        if elapsed >= 0.0 && elapsed < 5.0 * pulse_duration {
+                            // tau = pulse_duration (RC time constant)
+                            (-elapsed / pulse_duration).exp()
+                        } else {
+                            0.0 // Pulse fully decayed (>5 tau)
+                        }
+                    } else if state.pulse_end_time[pre] > state.time {
+                        // Fallback: rectangular pulse if no pulse_duration configured
+                        1.0
                     } else {
-                        0.0 // Pulse has ended
+                        0.0
                     }
                 } else {
                     // Non-spiking neuron (high threshold): use voltage directly
