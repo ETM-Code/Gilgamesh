@@ -129,6 +129,21 @@ impl<'a> NetworkCompiler<'a> {
                         }
                     }
                 }
+                ConnectRule::DenseNoSelf => {
+                    for &src in &src_indices {
+                        for &dst in &dst_indices {
+                            if src == dst {
+                                continue; // Skip self-connections
+                            }
+                            let g = synaptic_g(
+                                connect.synapse.resistance,
+                                neuron_cm[dst],
+                                synapse_type,
+                            );
+                            edge_map.insert(EdgeKey { src, dst }, EdgeValue { g, synapse_type });
+                        }
+                    }
+                }
                 ConnectRule::FixedFanIn { fan_in } => {
                     if *fan_in == 0 {
                         continue;
@@ -222,6 +237,9 @@ impl<'a> NetworkCompiler<'a> {
             globals.insert("delta".to_string(), 0.0);
         }
 
+        // Get pulse stretch duration before moving globals
+        let pulse_stretch_duration_s = globals.get("pulse_stretch_duration_s").copied().unwrap_or(0.0);
+
         let layers: Vec<CompiledLayer> = self
             .layer_layout
             .iter()
@@ -269,6 +287,9 @@ impl<'a> NetworkCompiler<'a> {
                 tau_m: neuron_tau,
                 theta_mode: neuron_theta_mode,
                 theta0: neuron_theta0,
+                // Default pulse stretch duration: 0 = no stretching (single timestep)
+                // Can be configured via globals["pulse_stretch_duration_s"] or per-template settings
+                pulse_stretch_duration: vec![pulse_stretch_duration_s; neuron_count],
             },
             incoming,
             outgoing: Some(outgoing),
@@ -421,6 +442,36 @@ fn synaptic_g(resistance: f64, cm: f64, synapse_type: u8) -> f64 {
         -base
     } else {
         base
+    }
+}
+
+/// Initialize weights with random perturbation to break symmetry.
+/// Uses Xavier-style initialization scaled to the base weight.
+pub fn randomize_weights(network: &mut CompiledNetwork, seed: Option<u64>) {
+    use rand::{Rng, SeedableRng};
+    let mut rng = match seed {
+        Some(s) => rand::rngs::StdRng::seed_from_u64(s),
+        None => rand::rngs::StdRng::from_os_rng(),
+    };
+
+    let n_in_approx = (network.synapse_count() as f64 / network.neuron_count() as f64).max(1.0);
+    let scale = (2.0 / n_in_approx).sqrt(); // He initialization factor
+
+    for (idx, g_val) in network.incoming.g.iter_mut().enumerate() {
+        let base = *g_val;
+        let synapse_type = network.incoming.synapse_type[idx];
+
+        // Apply random scaling around the base value
+        // Sample from uniform [-1, 1] then scale
+        let random_factor: f64 = rng.random_range(-1.0..1.0);
+        let perturbed = base * (1.0 + scale * random_factor);
+
+        // Ensure sign constraints
+        if synapse_type == 0 {
+            *g_val = perturbed.abs().max(1e-6); // Excitatory: positive
+        } else {
+            *g_val = -perturbed.abs().max(1e-6); // Inhibitory: negative
+        }
     }
 }
 

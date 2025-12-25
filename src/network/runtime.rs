@@ -16,6 +16,10 @@ pub struct SimulationOptions {
     /// Track spike proximity (distance from threshold) for surrogate gradient training.
     #[serde(default)]
     pub return_spike_proximity: bool,
+    /// Return eligibility traces (exponentially weighted membrane voltages) for training.
+    /// The tau_s value is taken from the first readout or defaults to dt * 10.
+    #[serde(default)]
+    pub return_eligibility_traces: bool,
 }
 
 impl Default for SimulationOptions {
@@ -28,6 +32,7 @@ impl Default for SimulationOptions {
             stimuli_override: None,
             trace_neurons: Vec::new(),
             return_spike_proximity: false,
+            return_eligibility_traces: false,
         }
     }
 }
@@ -44,6 +49,9 @@ pub struct SimulationResult {
     /// Average normalized distance from threshold: mean((u - theta) / theta) per neuron.
     /// Useful for surrogate gradient computation in backprop.
     pub spike_proximity: Option<Vec<f64>>,
+    /// Eligibility traces: exponentially weighted membrane voltages aligned with readout tau_s.
+    /// Used for proper gradient computation in training.
+    pub eligibility_traces: Option<Vec<f64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +59,10 @@ pub struct NetworkState {
     pub time: f64,
     pub u: Vec<f64>,
     pub theta: Vec<f64>,
+    /// Time at which each neuron's stretched output pulse ends (for spike-based transmission).
+    /// Neurons with active pulses (pulse_end_time > current_time) transmit signal to downstream.
+    #[serde(default)]
+    pub pulse_end_time: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,13 +111,14 @@ impl StimulusRuntime {
 }
 
 pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> SimulationResult {
+    let neuron_count = network.neuron_count();
+
     let mut state = NetworkState {
         time: network.state0.t,
         u: network.state0.u.clone(),
         theta: network.state0.theta.clone(),
+        pulse_end_time: vec![0.0; neuron_count],
     };
-
-    let neuron_count = network.neuron_count();
     let alpha_out = network.globals.get("alpha_out").copied().unwrap_or(1.0);
     let dt = opts.dt.max(1e-12);
     let steps = (opts.t_end / dt).ceil() as usize;
@@ -137,8 +150,24 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
     } else {
         None
     };
+    // Eligibility traces: exponentially weighted membrane voltages
+    // Use tau_s from first readout, or default to 10*dt
+    let eligibility_tau = network
+        .readouts
+        .first()
+        .and_then(|r| r.tau_s)
+        .unwrap_or(dt * 10.0);
+    let mut eligibility_traces = if opts.return_eligibility_traces {
+        Some(vec![0.0; neuron_count])
+    } else {
+        None
+    };
     let mut spikes = Vec::new();
     let mut external_drive = vec![0.0; neuron_count];
+    // Track which neurons spiked for spike-based transmission
+    // We use "last step" spikes for transmission (one timestep delay, physically reasonable)
+    let mut spiked_last_step = vec![false; neuron_count];
+    let mut spiked_this_step = vec![false; neuron_count];
     let stimuli_sources = opts
         .stimuli_override
         .clone()
@@ -169,6 +198,9 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
     for step in 0..steps {
         let next_time = state.time + dt;
         external_drive.fill(0.0);
+        // Copy this step's spikes to last step, then reset for new detection
+        std::mem::swap(&mut spiked_last_step, &mut spiked_this_step);
+        spiked_this_step.fill(false);
         for stim in &mut stimuli {
             let amp = stim.sample(next_time);
             for &idx in &stim.channel.target_indices {
@@ -185,7 +217,22 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             for idx in start..end {
                 let pre = network.incoming.src[idx];
                 let weight = network.incoming.g[idx];
-                total += weight * state.u[pre];
+                // For spiking neurons (low threshold), use spike pulse indicator instead of voltage
+                // This fixes the issue where voltage resets to 0 on spike, losing information
+                let pre_theta = network.neuron.theta0[pre];
+                let pre_signal = if pre_theta < 1.0 {
+                    // Spiking neuron: check if stretched output pulse is still active
+                    // This models the monostable one-shot pulse stretcher from hardware
+                    if state.pulse_end_time[pre] > state.time {
+                        1.0 // Pulse is active
+                    } else {
+                        0.0 // Pulse has ended
+                    }
+                } else {
+                    // Non-spiking neuron (high threshold): use voltage directly
+                    state.u[pre]
+                };
+                total += weight * pre_signal;
             }
             let tau = network.neuron.tau_m[neuron];
             let u_inf = if tau > 0.0 { tau * total } else { total };
@@ -201,7 +248,21 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
                     time: next_time,
                     neuron,
                 });
+                spiked_this_step[neuron] = true;
                 state.u[neuron] = 0.0;
+
+                // Set pulse end time for stretched output
+                // If pulse_stretch_duration is configured, use it; otherwise default to dt (single timestep)
+                let pulse_duration = network.neuron.pulse_stretch_duration
+                    .get(neuron)
+                    .copied()
+                    .unwrap_or(0.0);
+                if pulse_duration > 0.0 {
+                    state.pulse_end_time[neuron] = next_time + pulse_duration;
+                } else {
+                    // No stretching: pulse ends after one timestep (backward compatible)
+                    state.pulse_end_time[neuron] = next_time + dt;
+                }
             } else {
                 state.u[neuron] = u_next;
             }
@@ -215,6 +276,13 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
                     // Normalized distance from threshold: (u - theta) / theta
                     prox[neuron] += (state.u[neuron] - theta) / theta;
                 }
+            }
+            // Update eligibility trace: proper low-pass filter (bounded, not accumulating)
+            // e_trace[t+1] = e_trace[t] + (dt/tau) * (u[t] - e_trace[t])
+            // This is equivalent to: e = decay * e + (1-decay) * u, keeping e bounded
+            if let Some(e_trace) = eligibility_traces.as_mut() {
+                let alpha = dt / eligibility_tau;
+                e_trace[neuron] += alpha * (state.u[neuron] - e_trace[neuron]);
             }
         }
 
@@ -268,6 +336,7 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
         final_readouts,
         neuron_traces,
         spike_proximity,
+        eligibility_traces,
     }
 }
 

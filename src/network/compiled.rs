@@ -37,6 +37,9 @@ pub struct NeuronParameters {
     pub tau_m: Vec<f64>,
     pub theta_mode: Vec<u8>,
     pub theta0: Vec<f64>,
+    /// Duration of output pulse stretch in seconds (0.0 = no stretching, use single timestep)
+    #[serde(default)]
+    pub pulse_stretch_duration: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
