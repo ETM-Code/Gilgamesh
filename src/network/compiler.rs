@@ -446,7 +446,7 @@ fn synaptic_g(resistance: f64, cm: f64, synapse_type: u8) -> f64 {
 }
 
 /// Initialize weights with random perturbation to break symmetry.
-/// Uses Xavier-style initialization scaled to the base weight.
+/// Uses aggressive randomization to create differentiated receptive fields.
 pub fn randomize_weights(network: &mut CompiledNetwork, seed: Option<u64>) {
     use rand::{Rng, SeedableRng};
     let mut rng = match seed {
@@ -454,17 +454,17 @@ pub fn randomize_weights(network: &mut CompiledNetwork, seed: Option<u64>) {
         None => rand::rngs::StdRng::from_os_rng(),
     };
 
-    let n_in_approx = (network.synapse_count() as f64 / network.neuron_count() as f64).max(1.0);
-    let scale = (2.0 / n_in_approx).sqrt(); // He initialization factor
-
+    // Use much larger variance to create differentiated receptive fields
+    // Some weights will be near zero, others will be strong
+    // This is essential for hidden neurons to develop different response patterns
     for (idx, g_val) in network.incoming.g.iter_mut().enumerate() {
         let base = *g_val;
         let synapse_type = network.incoming.synapse_type[idx];
 
-        // Apply random scaling around the base value
-        // Sample from uniform [-1, 1] then scale
-        let random_factor: f64 = rng.random_range(-1.0..1.0);
-        let perturbed = base * (1.0 + scale * random_factor);
+        // Sample from uniform [0, 2*base] - centered on base but with high variance
+        // This gives some weights near 0 and others near 2*base
+        let random_factor: f64 = rng.random_range(0.0..2.0);
+        let perturbed = base * random_factor;
 
         // Ensure sign constraints
         if synapse_type == 0 {

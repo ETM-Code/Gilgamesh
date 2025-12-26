@@ -213,8 +213,13 @@ impl TemporalEncoder {
                 times.push(start);
                 values.push(amplitude);
 
+                // Hold amplitude until end for proper square pulse
                 let end = (start + effective_width).min(total_time);
                 times.push(end);
+                values.push(amplitude);  // Still at amplitude
+
+                // Then drop to zero
+                times.push(end + 1e-9);
                 values.push(0.0);
             }
 
@@ -297,6 +302,7 @@ where
             sim_opts.record_readout = true;
             sim_opts.return_average = true;
             sim_opts.return_spike_proximity = config.surrogate.enabled;
+            sim_opts.return_eligibility_traces = true; // For proper gradient computation
 
             if let Some(encoder) = &example.encoder {
                 let stimuli = encoder.build_stimuli(spacing, pulse_width, input_scale);
@@ -308,9 +314,13 @@ where
             }
 
             let result = simulate_network(network, &sim_opts);
-            let avg = result.average_activity.as_ref().ok_or_else(|| {
-                anyhow!("simulation result missing average_activity - set return_average=true")
-            })?;
+
+            // Use average_activity for gradient computation (simpler, avoids eligibility trace scaling issues)
+            let activity = result.average_activity.as_ref()
+                .ok_or_else(|| {
+                    anyhow!("simulation result missing average_activity")
+                })?;
+
 
             neuron_error.fill(0.0);
 
@@ -324,9 +334,12 @@ where
                     .readouts
                     .get(&readout.id)
                     .ok_or_else(|| anyhow!("simulation missing readout '{}'", readout.id))?;
+
+                // Use final timestep value
                 let last = samples
                     .last()
                     .ok_or_else(|| anyhow!("empty readout trace for '{}'", readout.id))?;
+
                 if last.len() != target_values.len() {
                     return Err(anyhow!(
                         "target size {} mismatches readout '{}' size {}",
@@ -336,10 +349,30 @@ where
                     ));
                 }
 
+                // Softmax + CrossEntropy loss with fixed temperature
+                // Logits are large (100-200V) so we need temperature ~10-20 to get reasonable gradients
+                let temperature = 10.0;
+
+                let max_z = last.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let scaled: Vec<f64> = last.iter().map(|z| (z - max_z) / temperature).collect();
+                let exp_sum: f64 = scaled.iter().map(|z| z.exp()).sum();
+                let softmax: Vec<f64> = scaled.iter().map(|z| z.exp() / exp_sum).collect();
+
+                // Find target class (index of max in one-hot)
+                let target_class = target_values.iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+
+                // CE loss: -log(p_target)
+                total_loss += -(softmax[target_class] + EPS).ln() * example.weight;
+
+                // Gradient: softmax - target
+                // Note: Temperature scaling affects the softmax but for learning we use standard gradient
                 for (local_idx, &neuron_idx) in readout.indices.iter().enumerate() {
-                    let err = last[local_idx] - target_values[local_idx];
-                    neuron_error[neuron_idx] += err;
-                    total_loss += 0.5 * err * err * example.weight;
+                    let grad = softmax[local_idx] - target_values[local_idx];
+                    neuron_error[neuron_idx] += grad;
                 }
             }
 
@@ -347,7 +380,7 @@ where
                 network,
                 &mut grad,
                 &mut neuron_error,
-                avg,
+                activity,
                 &result,
                 &config.surrogate,
                 example.weight,
@@ -377,7 +410,7 @@ fn backpropagate(
     network: &CompiledNetwork,
     grad: &mut [f64],
     neuron_error: &mut [f64],
-    avg_activity: &[f64],
+    activity: &[f64],
     result: &SimulationResult,
     surrogate_config: &SurrogateConfig,
     weight: f64,
@@ -399,6 +432,9 @@ fn backpropagate(
             continue;
         }
 
+        // Surrogate gradient only for hidden layers, not output/readout (which use analog voltage)
+        let is_hidden_layer = matches!(layer.layer_type, LayerRuntimeType::Hidden);
+
         for neuron in start..end {
             let err = neuron_error[neuron];
             if err.abs() < EPS {
@@ -406,7 +442,8 @@ fn backpropagate(
             }
 
             // Compute surrogate gradient scaling for this neuron
-            let surrogate_scale = if surrogate_config.enabled {
+            // Only apply to hidden layers - output layers use analog voltage readout
+            let surrogate_scale = if surrogate_config.enabled && is_hidden_layer {
                 if let Some(prox) = spike_proximity {
                     // prox[neuron] is the average normalized distance from threshold: (u - theta) / theta
                     // Convert back to absolute distance for surrogate: u - theta = prox * theta
@@ -418,16 +455,17 @@ fn backpropagate(
                     1.0 // No proximity data, use unit scaling
                 }
             } else {
-                1.0 // Surrogate disabled
+                1.0 // Surrogate disabled or output layer (analog)
             };
 
+            // Scale by surrogate gradient (spytorch-style, no dt scaling)
             let scaled_err = err * surrogate_scale;
 
             let in_start = row_ptr[neuron];
             let in_end = row_ptr[neuron + 1];
             for edge_idx in in_start..in_end {
                 let pre = src[edge_idx];
-                grad[edge_idx] += weight * scaled_err * avg_activity[pre];
+                grad[edge_idx] += weight * scaled_err * activity[pre];
                 neuron_error[pre] += scaled_err * g[edge_idx];
             }
             neuron_error[neuron] = 0.0;
@@ -451,11 +489,5 @@ fn apply_gradient(
             update += reg * (*g_val);
         }
         *g_val -= update;
-        let value = *g_val;
-        if incoming.synapse_type[idx] == 0 {
-            *g_val = value.abs();
-        } else {
-            *g_val = -value.abs();
-        }
     }
 }

@@ -2,36 +2,100 @@
   "version": "0.2",
   "globals": {
     "alpha_out": 1.0,
-    "delta": 5.0e-4
+    "delta": 5.0e-4,
+    "pulse_stretch_duration_s": 0.000667
   },
   "neuron_templates": {
     "default": {
       "Cm": 3.3e-8,
       "Rleak": 120000.0,
-      "theta": {
-        "mode": "constant",
-        "theta0": 0.65
-      },
-      "reset": {
-        "Rreset": 750.0,
-        "Ron_switch": 30.0
-      }
+      "theta": { "mode": "constant", "theta0": 0.1 },
+      "reset": { "Rreset": 750.0, "Ron_switch": 30.0 }
+    },
+    "fast_low": {
+      "Cm": 1.5e-8,
+      "Rleak": 80000.0,
+      "theta": { "mode": "constant", "theta0": 0.05 },
+      "reset": { "Rreset": 750.0, "Ron_switch": 30.0 }
+    },
+    "fast_high": {
+      "Cm": 1.5e-8,
+      "Rleak": 80000.0,
+      "theta": { "mode": "constant", "theta0": 0.15 },
+      "reset": { "Rreset": 750.0, "Ron_switch": 30.0 }
+    },
+    "slow_low": {
+      "Cm": 6.0e-8,
+      "Rleak": 200000.0,
+      "theta": { "mode": "constant", "theta0": 0.08 },
+      "reset": { "Rreset": 750.0, "Ron_switch": 30.0 }
+    },
+    "slow_high": {
+      "Cm": 6.0e-8,
+      "Rleak": 200000.0,
+      "theta": { "mode": "constant", "theta0": 0.2 },
+      "reset": { "Rreset": 750.0, "Ron_switch": 30.0 }
+    },
+    "non_spiking": {
+      "Cm": 3.3e-8,
+      "Rleak": 120000.0,
+      "theta": { "mode": "constant", "theta0": 1000.0 },
+      "reset": { "Rreset": 750.0, "Ron_switch": 30.0 }
     }
   },
   "layers": [
     { "id": "input", "type": "input", "size": 7, "neuron": "default" },
-    { "id": "hidden", "type": "hidden", "size": 10, "neuron": "default" },
-    { "id": "output", "type": "readout", "size": 10, "neuron": "default" }
+    { "id": "hidden_fast_low", "type": "hidden", "size": 40, "neuron": "fast_low" },
+    { "id": "hidden_fast_high", "type": "hidden", "size": 40, "neuron": "fast_high" },
+    { "id": "hidden_slow_low", "type": "hidden", "size": 40, "neuron": "slow_low" },
+    { "id": "hidden_slow_high", "type": "hidden", "size": 40, "neuron": "slow_high" },
+    { "id": "output", "type": "readout", "size": 10, "neuron": "non_spiking" }
   ],
   "connect": [
     {
       "from": "input",
-      "to": "hidden",
-      "rule": { "rule": "dense" },
-      "synapse": { "type": "excitatory", "R": 15000.0 }
+      "to": "hidden_fast_low",
+      "rule": { "rule": "prob", "probability": 0.15, "seed": 100 },
+      "synapse": { "type": "excitatory", "R": 4000.0 }
     },
     {
-      "from": "hidden",
+      "from": "input",
+      "to": "hidden_fast_high",
+      "rule": { "rule": "prob", "probability": 0.15, "seed": 200 },
+      "synapse": { "type": "excitatory", "R": 4000.0 }
+    },
+    {
+      "from": "input",
+      "to": "hidden_slow_low",
+      "rule": { "rule": "prob", "probability": 0.15, "seed": 300 },
+      "synapse": { "type": "excitatory", "R": 6000.0 }
+    },
+    {
+      "from": "input",
+      "to": "hidden_slow_high",
+      "rule": { "rule": "prob", "probability": 0.15, "seed": 400 },
+      "synapse": { "type": "excitatory", "R": 6000.0 }
+    },
+    {
+      "from": "hidden_fast_low",
+      "to": "output",
+      "rule": { "rule": "dense" },
+      "synapse": { "type": "excitatory", "R": 22000.0 }
+    },
+    {
+      "from": "hidden_fast_high",
+      "to": "output",
+      "rule": { "rule": "dense" },
+      "synapse": { "type": "excitatory", "R": 22000.0 }
+    },
+    {
+      "from": "hidden_slow_low",
+      "to": "output",
+      "rule": { "rule": "dense" },
+      "synapse": { "type": "excitatory", "R": 22000.0 }
+    },
+    {
+      "from": "hidden_slow_high",
       "to": "output",
       "rule": { "rule": "dense" },
       "synapse": { "type": "excitatory", "R": 22000.0 }
@@ -54,12 +118,12 @@
     "checkpoint_dir": "../output/checkpoints",
     "checkpoint_every": 5,
     "config": {
-      "learning_rate": 0.003,
+      "learning_rate": 0.01,
       "epochs": 30,
       "row_spacing_start": 0.0015,
       "row_spacing_end": 0.0008,
       "pulse_width": 0.45,
-      "input_scale": 1.0,
+      "input_scale": 269.0,
       "sample_limit": 2048
     }
   }

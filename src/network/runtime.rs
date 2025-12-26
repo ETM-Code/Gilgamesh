@@ -1,4 +1,5 @@
 use crate::math_functions::lif::relax_towards;
+use crate::math_functions::neuron_physics::compute_pulse_stretched_signal;
 use crate::network::compiled::{CompiledNetwork, ReadoutRuntimeType, StimulusChannel};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -210,6 +211,30 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             }
         }
 
+        // Pre-compute transmitted signal for each neuron (for forward and gradient)
+        // This is the signal value that gets multiplied by weights
+        let mut transmitted_signal = vec![0.0f64; neuron_count];
+        for pre in 0..neuron_count {
+            let pre_theta = network.neuron.theta0[pre];
+            transmitted_signal[pre] = if pre_theta < 1.0 {
+                // Spiking neuron: use unified physics for pulse stretching
+                let pulse_tau = network.neuron.pulse_stretch_duration
+                    .get(pre).copied().unwrap_or(0.0);
+
+                if pulse_tau > 0.0 && state.pulse_end_time[pre] > 0.0 {
+                    let spike_time = state.pulse_end_time[pre] - pulse_tau;
+                    compute_pulse_stretched_signal(spike_time, state.time, pulse_tau)
+                } else if state.pulse_end_time[pre] > state.time {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                // Non-spiking neuron (high threshold): use voltage directly
+                state.u[pre]
+            };
+        }
+
         for neuron in 0..neuron_count {
             let start = network.incoming.row_ptr[neuron];
             let end = network.incoming.row_ptr[neuron + 1];
@@ -217,38 +242,7 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             for idx in start..end {
                 let pre = network.incoming.src[idx];
                 let weight = network.incoming.g[idx];
-                // For spiking neurons (low threshold), use spike pulse indicator instead of voltage
-                // This fixes the issue where voltage resets to 0 on spike, losing information
-                let pre_theta = network.neuron.theta0[pre];
-                let pre_signal = if pre_theta < 1.0 {
-                    // Spiking neuron: check if stretched output pulse is still active
-                    // Models the RC pulse stretcher from hardware (exponential decay)
-                    let pulse_duration = network.neuron.pulse_stretch_duration
-                        .get(pre).copied().unwrap_or(0.0);
-
-                    if pulse_duration > 0.0 && state.pulse_end_time[pre] > 0.0 {
-                        // RC exponential decay: V(t) = V0 * exp(-t/tau)
-                        // pulse_end_time stores the spike time (when pulse started)
-                        let spike_time = state.pulse_end_time[pre] - pulse_duration;
-                        let elapsed = state.time - spike_time;
-
-                        if elapsed >= 0.0 && elapsed < 5.0 * pulse_duration {
-                            // tau = pulse_duration (RC time constant)
-                            (-elapsed / pulse_duration).exp()
-                        } else {
-                            0.0 // Pulse fully decayed (>5 tau)
-                        }
-                    } else if state.pulse_end_time[pre] > state.time {
-                        // Fallback: rectangular pulse if no pulse_duration configured
-                        1.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    // Non-spiking neuron (high threshold): use voltage directly
-                    state.u[pre]
-                };
-                total += weight * pre_signal;
+                total += weight * transmitted_signal[pre];
             }
             let tau = network.neuron.tau_m[neuron];
             let u_inf = if tau > 0.0 { tau * total } else { total };
@@ -282,8 +276,11 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             } else {
                 state.u[neuron] = u_next;
             }
+            // Track activity for gradient computation
+            // CRITICAL: Use the SAME signal that was transmitted forward (transmitted_signal)
+            // This ensures gradient computation matches forward signal flow
             if let Some(avg) = average_activity.as_mut() {
-                avg[neuron] += state.u[neuron];
+                avg[neuron] += transmitted_signal[neuron];
             }
             // Track spike proximity for surrogate gradient
             if let Some(prox) = spike_proximity.as_mut() {
@@ -380,8 +377,10 @@ fn record_readouts(
                     }
                 }
                 ReadoutRuntimeType::Spike => {
+                    // Use pulse_end_time to detect active spike output
+                    // This gives 1.0 when neuron has recently spiked (within pulse duration)
                     for (local_idx, &idx) in readout.indices.iter().enumerate() {
-                        let input = if state.u[idx] > 0.0 { 1.0 } else { 0.0 };
+                        let input = if state.pulse_end_time[idx] > state.time { 1.0 } else { 0.0 };
                         let value =
                             integrate_signal(state_vec, local_idx, input, readout.tau_s, dt);
                         values.push(value);
