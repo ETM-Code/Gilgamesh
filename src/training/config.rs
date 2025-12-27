@@ -111,8 +111,19 @@ pub enum ArchitecturePreset {
     /// Custom architecture (not a preset)
     Custom,
 
-    /// MNIST 7x7 with time-multiplexed input
+    /// MNIST 7x7 with time-multiplexed input (7 input neurons, row-by-row)
     Mnist7x7 {
+        /// Number of hidden neurons
+        #[serde(default = "default_hidden_neurons")]
+        hidden_neurons: usize,
+
+        /// Use excitatory-only connections (for hardware)
+        #[serde(default)]
+        excitatory_only: bool,
+    },
+
+    /// MNIST 7x7 with rate-coded input (49 input neurons, all at once)
+    Mnist7x7Rate {
         /// Number of hidden neurons
         #[serde(default = "default_hidden_neurons")]
         hidden_neurons: usize,

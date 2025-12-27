@@ -12,6 +12,7 @@ pub struct TrainingExample {
     pub weight: f64,
     pub simulation: SimulationOptions,
     pub encoder: Option<TemporalEncoder>,
+    pub rate_encoder: Option<RateEncoder>,
 }
 
 impl TrainingExample {
@@ -21,6 +22,7 @@ impl TrainingExample {
             weight: 1.0,
             simulation,
             encoder: None,
+            rate_encoder: None,
         }
     }
 
@@ -31,6 +33,11 @@ impl TrainingExample {
 
     pub fn with_encoder(mut self, encoder: TemporalEncoder) -> Self {
         self.encoder = Some(encoder);
+        self
+    }
+
+    pub fn with_rate_encoder(mut self, encoder: RateEncoder) -> Self {
+        self.rate_encoder = Some(encoder);
         self
     }
 }
@@ -252,6 +259,59 @@ impl TemporalEncoder {
     }
 }
 
+/// Rate-coded encoder: presents all pixels simultaneously for the full duration.
+/// Used for standard SNN training where all inputs are active at once.
+#[derive(Debug, Clone)]
+pub struct RateEncoder {
+    pixel_values: Vec<f64>,    // Flattened pixel values (e.g., 49 for 7x7)
+    neuron_indices: Vec<usize>, // Which neurons to stimulate
+}
+
+impl RateEncoder {
+    pub fn new(pixel_values: Vec<f64>, neuron_indices: Vec<usize>) -> Self {
+        debug_assert_eq!(pixel_values.len(), neuron_indices.len());
+        Self {
+            pixel_values,
+            neuron_indices,
+        }
+    }
+
+    /// Create from a 7x7 image with given neuron indices (0-48)
+    pub fn from_image_7x7(image: &[Vec<f64>], neuron_indices: &[usize]) -> Self {
+        let mut pixel_values = Vec::with_capacity(49);
+        for row in image {
+            pixel_values.extend(row.iter().cloned());
+        }
+        Self::new(pixel_values, neuron_indices.to_vec())
+    }
+
+    pub fn build_stimuli(
+        &self,
+        duration: f64,
+        scale: f64,
+    ) -> Vec<StimulusChannel> {
+        // Present all pixels simultaneously for the full duration
+        self.pixel_values
+            .iter()
+            .zip(self.neuron_indices.iter())
+            .enumerate()
+            .map(|(idx, (&value, &neuron_idx))| {
+                let amplitude = value * scale;
+                StimulusChannel {
+                    id: format!("rate_pixel{}", idx),
+                    target_indices: vec![neuron_idx],
+                    times: vec![0.0, duration],
+                    values: vec![amplitude, amplitude],
+                }
+            })
+            .collect()
+    }
+
+    pub fn suggested_duration(&self) -> f64 {
+        0.025 // 25ms - matching snnTorch's 25 timesteps
+    }
+}
+
 fn enforce_monotonic_times(times: &mut [f64]) {
     let mut last = -f64::INFINITY;
     for t in times.iter_mut() {
@@ -308,7 +368,14 @@ where
                 sim_opts.return_eligibility_traces = true;
                 sim_opts.return_synapse_eligibility = true;
 
-                if let Some(encoder) = &example.encoder {
+                if let Some(encoder) = &example.rate_encoder {
+                    // Rate-coded: all pixels presented simultaneously
+                    let stimuli = encoder.build_stimuli(encoder.suggested_duration(), input_scale);
+                    sim_opts.stimuli_override = Some(stimuli);
+                    sim_opts.t_end = encoder.suggested_duration();
+                    sim_opts.dt = sim_opts.dt.min(1e-5); // Fine dt for rate coding
+                } else if let Some(encoder) = &example.encoder {
+                    // Temporal: row-by-row presentation
                     let stimuli = encoder.build_stimuli(spacing, pulse_width, input_scale);
                     let duration = encoder.suggested_duration(spacing);
                     sim_opts.stimuli_override = Some(stimuli);

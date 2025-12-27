@@ -14,7 +14,7 @@ use gilgamesh::network::compiler::{compile_design, randomize_weights};
 use gilgamesh::network::design::{Design, TrainingConfigDefaults};
 use gilgamesh::network::runtime::{simulate_network, SimulationOptions, SimulationResult};
 use gilgamesh::network::training::{
-    train_network_with_callback, TemporalEncoder, TrainerConfig, TrainingExample,
+    train_network_with_callback, RateEncoder, TemporalEncoder, TrainerConfig, TrainingExample,
 };
 use gilgamesh::network::visualization::write_visualization_outputs;
 use gilgamesh::spice_comparator::{run_comparison, ComparisonConfig};
@@ -511,7 +511,13 @@ fn main() -> Result<()> {
             let pulse_width = config.pulse_width_for_spacing(spacing);
             let scale = config.input_scale;
 
-            if let Some(encoder) = example.encoder.as_ref() {
+            if let Some(encoder) = example.rate_encoder.as_ref() {
+                // Rate-coded: all pixels at once
+                example.simulation.stimuli_override =
+                    Some(encoder.build_stimuli(encoder.suggested_duration(), scale));
+                example.simulation.t_end = encoder.suggested_duration();
+            } else if let Some(encoder) = example.encoder.as_ref() {
+                // Temporal: row-by-row
                 example.simulation.stimuli_override =
                     Some(encoder.build_stimuli(spacing, pulse_width, scale));
                 let duration = encoder.suggested_duration(spacing);
@@ -783,17 +789,35 @@ fn load_mnist7x7_dataset(
         sim_opts.t_end = (rows as f64 + 1.0) * default_spacing;
         sim_opts.dt = 1e-4;
 
-        if cols > input_indices.len() {
+        // Choose encoder based on input layer size:
+        // - 49 neurons: rate-coded (all pixels at once)
+        // - 7 neurons: temporal (row-by-row)
+        let example = if input_indices.len() >= 49 {
+            // Rate-coded: flatten all pixels and present simultaneously
+            let mut pixel_values = Vec::with_capacity(rows * cols);
+            for row in 0..rows {
+                for col in 0..cols {
+                    pixel_values.push(columns[col][row]);
+                }
+            }
+            let rate_encoder = RateEncoder::new(pixel_values, input_indices[..49].to_vec());
+
+            // For rate coding, use fixed duration (no row spacing)
+            sim_opts.t_end = rate_encoder.suggested_duration();
+
+            TrainingExample::new(targets, sim_opts).with_rate_encoder(rate_encoder)
+        } else if input_indices.len() >= cols {
+            // Temporal: present columns row-by-row
+            let encoder = TemporalEncoder::new(cols, rows, columns, input_indices[..cols].to_vec());
+            TrainingExample::new(targets, sim_opts).with_encoder(encoder)
+        } else {
             return Err(anyhow!(
                 "input layer has {} neurons but requires at least {} columns",
                 input_indices.len(),
                 cols
             ));
-        }
+        };
 
-        let encoder = TemporalEncoder::new(cols, rows, columns, input_indices[..cols].to_vec());
-
-        let example = TrainingExample::new(targets, sim_opts).with_encoder(encoder);
         examples.push(example);
         labels.push(label);
     }
@@ -1036,7 +1060,12 @@ fn evaluate_accuracy(
         sim_opts.record_readout = true;
         sim_opts.return_average = false;
 
-        if let Some(encoder) = example.encoder.as_ref() {
+        if let Some(encoder) = example.rate_encoder.as_ref() {
+            // Rate-coded: all pixels at once
+            sim_opts.stimuli_override = Some(encoder.build_stimuli(encoder.suggested_duration(), scale));
+            sim_opts.t_end = encoder.suggested_duration();
+        } else if let Some(encoder) = example.encoder.as_ref() {
+            // Temporal: row-by-row
             sim_opts.stimuli_override = Some(encoder.build_stimuli(spacing, pulse_width, scale));
             let duration = encoder.suggested_duration(spacing);
             if sim_opts.t_end < duration {

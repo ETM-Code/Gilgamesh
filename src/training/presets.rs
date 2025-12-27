@@ -55,6 +55,10 @@ pub fn build_design_from_preset(
             hidden_neurons,
             excitatory_only,
         } => build_mnist7x7_design(*hidden_neurons, *excitatory_only, &params),
+        ArchitecturePreset::Mnist7x7Rate {
+            hidden_neurons,
+            excitatory_only,
+        } => build_mnist7x7_rate_design(*hidden_neurons, *excitatory_only, &params),
         ArchitecturePreset::Feedforward {
             input_size,
             hidden_sizes,
@@ -189,6 +193,85 @@ fn build_mnist7x7_design(
                 synapse: SynapseSpec {
                     r#type: synapse_type,
                     resistance: 22_000.0, // Slightly higher for output
+                },
+            },
+        ],
+        overrides: Vec::new(),
+        external_inputs: Vec::new(),
+        readouts: vec![ReadoutSpec {
+            id: "logits".to_string(),
+            r#type: ReadoutType::Analog,
+            source_layer: Some("output".to_string()),
+            signal: "analog_background".to_string(),
+            post: None,
+            tau_s: Some(2e-3),
+        }],
+        checkpoint: None,
+        training: None,
+    }
+}
+
+/// Build MNIST 7x7 rate-coded network.
+///
+/// Architecture: 49 (input) → hidden_neurons → 10 (output)
+/// All 49 pixels are presented simultaneously (rate-coded input).
+fn build_mnist7x7_rate_design(
+    hidden_neurons: usize,
+    excitatory_only: bool,
+    params: &NeuronParams,
+) -> Design {
+    let mut neuron_templates = HashMap::new();
+    neuron_templates.insert("default".to_string(), build_neuron_template(params));
+
+    let synapse_type = SynapseType::Excitatory;
+    let _ = excitatory_only;
+
+    let mut globals = Globals::default();
+    globals.values.insert("alpha_out".to_string(), 1.0.into());
+    globals.values.insert("delta".to_string(), 5.0e-4.into());
+
+    Design {
+        version: Some("0.2".to_string()),
+        units: None,
+        globals,
+        neuron_templates,
+        layers: vec![
+            LayerSpec {
+                id: "input".to_string(),
+                r#type: LayerType::Input,
+                size: 49, // All 49 pixels of 7x7 MNIST
+                neuron: "default".to_string(),
+            },
+            LayerSpec {
+                id: "hidden".to_string(),
+                r#type: LayerType::Hidden,
+                size: hidden_neurons,
+                neuron: "default".to_string(),
+            },
+            LayerSpec {
+                id: "output".to_string(),
+                r#type: LayerType::Readout,
+                size: 10, // 10 digit classes
+                neuron: "default".to_string(),
+            },
+        ],
+        connect: vec![
+            ConnectSpec {
+                from: "input".to_string(),
+                to: "hidden".to_string(),
+                rule: ConnectRule::Dense,
+                synapse: SynapseSpec {
+                    r#type: synapse_type.clone(),
+                    resistance: DEFAULT_SYNAPSE_RESISTANCE,
+                },
+            },
+            ConnectSpec {
+                from: "hidden".to_string(),
+                to: "output".to_string(),
+                rule: ConnectRule::Dense,
+                synapse: SynapseSpec {
+                    r#type: synapse_type,
+                    resistance: 22_000.0,
                 },
             },
         ],
