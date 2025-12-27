@@ -283,13 +283,11 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
                 } else {
                     1.0 // Non-spiking neurons: pass gradient through
                 };
-                // Use precomputed decay factor
-                let syn_slice = &mut syn_elig[start..end];
-                let src_slice = &network.incoming.src[start..end];
-                // Parallel update for this neuron's incoming synapses
-                syn_slice.par_iter_mut().zip(src_slice.par_iter()).for_each(|(e, &pre)| {
-                    *e = elig_decay * *e + surrogate * transmitted_signal[pre];
-                });
+                // Sequential synapse eligibility update (reverted from par_iter)
+                for idx in start..end {
+                    let pre = network.incoming.src[idx];
+                    syn_elig[idx] = elig_decay * syn_elig[idx] + surrogate * transmitted_signal[pre];
+                }
             }
 
             let theta = network.neuron.theta0[neuron];
@@ -336,8 +334,10 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             // with exponential decay matching readout tau_s
             // e[t] = decay * e[t-1] + alpha * transmitted[t]
             if let Some(e_trace) = eligibility_traces.as_mut() {
-                // Use precomputed alpha and decay (1 - alpha)
-                e_trace[neuron] = (1.0 - elig_alpha) * e_trace[neuron] + elig_alpha * transmitted_signal[neuron];
+                // Reverted to inline computation (from Change 3)
+                let alpha = dt / eligibility_tau;
+                let decay = 1.0 - alpha.min(1.0);
+                e_trace[neuron] = decay * e_trace[neuron] + alpha * transmitted_signal[neuron];
             }
         }
 

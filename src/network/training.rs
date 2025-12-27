@@ -319,15 +319,12 @@ where
 
                 let result = simulate_network(network, &sim_opts);
 
-                let activity = match result.eligibility_traces.as_ref() {
-                    Some(a) => a,
-                    None => return (local_grad, 0.0, 0.0), // Skip on error
-                };
+                // Use expect instead of ? since we're in a parallel closure
+                let activity = result.eligibility_traces.as_ref()
+                    .expect("simulation result missing eligibility_traces");
 
-                let synapse_eligibility = match result.synapse_eligibility.as_ref() {
-                    Some(s) => s,
-                    None => return (local_grad, 0.0, 0.0),
-                };
+                let synapse_eligibility = result.synapse_eligibility.as_ref()
+                    .expect("simulation result missing synapse_eligibility");
 
                 local_neuron_error.fill(0.0);
                 let mut local_loss = 0.0;
@@ -368,8 +365,8 @@ where
                     local_loss += -(softmax[target_class] + EPS).ln() * example.weight;
 
                     for (local_idx, &neuron_idx) in readout.indices.iter().enumerate() {
-                        let grad = (softmax[local_idx] - target_values[local_idx]) / temperature;
-                        local_neuron_error[neuron_idx] += grad;
+                        let g = (softmax[local_idx] - target_values[local_idx]) / temperature;
+                        local_neuron_error[neuron_idx] += g;
                     }
                 }
 
