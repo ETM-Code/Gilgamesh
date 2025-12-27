@@ -63,6 +63,75 @@ pub struct ComparatorCfg {
     pub vhigh_v: f64,
 }
 
+/// Pulse stretching circuit configuration (RC decay).
+/// Models the hardware RC pulse stretcher that extends spike duration.
+///
+/// Physics: When comparator fires, diode charges C_pw to V_peak. When comparator
+/// goes low, C_pw discharges exponentially through parallel resistance R_eff.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PulseStretchCfg {
+    #[serde(default)]
+    pub enable: bool,
+    /// Pulse stretch resistor in ohms (R_pw, typically 20kΩ)
+    #[serde(default, alias = "R_pw_ohm")]
+    pub r_pw_ohm: f64,
+    /// Pulse stretch capacitor in farads (C_pw, typically 100nF)
+    #[serde(default, alias = "C_pw_F")]
+    pub c_pw_f: f64,
+    /// Optional load resistance in ohms (R_load, typically 100kΩ synapse input).
+    /// If provided, effective resistance is R_eff = R_pw || R_load (parallel).
+    /// If None, uses R_pw alone (conservative, slower decay).
+    #[serde(default, alias = "R_load_ohm")]
+    pub r_load_ohm: Option<f64>,
+}
+
+impl PulseStretchCfg {
+    /// Compute effective time constant accounting for parallel discharge paths.
+    ///
+    /// The pulse stretch capacitor discharges through:
+    /// - R_pw (pulldown resistor to ground)
+    /// - R_load (downstream synapse input resistance)
+    ///
+    /// Effective resistance: R_eff = R_pw || R_load
+    /// Time constant: τ_eff = R_eff × C_pw
+    pub fn tau_eff_s(&self) -> f64 {
+        if !self.enable || self.c_pw_f == 0.0 {
+            return 0.0;
+        }
+
+        let r_eff = if let Some(r_load) = self.r_load_ohm {
+            // Parallel combination: 1/R_eff = 1/R_pw + 1/R_load
+            if r_load > 0.0 && self.r_pw_ohm > 0.0 {
+                (self.r_pw_ohm * r_load) / (self.r_pw_ohm + r_load)
+            } else {
+                self.r_pw_ohm
+            }
+        } else {
+            // Conservative: use R_pw alone (slower decay)
+            self.r_pw_ohm
+        };
+
+        r_eff * self.c_pw_f
+    }
+
+    /// Compute the nominal RC time constant τ = R_pw × C_pw (no load)
+    pub fn tau_s(&self) -> f64 {
+        self.r_pw_ohm * self.c_pw_f
+    }
+
+    /// Convert to the physics module config with pure exponential decay.
+    /// No hold time - decay starts when comparator output goes low.
+    pub fn to_physics_config(&self) -> crate::math_functions::neuron_physics::PulseStretchConfig {
+        if self.enable {
+            crate::math_functions::neuron_physics::PulseStretchConfig::from_tau(
+                self.tau_eff_s()
+            )
+        } else {
+            crate::math_functions::neuron_physics::PulseStretchConfig::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalogOutCfg {
     pub gain: f64,
@@ -153,6 +222,9 @@ pub struct NeuronConfig {
     pub comparator: ComparatorCfg,
     pub analog_out: AnalogOutCfg,
     pub simulation: SimCfg,
+    /// Pulse stretching circuit configuration (optional)
+    #[serde(default)]
+    pub pulse_stretch: PulseStretchCfg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

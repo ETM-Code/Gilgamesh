@@ -1,6 +1,7 @@
 use crate::math_functions::lif::relax_towards;
 use crate::math_functions::neuron_physics::compute_pulse_stretched_signal;
 use crate::network::compiled::{CompiledNetwork, ReadoutRuntimeType, StimulusChannel};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -21,6 +22,9 @@ pub struct SimulationOptions {
     /// The tau_s value is taken from the first readout or defaults to dt * 10.
     #[serde(default)]
     pub return_eligibility_traces: bool,
+    /// Return per-synapse eligibility traces for e-prop style learning.
+    #[serde(default)]
+    pub return_synapse_eligibility: bool,
 }
 
 impl Default for SimulationOptions {
@@ -34,6 +38,7 @@ impl Default for SimulationOptions {
             trace_neurons: Vec::new(),
             return_spike_proximity: false,
             return_eligibility_traces: false,
+            return_synapse_eligibility: false,
         }
     }
 }
@@ -53,6 +58,10 @@ pub struct SimulationResult {
     /// Eligibility traces: exponentially weighted membrane voltages aligned with readout tau_s.
     /// Used for proper gradient computation in training.
     pub eligibility_traces: Option<Vec<f64>>,
+    /// Per-synapse eligibility traces for e-prop style learning.
+    /// e_ij[t] = decay * e_ij[t-1] + surrogate(u_j) * x_i[t]
+    /// Indexed same as network.incoming (by synapse index).
+    pub synapse_eligibility: Option<Vec<f64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,6 +172,13 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
     } else {
         None
     };
+    // Per-synapse eligibility traces for e-prop
+    let synapse_count = network.incoming.g.len();
+    let mut synapse_eligibility = if opts.return_synapse_eligibility {
+        Some(vec![0.0; synapse_count])
+    } else {
+        None
+    };
     let mut spikes = Vec::new();
     let mut external_drive = vec![0.0; neuron_count];
     // Track which neurons spiked for spike-based transmission
@@ -176,7 +192,10 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
     let mut stimuli: Vec<StimulusRuntime> =
         stimuli_sources.iter().map(StimulusRuntime::new).collect();
 
-    // precompute exp decay factors
+    // Precompute exp decay factor for eligibility traces (constant across all timesteps)
+    let elig_decay = (-dt / eligibility_tau).exp();
+    let elig_alpha = (dt / eligibility_tau).min(1.0);
+
     if opts.record_readout {
         record_readouts(
             alpha_out,
@@ -251,6 +270,28 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             } else {
                 u_inf
             };
+
+            // Update per-synapse eligibility traces (e-prop style)
+            // e_ij[t] = decay * e_ij[t-1] + surrogate(u_j) * x_i[t]
+            if let Some(syn_elig) = synapse_eligibility.as_mut() {
+                let theta = network.neuron.theta0[neuron];
+                // Surrogate gradient: peaked around threshold
+                // Using fast sigmoid: 1 / (1 + |u - theta| / 0.5)^2
+                let surrogate = if theta > 0.0 && theta < 1.0 {
+                    let x = (u_next - theta).abs() / 0.3;
+                    1.0 / (1.0 + x).powi(2)
+                } else {
+                    1.0 // Non-spiking neurons: pass gradient through
+                };
+                // Use precomputed decay factor
+                let syn_slice = &mut syn_elig[start..end];
+                let src_slice = &network.incoming.src[start..end];
+                // Parallel update for this neuron's incoming synapses
+                syn_slice.par_iter_mut().zip(src_slice.par_iter()).for_each(|(e, &pre)| {
+                    *e = elig_decay * *e + surrogate * transmitted_signal[pre];
+                });
+            }
+
             let theta = network.neuron.theta0[neuron];
             if u_next >= theta && theta > 0.0 {
                 // simple reset on spike
@@ -290,12 +331,13 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
                     prox[neuron] += (state.u[neuron] - theta) / theta;
                 }
             }
-            // Update eligibility trace: proper low-pass filter (bounded, not accumulating)
-            // e_trace[t+1] = e_trace[t] + (dt/tau) * (u[t] - e_trace[t])
-            // This is equivalent to: e = decay * e + (1-decay) * u, keeping e bounded
+            // Update eligibility trace: exponentially-weighted transmitted signal
+            // This tracks the SAME signal used in forward pass (transmitted_signal)
+            // with exponential decay matching readout tau_s
+            // e[t] = decay * e[t-1] + alpha * transmitted[t]
             if let Some(e_trace) = eligibility_traces.as_mut() {
-                let alpha = dt / eligibility_tau;
-                e_trace[neuron] += alpha * (state.u[neuron] - e_trace[neuron]);
+                // Use precomputed alpha and decay (1 - alpha)
+                e_trace[neuron] = (1.0 - elig_alpha) * e_trace[neuron] + elig_alpha * transmitted_signal[neuron];
             }
         }
 
@@ -350,6 +392,7 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
         neuron_traces,
         spike_proximity,
         eligibility_traces,
+        synapse_eligibility,
     }
 }
 

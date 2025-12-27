@@ -2,6 +2,7 @@ use crate::network::compiled::{CompiledNetwork, LayerRuntimeType, StimulusChanne
 use crate::network::runtime::{simulate_network, SimulationOptions, SimulationResult};
 use crate::training::surrogate::SurrogateType;
 use anyhow::{anyhow, Result};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -285,108 +286,118 @@ where
     let synapse_count = network.synapse_count();
     let neuron_count = network.neuron_count();
     let mut grad = vec![0.0; synapse_count];
-    let mut neuron_error = vec![0.0; neuron_count];
     let mut logs = Vec::with_capacity(config.epochs);
 
     for epoch in 0..config.epochs {
-        grad.fill(0.0);
-        let mut total_loss = 0.0;
-        let mut total_weight = 0.0;
-
         let spacing = config.spacing_for_epoch(epoch);
         let pulse_width = config.pulse_width_for_spacing(spacing);
         let input_scale = config.input_scale.max(0.0);
 
-        for example in dataset {
-            let mut sim_opts = example.simulation.clone();
-            sim_opts.record_readout = true;
-            sim_opts.return_average = true;
-            sim_opts.return_spike_proximity = config.surrogate.enabled;
-            sim_opts.return_eligibility_traces = true; // For proper gradient computation
+        // BATCH PARALLELISM: Process all training samples in parallel
+        // Each thread computes its own local gradient, then we sum them
+        let results: Vec<_> = dataset
+            .par_iter()
+            .map(|example| {
+                let mut local_grad = vec![0.0; synapse_count];
+                let mut local_neuron_error = vec![0.0; neuron_count];
 
-            if let Some(encoder) = &example.encoder {
-                let stimuli = encoder.build_stimuli(spacing, pulse_width, input_scale);
-                let duration = encoder.suggested_duration(spacing);
-                sim_opts.stimuli_override = Some(stimuli);
-                sim_opts.t_end = sim_opts.t_end.max(duration);
-                let suggested_dt = (spacing / 20.0).max(1e-6);
-                sim_opts.dt = sim_opts.dt.min(suggested_dt);
-            }
+                let mut sim_opts = example.simulation.clone();
+                sim_opts.record_readout = true;
+                sim_opts.return_average = true;
+                sim_opts.return_spike_proximity = config.surrogate.enabled;
+                sim_opts.return_eligibility_traces = true;
+                sim_opts.return_synapse_eligibility = true;
 
-            let result = simulate_network(network, &sim_opts);
+                if let Some(encoder) = &example.encoder {
+                    let stimuli = encoder.build_stimuli(spacing, pulse_width, input_scale);
+                    let duration = encoder.suggested_duration(spacing);
+                    sim_opts.stimuli_override = Some(stimuli);
+                    sim_opts.t_end = sim_opts.t_end.max(duration);
+                    let suggested_dt = (spacing / 20.0).max(1e-6);
+                    sim_opts.dt = sim_opts.dt.min(suggested_dt);
+                }
 
-            // Use average_activity for gradient computation (simpler, avoids eligibility trace scaling issues)
-            let activity = result.average_activity.as_ref()
-                .ok_or_else(|| {
-                    anyhow!("simulation result missing average_activity")
-                })?;
+                let result = simulate_network(network, &sim_opts);
 
-
-            neuron_error.fill(0.0);
-
-            for readout in &network.readouts {
-                let target_values = match example.targets.get(&readout.id) {
-                    Some(values) => values,
-                    None => continue,
+                let activity = match result.eligibility_traces.as_ref() {
+                    Some(a) => a,
+                    None => return (local_grad, 0.0, 0.0), // Skip on error
                 };
 
-                let samples = result
-                    .readouts
-                    .get(&readout.id)
-                    .ok_or_else(|| anyhow!("simulation missing readout '{}'", readout.id))?;
+                let synapse_eligibility = match result.synapse_eligibility.as_ref() {
+                    Some(s) => s,
+                    None => return (local_grad, 0.0, 0.0),
+                };
 
-                // Use final timestep value
-                let last = samples
-                    .last()
-                    .ok_or_else(|| anyhow!("empty readout trace for '{}'", readout.id))?;
+                local_neuron_error.fill(0.0);
+                let mut local_loss = 0.0;
 
-                if last.len() != target_values.len() {
-                    return Err(anyhow!(
-                        "target size {} mismatches readout '{}' size {}",
-                        target_values.len(),
-                        readout.id,
-                        last.len()
-                    ));
+                for readout in &network.readouts {
+                    let target_values = match example.targets.get(&readout.id) {
+                        Some(values) => values,
+                        None => continue,
+                    };
+
+                    let samples = match result.readouts.get(&readout.id) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+
+                    let num_outputs = target_values.len();
+                    if samples.is_empty() || samples[0].len() != num_outputs {
+                        continue;
+                    }
+
+                    // Max-over-time readout
+                    let max_over_time: Vec<f64> = (0..num_outputs)
+                        .map(|i| samples.iter().map(|s| s[i]).fold(f64::NEG_INFINITY, f64::max))
+                        .collect();
+
+                    let temperature = 10.0;
+                    let max_z = max_over_time.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let scaled: Vec<f64> = max_over_time.iter().map(|z| (z - max_z) / temperature).collect();
+                    let exp_sum: f64 = scaled.iter().map(|z| z.exp()).sum();
+                    let softmax: Vec<f64> = scaled.iter().map(|z| z.exp() / exp_sum).collect();
+
+                    let target_class = target_values.iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+
+                    local_loss += -(softmax[target_class] + EPS).ln() * example.weight;
+
+                    for (local_idx, &neuron_idx) in readout.indices.iter().enumerate() {
+                        let grad = (softmax[local_idx] - target_values[local_idx]) / temperature;
+                        local_neuron_error[neuron_idx] += grad;
+                    }
                 }
 
-                // Softmax + CrossEntropy loss with fixed temperature
-                // Logits are large (100-200V) so we need temperature ~10-20 to get reasonable gradients
-                let temperature = 10.0;
+                backpropagate(
+                    network,
+                    &mut local_grad,
+                    &mut local_neuron_error,
+                    activity,
+                    synapse_eligibility,
+                    &result,
+                    &config.surrogate,
+                    example.weight,
+                );
 
-                let max_z = last.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                let scaled: Vec<f64> = last.iter().map(|z| (z - max_z) / temperature).collect();
-                let exp_sum: f64 = scaled.iter().map(|z| z.exp()).sum();
-                let softmax: Vec<f64> = scaled.iter().map(|z| z.exp() / exp_sum).collect();
+                (local_grad, local_loss, example.weight)
+            })
+            .collect();
 
-                // Find target class (index of max in one-hot)
-                let target_class = target_values.iter()
-                    .enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-
-                // CE loss: -log(p_target)
-                total_loss += -(softmax[target_class] + EPS).ln() * example.weight;
-
-                // Gradient: softmax - target
-                // Note: Temperature scaling affects the softmax but for learning we use standard gradient
-                for (local_idx, &neuron_idx) in readout.indices.iter().enumerate() {
-                    let grad = softmax[local_idx] - target_values[local_idx];
-                    neuron_error[neuron_idx] += grad;
-                }
+        // Sum all local gradients and losses
+        grad.fill(0.0);
+        let mut total_loss = 0.0;
+        let mut total_weight = 0.0;
+        for (local_grad, local_loss, weight) in results {
+            for (g, lg) in grad.iter_mut().zip(local_grad.iter()) {
+                *g += lg;
             }
-
-            backpropagate(
-                network,
-                &mut grad,
-                &mut neuron_error,
-                activity,
-                &result,
-                &config.surrogate,
-                example.weight,
-            );
-
-            total_weight += example.weight;
+            total_loss += local_loss;
+            total_weight += weight;
         }
 
         if total_weight <= EPS {
@@ -410,7 +421,8 @@ fn backpropagate(
     network: &CompiledNetwork,
     grad: &mut [f64],
     neuron_error: &mut [f64],
-    activity: &[f64],
+    _activity: &[f64],  // Kept for potential fallback; e-prop uses synapse_eligibility
+    synapse_eligibility: &[f64],
     result: &SimulationResult,
     surrogate_config: &SurrogateConfig,
     weight: f64,
@@ -421,7 +433,7 @@ fn backpropagate(
     let g = &network.incoming.g;
     let thresholds = &network.neuron.theta0;
 
-    // Get spike proximity if available for surrogate gradient
+    // Get spike proximity if available for surrogate gradient (used for error backprop)
     let spike_proximity = result.spike_proximity.as_ref();
 
     for layer in layers.iter().rev() {
@@ -441,24 +453,81 @@ fn backpropagate(
                 continue;
             }
 
-            // Compute surrogate gradient scaling for this neuron
+            // Compute surrogate gradient scaling for error backpropagation
             // Only apply to hidden layers - output layers use analog voltage readout
             let surrogate_scale = if surrogate_config.enabled && is_hidden_layer {
                 if let Some(prox) = spike_proximity {
-                    // prox[neuron] is the average normalized distance from threshold: (u - theta) / theta
-                    // Convert back to absolute distance for surrogate: u - theta = prox * theta
                     let theta = thresholds[neuron];
                     let u_minus_theta = prox[neuron] * theta;
-                    // Compute surrogate gradient at this average distance
                     surrogate_config.surrogate.gradient(u_minus_theta + theta, theta)
                 } else {
-                    1.0 // No proximity data, use unit scaling
+                    1.0
                 }
             } else {
-                1.0 // Surrogate disabled or output layer (analog)
+                1.0
             };
 
-            // Scale by surrogate gradient (spytorch-style, no dt scaling)
+            let in_start = row_ptr[neuron];
+            let in_end = row_ptr[neuron + 1];
+            for edge_idx in in_start..in_end {
+                let pre = src[edge_idx];
+                // E-PROP: Use per-synapse eligibility trace for weight gradient
+                // synapse_eligibility already contains surrogate(post) * pre_activity with temporal weighting
+                // So we multiply by error directly, not scaled_err
+                grad[edge_idx] += weight * err * synapse_eligibility[edge_idx];
+                // Error backpropagation still uses surrogate scaling
+                neuron_error[pre] += err * surrogate_scale * g[edge_idx];
+            }
+            neuron_error[neuron] = 0.0;
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn backpropagate_old(
+    network: &CompiledNetwork,
+    grad: &mut [f64],
+    neuron_error: &mut [f64],
+    activity: &[f64],
+    result: &SimulationResult,
+    surrogate_config: &SurrogateConfig,
+    weight: f64,
+) {
+    let layers = &network.layers;
+    let row_ptr = &network.incoming.row_ptr;
+    let src = &network.incoming.src;
+    let g = &network.incoming.g;
+    let thresholds = &network.neuron.theta0;
+    let spike_proximity = result.spike_proximity.as_ref();
+
+    for layer in layers.iter().rev() {
+        let start = layer.offset;
+        let end = start + layer.size;
+
+        if matches!(layer.layer_type, LayerRuntimeType::Input) {
+            continue;
+        }
+
+        let is_hidden_layer = matches!(layer.layer_type, LayerRuntimeType::Hidden);
+
+        for neuron in start..end {
+            let err = neuron_error[neuron];
+            if err.abs() < EPS {
+                continue;
+            }
+
+            let surrogate_scale = if surrogate_config.enabled && is_hidden_layer {
+                if let Some(prox) = spike_proximity {
+                    let theta = thresholds[neuron];
+                    let u_minus_theta = prox[neuron] * theta;
+                    surrogate_config.surrogate.gradient(u_minus_theta + theta, theta)
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+
             let scaled_err = err * surrogate_scale;
 
             let in_start = row_ptr[neuron];

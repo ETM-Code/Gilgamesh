@@ -11,6 +11,7 @@
 pub mod config;
 pub mod fidelity;
 pub mod multifidelity;
+pub mod noise;
 pub mod presets;
 pub mod qat;
 pub mod quantize;

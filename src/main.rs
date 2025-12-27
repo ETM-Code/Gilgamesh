@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json;
 
 use gilgamesh::network::compiled::{CompiledLayer, CompiledNetwork, LayerRuntimeType};
-use gilgamesh::network::compiler::compile_design;
+use gilgamesh::network::compiler::{compile_design, randomize_weights};
 use gilgamesh::network::design::{Design, TrainingConfigDefaults};
 use gilgamesh::network::runtime::{simulate_network, SimulationOptions, SimulationResult};
 use gilgamesh::network::training::{
@@ -95,6 +95,12 @@ enum Commands {
         target_readout: Option<String>,
         #[arg(long)]
         input_layer: Option<String>,
+        /// Random seed for weight initialization (omit to use random entropy)
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Skip random weight initialization (use uniform weights)
+        #[arg(long)]
+        no_randomize: bool,
     },
     Visualize {
         #[arg(long, default_value = DEFAULT_DESIGN_PATH)]
@@ -227,6 +233,8 @@ fn main() -> Result<()> {
             sample_limit,
             target_readout,
             input_layer,
+            seed,
+            no_randomize,
         } => {
             let design_path = design;
             let design = load_design(&design_path)?;
@@ -286,15 +294,26 @@ fn main() -> Result<()> {
                     .as_ref()
                     .map(|d| d.join("latest.json"))
             };
+            let mut resumed = false;
             if let Some(resume_path) = resume_path {
                 if resume_path.exists() {
                     compiled = load_compiled_network(&resume_path)?;
                     println!("resumed weights from {}", resume_path.display());
+                    resumed = true;
                 } else {
                     println!(
                         "warning: resume checkpoint {} not found; starting from fresh compile",
                         resume_path.display()
                     );
+                }
+            }
+
+            // Randomize weights if not resuming and not explicitly disabled
+            if !resumed && !no_randomize {
+                randomize_weights(&mut compiled, seed);
+                match seed {
+                    Some(s) => println!("initialized weights with seed {}", s),
+                    None => println!("initialized weights with random seed"),
                 }
             }
 

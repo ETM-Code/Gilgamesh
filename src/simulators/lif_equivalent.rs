@@ -1,4 +1,7 @@
 use crate::math_functions::lif::{adapt, crossing_time, relax_towards};
+use crate::math_functions::neuron_physics::{
+    compute_comparator_with_pulse_stretch, ComparatorConfig, PulseStretchConfig,
+};
 use crate::simulators::config::{
     AnalogOutCfg, ComparatorCfg, Membrane, NetworkConfig, NeuronConfig, SimCfg, Synapse,
     SynapseType,
@@ -49,6 +52,8 @@ pub struct EquivalentNeuron {
     synapse_names: Arc<Vec<Arc<str>>>,
     pub tau_membrane: f64,
     pub comparator_high: f64,
+    /// Pulse stretching configuration for RC decay
+    pub pulse_stretch: PulseStretchConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +162,7 @@ impl EquivalentNeuron {
 
         let (synapses, synapse_names) = build_synapse_runtimes(&network.synapses);
 
+        let tau_membrane = neuron.membrane.c_mem_f * neuron.membrane.r_leak_ohm;
         Self {
             membrane: neuron.membrane.clone(),
             comparator: neuron.comparator.clone(),
@@ -166,9 +172,10 @@ impl EquivalentNeuron {
             sim: neuron.simulation.clone(),
             synapses,
             synapse_names,
-            tau_membrane: neuron.membrane.c_mem_f * neuron.membrane.r_leak_ohm,
+            tau_membrane,
             comparator_high: (neuron.comparator.vhigh_v - COMPARATOR_RAIL_DROP_V)
                 .max(neuron.comparator.vlow_v),
+            pulse_stretch: neuron.pulse_stretch.to_physics_config(),
         }
     }
 
@@ -282,15 +289,21 @@ impl EquivalentNeuron {
 
             let u_next = relax_towards(u, u_inf, self.tau_membrane, dt);
 
-            // Comparator logic
-            let mut v_comp_next = v_comp;
-            if v_comp_next <= self.comparator.vlow_v + 1e-9 {
-                if u_next > theta_eff {
-                    v_comp_next = self.comparator_high;
-                }
-            } else if u_next <= theta_eff {
-                v_comp_next = self.comparator.vlow_v;
-            }
+            // Comparator logic with pulse stretching (unified physics)
+            let comp_physics_cfg = ComparatorConfig {
+                v_low: self.comparator.vlow_v,
+                v_high: self.comparator_high,
+                offset: 0.0, // offset already included in theta_eff
+            };
+            let comp_result = compute_comparator_with_pulse_stretch(
+                u_next,
+                theta_eff,
+                v_comp,
+                &comp_physics_cfg,
+                &self.pulse_stretch,
+                dt,
+            );
+            let v_comp_next = comp_result.v_comp;
 
             let theta_target =
                 if v_comp_next > (self.comparator.vlow_v + self.comparator.vhigh_v) * 0.5 {

@@ -111,6 +111,28 @@ cargo run -- train --epochs 1 --sample-limit 10
 
 For further analysis you can read `visualization.json` in a Python notebook or other tools, leveraging the timestamps, readout vectors, and neuron traces that the runtime captures.
 
+## Pulse Stretch Configuration
+
+The pulse stretch circuit extends spike duration for meaningful charge transfer to downstream neurons.
+
+```json
+"pulse_stretch": {
+  "enable": true,
+  "R_pw_ohm": 20000,
+  "C_pw_F": 1e-7,
+  "R_load_ohm": 10000
+}
+```
+
+Parameters:
+- `R_pw_ohm`: Pulldown resistor (determines decay when no load)
+- `C_pw_F`: Pulse capacitor
+- `R_load_ohm`: Optional load resistance (accounts for parallel discharge path)
+
+The effective time constant is: τ_eff = (R_pw || R_load) × C_pw
+
+Example: R_pw=20kΩ, R_load=10kΩ, C_pw=100nF → τ_eff = 6.67kΩ × 100nF = 0.67ms
+
 ## SPICE vs. Rust Comparator (Python harness)
 
 Prereqs: ngspice on PATH; Python 3.11 recommended. Install matplotlib if you want plots (otherwise they are skipped).

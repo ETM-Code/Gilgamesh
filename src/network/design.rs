@@ -158,9 +158,11 @@ pub struct ConnectSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "rule", rename_all = "lowercase")]
+#[serde(tag = "rule", rename_all = "snake_case")]
 pub enum ConnectRule {
     Dense,
+    /// Dense connectivity but excludes self-connections (for lateral inhibition).
+    DenseNoSelf,
     FixedFanIn {
         #[serde(alias = "k", alias = "fan_in")]
         fan_in: usize,

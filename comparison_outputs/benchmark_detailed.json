@@ -1,42 +1,46 @@
 {
   "rust": {
-    "max_s": 0.04616404097760096,
-    "mean_ms_per_sample": 0.0010678457814438935,
-    "mean_s": 0.04616404097760096,
-    "median_s": 0.04616404097760096,
-    "min_s": 0.04616404097760096,
+    "max_s": 0.902500166092068,
+    "mean_ms_per_sample": 0.020343533261773728,
+    "mean_s": 0.902500166092068,
+    "median_s": 0.902500166092068,
+    "min_s": 0.902500166092068,
     "runs": 1.0,
-    "sample_count": 43231.0,
-    "samples_per_second": 936464.8129693826,
-    "total_s": 0.04616404097760096
+    "sample_count": 44363.0,
+    "samples_per_second": 49155.66962397028,
+    "total_s": 0.902500166092068
   },
-  "rust_speedup_vs_spice_sim": 291.1212795411689,
+  "rust_speedup_vs_spice_sim": 193.7302826386921,
   "rust_timings": {
-    "rust_analysis_ns": 909875,
-    "rust_preprocess_ns": 11708,
-    "rust_serialization_ns": 0,
-    "rust_simulate_ns": 1409166
+    "rust_analysis_ns": 1838292,
+    "rust_preprocess_ns": 1083,
+    "rust_serialization_ns": 70482250,
+    "rust_simulate_ns": 2831583,
+    "spice_parse_ns": 40436541,
+    "spice_post_ns": null,
+    "spice_preprocess_ns": 126719124,
+    "spice_simulate_ns": 548563374
   },
   "spice": {
     "preprocess": {
-      "max_s": 0.07778654200956225,
-      "mean_s": 0.07778654200956225,
-      "median_s": 0.07778654200956225,
-      "min_s": 0.07778654200956225,
+      "max_s": 0.12671912484802306,
+      "mean_s": 0.12671912484802306,
+      "median_s": 0.12671912484802306,
+      "min_s": 0.12671912484802306,
       "runs": 1.0,
-      "total_s": 0.07778654200956225
+      "total_s": 0.12671912484802306
     },
     "simulate": {
-      "max_s": 0.4102382090059109,
-      "mean_s": 0.4102382090059109,
-      "median_s": 0.4102382090059109,
-      "min_s": 0.4102382090059109,
+      "max_s": 0.5485633749049157,
+      "mean_s": 0.5485633749049157,
+      "median_s": 0.5485633749049157,
+      "min_s": 0.5485633749049157,
       "runs": 1.0,
-      "total_s": 0.4102382090059109
+      "total_s": 0.5485633749049157
     }
   },
   "spice_timings": {
-    "preprocess_ns": 77786542,
-    "simulate_ns": 410238209
+    "preprocess_ns": 126719124,
+    "simulate_ns": 548563374
   }
 }
