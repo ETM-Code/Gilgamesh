@@ -91,6 +91,10 @@ enum Commands {
         /// Save visualization to .rrd file instead of spawning viewer
         #[arg(long)]
         visualize_file: Option<String>,
+
+        /// Save checkpoint to this path after training
+        #[arg(long)]
+        save_checkpoint: Option<String>,
     },
 
     /// Evaluate a trained model
@@ -175,10 +179,11 @@ fn main() -> Result<()> {
             weight_noise,
             visualize,
             visualize_file,
+            save_checkpoint,
         } => {
             // If config file is provided, load from it; otherwise use CLI args
             if let Some(config_path) = config {
-                train_from_config(&config_path, &data_dir, visualize, visualize_file)
+                train_from_config(&config_path, &data_dir, visualize, visualize_file, save_checkpoint)
             } else {
                 // Build config from CLI args
                 let mut cfg = Config::default();
@@ -194,7 +199,7 @@ fn main() -> Result<()> {
                 cfg.quantization.bits = quantize_bits;
                 cfg.noise.enabled = noise;
                 cfg.noise.weight_std = weight_noise;
-                train_with_config(&cfg, &data_dir, visualize, visualize_file)
+                train_with_config(&cfg, &data_dir, visualize, visualize_file, save_checkpoint)
             }
         }
         Commands::Evaluate {
@@ -226,11 +231,12 @@ fn train_from_config(
     data_dir: &str,
     visualize: bool,
     visualize_file: Option<String>,
+    save_checkpoint: Option<String>,
 ) -> Result<()> {
     let cfg = Config::load(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
     println!("Loaded config from: {}", config_path);
-    train_with_config(&cfg, data_dir, visualize, visualize_file)
+    train_with_config(&cfg, data_dir, visualize, visualize_file, save_checkpoint)
 }
 
 /// Train using a Config struct
@@ -239,6 +245,7 @@ fn train_with_config(
     data_dir: &str,
     visualize: bool,
     visualize_file: Option<String>,
+    save_checkpoint: Option<String>,
 ) -> Result<()> {
     println!("=== gilgamesh Training ===");
     println!("Mode:           {}", cfg.mode);
@@ -469,7 +476,27 @@ fn train_with_config(
     println!();
     println!("=== Training Complete ===");
     println!("Best Test Accuracy: {:.2}%", best_test_acc);
-    println!("Final Test Accuracy: {:.2}%", trainer.evaluate(&dataset));
+    let final_test_acc = trainer.evaluate(&dataset);
+    println!("Final Test Accuracy: {:.2}%", final_test_acc);
+
+    // Save checkpoint if requested
+    if let Some(ref checkpoint_path) = save_checkpoint {
+        use gilgamesh::checkpoint::{Checkpoint, TrainingMetadata};
+
+        let metadata = TrainingMetadata {
+            epochs_trained: cfg.training.epochs,
+            final_train_accuracy: best_test_acc, // Using best as a proxy
+            final_test_accuracy: final_test_acc,
+            final_loss: None,
+            config_file: None,
+        };
+
+        let checkpoint = Checkpoint::from_network(&trainer.network, Some(metadata));
+        checkpoint.save(checkpoint_path)
+            .with_context(|| format!("Failed to save checkpoint to {}", checkpoint_path))?;
+
+        println!("Checkpoint saved to: {}", checkpoint_path);
+    }
 
     Ok(())
 }

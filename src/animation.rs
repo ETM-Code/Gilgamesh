@@ -403,75 +403,30 @@ fn view(app: &App, model: &Model, frame: Frame) {
             .stroke(rgba(0.8, 0.8, 0.9, 0.6));
     }
 
-    // Draw layer labels
+    // Draw legend in corner (simplified to avoid text rendering issues)
     let win = app.window_rect();
-    let num_layers = anim.layer_sizes.len();
-    let margin = 80.0;
-    let usable_width = win.w() - 2.0 * margin;
-    let layer_spacing = if num_layers > 1 {
-        usable_width / (num_layers - 1) as f32
-    } else {
-        0.0
-    };
+    let legend_x = win.w() / 2.0 - 80.0;
+    let legend_y = -win.h() / 2.0 + 60.0;
 
-    let labels = ["Input", "Hidden 1", "Hidden 2", "Output"];
-    for (i, &size) in anim.layer_sizes.iter().enumerate() {
-        let x = -win.w() / 2.0 + margin + i as f32 * layer_spacing;
-        let label = if i < labels.len() {
-            format!("{}\n({})", labels[i], size)
-        } else {
-            format!("Layer {}\n({})", i, size)
-        };
-
-        draw.text(&label)
-            .x_y(x, win.h() / 2.0 - 30.0)
-            .color(rgba(0.7, 0.7, 0.8, 0.9))
-            .font_size(14);
-    }
-
-    // Draw title
-    draw.text("gilgamesh - Spiking Neural Network")
-        .x_y(0.0, win.h() / 2.0 - 10.0)
-        .color(rgba(0.9, 0.9, 1.0, 0.8))
-        .font_size(18);
-
-    // Draw legend
-    let legend_x = win.w() / 2.0 - 120.0;
-    let legend_y = -win.h() / 2.0 + 80.0;
-
-    draw.text("Legend:")
-        .x_y(legend_x, legend_y + 40.0)
-        .color(rgba(0.7, 0.7, 0.8, 0.8))
-        .font_size(12);
-
+    // Spike indicator
     draw.ellipse()
-        .x_y(legend_x - 40.0, legend_y + 20.0)
+        .x_y(legend_x - 30.0, legend_y + 20.0)
         .radius(6.0)
         .color(rgb(1.0, 1.0, 0.8));
-    draw.text("Spike")
-        .x_y(legend_x, legend_y + 20.0)
-        .color(rgba(0.7, 0.7, 0.8, 0.8))
-        .font_size(11);
 
+    // Excitatory line
     draw.line()
-        .start(pt2(legend_x - 50.0, legend_y))
-        .end(pt2(legend_x - 30.0, legend_y))
+        .start(pt2(legend_x - 40.0, legend_y))
+        .end(pt2(legend_x - 20.0, legend_y))
         .weight(2.0)
         .color(rgb(0.2, 0.4, 0.8));
-    draw.text("Excitatory")
-        .x_y(legend_x + 10.0, legend_y)
-        .color(rgba(0.7, 0.7, 0.8, 0.8))
-        .font_size(11);
 
+    // Inhibitory line
     draw.line()
-        .start(pt2(legend_x - 50.0, legend_y - 20.0))
-        .end(pt2(legend_x - 30.0, legend_y - 20.0))
+        .start(pt2(legend_x - 40.0, legend_y - 20.0))
+        .end(pt2(legend_x - 20.0, legend_y - 20.0))
         .weight(2.0)
         .color(rgb(0.8, 0.2, 0.3));
-    draw.text("Inhibitory")
-        .x_y(legend_x + 10.0, legend_y - 20.0)
-        .color(rgba(0.7, 0.7, 0.8, 0.8))
-        .font_size(11);
 
     draw.to_frame(app, &frame).unwrap();
 }
