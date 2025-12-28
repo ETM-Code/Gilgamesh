@@ -159,17 +159,29 @@ impl NetworkAnimation {
     /// Set weights from weight matrices (creates synapses)
     pub fn set_weights(&mut self, weights: &[Vec<Vec<f32>>]) {
         self.synapses.clear();
+        let num_neurons = self.neurons.len();
 
         let mut from_offset = 0;
         for (layer_idx, weight_matrix) in weights.iter().enumerate() {
+            if layer_idx >= self.layer_sizes.len() {
+                break;
+            }
             let to_offset = from_offset + self.layer_sizes[layer_idx];
 
             for (to_idx, row) in weight_matrix.iter().enumerate() {
                 for (from_idx, &weight) in row.iter().enumerate() {
+                    let from = from_offset + from_idx;
+                    let to = to_offset + to_idx;
+
+                    // Bounds check
+                    if from >= num_neurons || to >= num_neurons {
+                        continue;
+                    }
+
                     if weight.abs() > 0.01 {
                         self.synapses.push(SynapseVisual {
-                            from: from_offset + from_idx,
-                            to: to_offset + to_idx,
+                            from,
+                            to,
                             weight: weight.abs(),
                             excitatory: weight > 0.0,
                             propagation: 0.0,
@@ -211,6 +223,9 @@ impl NetworkAnimation {
 
         // Update spike propagation on synapses
         for synapse in &mut self.synapses {
+            if synapse.from >= self.neurons.len() {
+                continue;
+            }
             let from_neuron = &self.neurons[synapse.from];
             if from_neuron.spiking {
                 synapse.propagation = 0.0;
@@ -288,6 +303,10 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
     // Draw synapses
     for synapse in &anim.synapses {
+        // Bounds check
+        if synapse.from >= anim.neurons.len() || synapse.to >= anim.neurons.len() {
+            continue;
+        }
         let from = &anim.neurons[synapse.from];
         let to = &anim.neurons[synapse.to];
 

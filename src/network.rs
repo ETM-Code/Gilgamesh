@@ -847,6 +847,74 @@ impl Network {
     pub fn num_parameters(&self) -> usize {
         self.fc1.num_parameters() + self.fc2.num_parameters()
     }
+
+    /// Forward pass with full simulation trace for visualization/analysis
+    ///
+    /// Captures per-timestep membrane potentials, spikes, and currents
+    /// for both hidden and output layers. Useful for debugging,
+    /// visualization, and comparison with SPICE simulation.
+    ///
+    /// Args:
+    ///   input: [batch, features] - presented at each timestep
+    ///   num_steps: number of timesteps
+    ///
+    /// Returns:
+    ///   SimulationTrace containing full history of network activity
+    pub fn forward_traced(
+        &self,
+        input: &Array2<f32>,
+        num_steps: usize,
+    ) -> SimulationTrace {
+        let batch_size = input.shape()[0];
+        let mut state = self.init_state(batch_size);
+
+        let mut hidden_mem_history = Vec::with_capacity(num_steps);
+        let mut output_mem_history = Vec::with_capacity(num_steps);
+        let mut hidden_spike_history = Vec::with_capacity(num_steps);
+        let mut output_spike_history = Vec::with_capacity(num_steps);
+        let mut hidden_current_history = Vec::with_capacity(num_steps);
+        let mut output_current_history = Vec::with_capacity(num_steps);
+
+        let mut spike_count = Array2::zeros((batch_size, self.lif2.size));
+
+        for _ in 0..num_steps {
+            // Layer 1: FC -> LIF
+            let cur1 = self.fc1.forward(input);
+            let (spk1, lif1_state, _) = self.lif1.forward(&cur1, &state.lif1_state);
+
+            // Record hidden layer state
+            hidden_current_history.push(cur1);
+            hidden_mem_history.push(lif1_state.mem.clone());
+            hidden_spike_history.push(spk1.clone());
+
+            // Layer 2: FC -> LIF
+            let cur2 = self.fc2.forward(&spk1);
+            let (spk2, lif2_state, _) = self.lif2.forward(&cur2, &state.lif2_state);
+
+            // Record output layer state
+            output_current_history.push(cur2);
+            output_mem_history.push(lif2_state.mem.clone());
+            output_spike_history.push(spk2.clone());
+
+            spike_count += &spk2;
+
+            state = NetworkState {
+                lif1_state,
+                lif2_state,
+            };
+        }
+
+        SimulationTrace {
+            hidden_mem_history,
+            output_mem_history,
+            hidden_spike_history,
+            output_spike_history,
+            hidden_current_history,
+            output_current_history,
+            output_spike_count: spike_count,
+            output_final_mem: state.lif2_state.mem,
+        }
+    }
 }
 
 /// Network state (membrane potentials)
@@ -951,6 +1019,68 @@ impl NetworkGradients {
             self.scale(scale);
         }
         total_norm
+    }
+}
+
+/// Detailed trace of network simulation for visualization and analysis
+///
+/// Captures per-timestep membrane potentials, spikes, and currents for
+/// debugging, visualization, and comparison with SPICE simulation.
+#[derive(Clone, Debug)]
+pub struct SimulationTrace {
+    /// Membrane potentials over time for hidden layer [timestep][batch, neuron]
+    pub hidden_mem_history: Vec<Array2<f32>>,
+    /// Membrane potentials over time for output layer [timestep][batch, neuron]
+    pub output_mem_history: Vec<Array2<f32>>,
+    /// Spike events over time for hidden layer [timestep][batch, neuron]
+    pub hidden_spike_history: Vec<Array2<f32>>,
+    /// Spike events over time for output layer [timestep][batch, neuron]
+    pub output_spike_history: Vec<Array2<f32>>,
+    /// Input currents to hidden layer [timestep][batch, neuron]
+    pub hidden_current_history: Vec<Array2<f32>>,
+    /// Input currents to output layer [timestep][batch, neuron]
+    pub output_current_history: Vec<Array2<f32>>,
+    /// Final accumulated spike counts for output [batch, neuron]
+    pub output_spike_count: Array2<f32>,
+    /// Final membrane potential for output [batch, neuron]
+    pub output_final_mem: Array2<f32>,
+}
+
+impl SimulationTrace {
+    /// Get prediction for each sample in the batch (argmax of spike counts)
+    pub fn predictions(&self) -> Vec<usize> {
+        self.output_spike_count
+            .rows()
+            .into_iter()
+            .map(|row| {
+                row.iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            })
+            .collect()
+    }
+
+    /// Get spike counts as probabilities (normalized)
+    pub fn probabilities(&self) -> Array2<f32> {
+        let mut probs = self.output_spike_count.clone();
+        for mut row in probs.rows_mut() {
+            let sum: f32 = row.iter().sum();
+            if sum > 0.0 {
+                row.mapv_inplace(|x| x / sum);
+            } else {
+                // Uniform distribution if no spikes
+                let uniform = 1.0 / row.len() as f32;
+                row.fill(uniform);
+            }
+        }
+        probs
+    }
+
+    /// Number of timesteps in the trace
+    pub fn num_timesteps(&self) -> usize {
+        self.hidden_mem_history.len()
     }
 }
 
