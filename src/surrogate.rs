@@ -103,6 +103,17 @@ impl SurrogateGradient {
     pub fn backward_batch(&self, x: &[f32]) -> Vec<f32> {
         x.iter().map(|&v| self.backward(v)).collect()
     }
+
+    /// Get the slope/sharpness parameter for this surrogate gradient
+    pub fn slope(&self) -> f32 {
+        match self {
+            SurrogateGradient::FastSigmoid { slope } => *slope,
+            SurrogateGradient::ATan { alpha } => *alpha,
+            SurrogateGradient::Sigmoid { slope } => *slope,
+            SurrogateGradient::StraightThrough => 1.0,
+            SurrogateGradient::Triangular { threshold } => *threshold,
+        }
+    }
 }
 
 /// Spike function with surrogate gradient

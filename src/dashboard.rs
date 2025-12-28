@@ -17,6 +17,7 @@ use egui_plot::{Line, Plot, PlotPoints};
 use std::sync::{Arc, Mutex};
 
 /// Training metrics collected during training
+#[cfg(feature = "dashboard")]
 #[derive(Clone, Default)]
 pub struct TrainingMetrics {
     /// Loss per epoch
@@ -41,6 +42,7 @@ pub struct TrainingMetrics {
     pub best_test_acc: f64,
 }
 
+#[cfg(feature = "dashboard")]
 impl TrainingMetrics {
     pub fn new(total_epochs: usize, architecture: String) -> Self {
         Self {

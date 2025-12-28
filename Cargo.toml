@@ -13,6 +13,8 @@ blas-openblas = ["ndarray/blas", "dep:blas-src", "blas-src/openblas"]      # Lin
 visualization = ["dep:rerun"]
 # Interactive dashboard with egui
 dashboard = ["dep:eframe", "dep:egui", "dep:egui_plot"]
+# Stunning network animations with nannou
+animation = ["dep:nannou"]
 
 [dependencies]
 # Linear algebra (BLAS optional via features)
@@ -47,6 +49,9 @@ rerun = { version = "0.21", optional = true }
 eframe = { version = "0.29", optional = true }
 egui = { version = "0.29", optional = true }
 egui_plot = { version = "0.29", optional = true }
+
+# Animation (optional)
+nannou = { version = "0.19", optional = true }
 
 [profile.release]
 opt-level = 3

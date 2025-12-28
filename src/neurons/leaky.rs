@@ -240,6 +240,22 @@ impl NeuronMode {
             }
         }
     }
+
+    /// Get tau_m (returns None for Simple mode)
+    pub fn tau_m(&self) -> Option<f32> {
+        match self {
+            NeuronMode::Simple => None,
+            NeuronMode::Physics { tau_m, .. } => Some(*tau_m),
+        }
+    }
+
+    /// Get dt (returns None for Simple mode)
+    pub fn dt(&self) -> Option<f32> {
+        match self {
+            NeuronMode::Simple => None,
+            NeuronMode::Physics { dt, .. } => Some(*dt),
+        }
+    }
 }
 
 /// Leaky Integrate-and-Fire neuron layer

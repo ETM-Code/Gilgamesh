@@ -133,6 +133,25 @@ enum Commands {
         #[arg(long, default_value = "./data")]
         data_dir: String,
     },
+
+    /// Launch stunning network animation (requires --features animation)
+    Animate {
+        /// Path to JSON config file
+        #[arg(long)]
+        config: Option<String>,
+
+        /// Data directory (for loading sample images)
+        #[arg(long, default_value = "./data")]
+        data_dir: String,
+
+        /// Animation speed multiplier
+        #[arg(long, default_value = "1.0")]
+        speed: f32,
+
+        /// Sample index to animate (from test set)
+        #[arg(long, default_value = "0")]
+        sample: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -192,6 +211,12 @@ fn main() -> Result<()> {
             epochs,
             data_dir,
         } => run_dashboard(config, epochs, &data_dir),
+        Commands::Animate {
+            config,
+            data_dir,
+            speed,
+            sample,
+        } => run_animation(config, &data_dir, speed, sample),
     }
 }
 
@@ -664,5 +689,172 @@ fn run_training_for_dashboard(
 #[cfg(not(feature = "dashboard"))]
 fn run_dashboard(_config: Option<String>, _epochs: usize, _data_dir: &str) -> Result<()> {
     println!("Dashboard feature not enabled. Rebuild with --features dashboard");
+    Ok(())
+}
+
+/// Run the stunning network animation
+#[cfg(feature = "animation")]
+fn run_animation(config: Option<String>, data_dir: &str, speed: f32, sample: usize) -> Result<()> {
+    use gilgamesh::animation::{create_shared_animation, run_animation as run_nannou, NetworkAnimation};
+    use std::thread;
+    use std::time::Duration;
+
+    // Load config
+    let cfg = if let Some(ref path) = config {
+        Config::load(path).with_context(|| format!("Failed to load config from {}", path))?
+    } else {
+        Config::default()
+    };
+
+    // Load dataset
+    println!("Loading MNIST dataset...");
+    let dataset = gilgamesh::data::MnistDataset::load(data_dir)
+        .context("Failed to load MNIST dataset")?;
+
+    // Create network
+    let input_size = dataset.feature_dim();
+    let hidden_size = cfg.network.hidden_size;
+    let output_size = cfg.network.output_size;
+    let beta = cfg.neuron.beta;
+    let seed = cfg.training.seed;
+
+    println!("Creating network: {} → {} → {}", input_size, hidden_size, output_size);
+    let network = Network::new(input_size, hidden_size, output_size, beta, seed);
+
+    // Get sample from test set
+    let test_images = &dataset.test_images;
+    let test_labels = &dataset.test_labels;
+    let sample_idx = sample.min(test_images.nrows() - 1);
+    let sample_image = test_images.row(sample_idx).to_owned();
+    let sample_label = test_labels[sample_idx];
+
+    println!("Animating sample {} (label: {})", sample_idx, sample_label);
+
+    // Create shared animation state
+    let animation = create_shared_animation(&[input_size, hidden_size, output_size]);
+
+    // Set animation speed
+    {
+        let mut anim = animation.lock().unwrap();
+        anim.speed = speed;
+    }
+
+    // Clone for simulation thread
+    let animation_clone = animation.clone();
+    let num_steps = cfg.training.num_steps;
+
+    // Spawn simulation thread
+    thread::spawn(move || {
+        let sample_batch = sample_image.insert_axis(ndarray::Axis(0));
+
+        // Run network step by step, updating animation
+        let state1 = network.lif1.init_state(1);
+        let state2 = network.lif2.init_state(1);
+
+        let mut hidden_state = state1;
+        let mut output_state = state2;
+
+        // Convert weights to nested Vec for animation
+        let fc1_weights: Vec<Vec<f32>> = network.fc1.weight
+            .outer_iter()
+            .map(|row| row.to_vec())
+            .collect();
+        let fc2_weights: Vec<Vec<f32>> = network.fc2.weight
+            .outer_iter()
+            .map(|row| row.to_vec())
+            .collect();
+
+        // Set weights (sample a subset for visualization)
+        {
+            let mut anim = animation_clone.lock().unwrap();
+            anim.set_weights(&[fc1_weights.clone(), fc2_weights.clone()]);
+        }
+
+        for step in 0..num_steps {
+            // Forward through network
+            let fc1_out = network.fc1.forward(&sample_batch);
+            let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
+            hidden_state = new_hidden_state;
+
+            let fc2_out = network.fc2.forward(&hidden_spikes);
+            let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
+            output_state = new_output_state;
+
+            // Update animation state
+            {
+                let mut anim = animation_clone.lock().unwrap();
+
+                // Build membrane and spike vectors for each layer
+                let input_mem: Vec<f32> = sample_batch.row(0).to_vec();
+                let hidden_mem: Vec<f32> = hidden_state.mem.row(0).to_vec();
+                let output_mem: Vec<f32> = output_state.mem.row(0).to_vec();
+
+                let input_spikes: Vec<bool> = sample_batch.row(0).iter().map(|&v| v > 0.5).collect();
+                let hidden_spikes_bool: Vec<bool> = hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+                let output_spikes_bool: Vec<bool> = output_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+
+                anim.update_neurons(
+                    &[input_mem, hidden_mem, output_mem],
+                    &[input_spikes, hidden_spikes_bool, output_spikes_bool],
+                    0.04, // ~25 fps worth of simulation time
+                );
+            }
+
+            // Slow down simulation to match animation
+            thread::sleep(Duration::from_millis((40.0 / speed) as u64));
+        }
+
+        // Loop the animation
+        loop {
+            // Reset states
+            hidden_state = network.lif1.init_state(1);
+            output_state = network.lif2.init_state(1);
+
+            for _step in 0..num_steps {
+                let fc1_out = network.fc1.forward(&sample_batch);
+                let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
+                hidden_state = new_hidden_state;
+
+                let fc2_out = network.fc2.forward(&hidden_spikes);
+                let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
+                output_state = new_output_state;
+
+                {
+                    let mut anim = animation_clone.lock().unwrap();
+
+                    let input_mem: Vec<f32> = sample_batch.row(0).to_vec();
+                    let hidden_mem: Vec<f32> = hidden_state.mem.row(0).to_vec();
+                    let output_mem: Vec<f32> = output_state.mem.row(0).to_vec();
+
+                    let input_spikes: Vec<bool> = sample_batch.row(0).iter().map(|&v| v > 0.5).collect();
+                    let hidden_spikes_bool: Vec<bool> = hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+                    let output_spikes_bool: Vec<bool> = output_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+
+                    anim.update_neurons(
+                        &[input_mem, hidden_mem, output_mem],
+                        &[input_spikes, hidden_spikes_bool, output_spikes_bool],
+                        0.04,
+                    );
+                }
+
+                thread::sleep(Duration::from_millis((40.0 / speed) as u64));
+            }
+
+            // Brief pause between loops
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+
+    // Run animation window (blocking)
+    println!("Launching animation window...");
+    println!("Controls: Scroll to zoom, Drag to pan");
+    run_nannou(animation);
+
+    Ok(())
+}
+
+#[cfg(not(feature = "animation"))]
+fn run_animation(_config: Option<String>, _data_dir: &str, _speed: f32, _sample: usize) -> Result<()> {
+    println!("Animation feature not enabled. Rebuild with --features animation");
     Ok(())
 }

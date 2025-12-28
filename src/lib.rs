@@ -18,6 +18,8 @@ pub mod data;
 pub mod tensor;
 pub mod visualization;
 pub mod dashboard;
+pub mod animation;
+pub mod checkpoint;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};
