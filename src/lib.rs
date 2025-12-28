@@ -16,6 +16,7 @@ pub mod network;
 pub mod training;
 pub mod data;
 pub mod tensor;
+pub mod visualization;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};
@@ -23,3 +24,4 @@ pub use neurons::leaky::Leaky;
 pub use layers::linear::Linear;
 pub use network::Network;
 pub use surrogate::SurrogateGradient;
+pub use visualization::TrainingRecorder;

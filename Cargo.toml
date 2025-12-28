@@ -9,6 +9,8 @@ default = []
 # BLAS acceleration (optional) - choose one based on platform
 blas-accelerate = ["ndarray/blas", "dep:blas-src", "blas-src/accelerate"]  # macOS
 blas-openblas = ["ndarray/blas", "dep:blas-src", "blas-src/openblas"]      # Linux
+# Visualization with Rerun.io
+visualization = ["dep:rerun"]
 
 [dependencies]
 # Linear algebra (BLAS optional via features)
@@ -35,6 +37,9 @@ indicatif = "0.17"
 
 # MNIST data loading
 mnist = "0.6"
+
+# Visualization (optional)
+rerun = { version = "0.21", optional = true }
 
 [profile.release]
 opt-level = 3

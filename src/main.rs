@@ -83,6 +83,14 @@ enum Commands {
         /// Weight noise std (default: 0.05)
         #[arg(long, default_value = "0.05")]
         weight_noise: f32,
+
+        /// Enable visualization with Rerun (requires --features visualization)
+        #[arg(long)]
+        visualize: bool,
+
+        /// Save visualization to .rrd file instead of spawning viewer
+        #[arg(long)]
+        visualize_file: Option<String>,
     },
 
     /// Evaluate a trained model
@@ -131,10 +139,12 @@ fn main() -> Result<()> {
             quantize_bits,
             noise,
             weight_noise,
+            visualize,
+            visualize_file,
         } => {
             // If config file is provided, load from it; otherwise use CLI args
             if let Some(config_path) = config {
-                train_from_config(&config_path, &data_dir)
+                train_from_config(&config_path, &data_dir, visualize, visualize_file)
             } else {
                 // Build config from CLI args
                 let mut cfg = Config::default();
@@ -150,7 +160,7 @@ fn main() -> Result<()> {
                 cfg.quantization.bits = quantize_bits;
                 cfg.noise.enabled = noise;
                 cfg.noise.weight_std = weight_noise;
-                train_with_config(&cfg, &data_dir)
+                train_with_config(&cfg, &data_dir, visualize, visualize_file)
             }
         }
         Commands::Evaluate {
@@ -166,15 +176,25 @@ fn main() -> Result<()> {
 }
 
 /// Train from a JSON config file
-fn train_from_config(config_path: &str, data_dir: &str) -> Result<()> {
+fn train_from_config(
+    config_path: &str,
+    data_dir: &str,
+    visualize: bool,
+    visualize_file: Option<String>,
+) -> Result<()> {
     let cfg = Config::load(config_path)
         .with_context(|| format!("Failed to load config from {}", config_path))?;
     println!("Loaded config from: {}", config_path);
-    train_with_config(&cfg, data_dir)
+    train_with_config(&cfg, data_dir, visualize, visualize_file)
 }
 
 /// Train using a Config struct
-fn train_with_config(cfg: &Config, data_dir: &str) -> Result<()> {
+fn train_with_config(
+    cfg: &Config,
+    data_dir: &str,
+    visualize: bool,
+    visualize_file: Option<String>,
+) -> Result<()> {
     println!("=== gilgamesh Training ===");
     println!("Mode:           {}", cfg.mode);
     println!("Learning rate:  {}", cfg.training.lr);
@@ -340,6 +360,32 @@ fn train_with_config(cfg: &Config, data_dir: &str) -> Result<()> {
     trainer.optimizer.set_weight_decay(0.01);
     println!("Weight decay:   0.01 (AdamW)");
 
+    // Initialize visualization recorder if enabled
+    #[cfg(feature = "visualization")]
+    let mut recorder = if visualize {
+        let rec = if let Some(ref path) = visualize_file {
+            println!("Visualization:  saving to {}", path);
+            gilgamesh::TrainingRecorder::to_file("gilgamesh", path, false, 1)?
+        } else {
+            println!("Visualization:  spawning Rerun viewer");
+            gilgamesh::TrainingRecorder::new("gilgamesh", false, 1)?
+        };
+        // Log architecture info
+        rec.log_architecture(input_size, hidden_size, output_size, &cfg.mode)?;
+        Some(rec)
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "visualization"))]
+    let recorder: Option<gilgamesh::TrainingRecorder> = {
+        let _ = &visualize_file; // Suppress unused warning
+        if visualize {
+            println!("Warning: visualization requested but feature not enabled. Rebuild with --features visualization");
+        }
+        None
+    };
+
     // Training loop with progress
     println!("Training...");
     println!("{:-<60}", "");
@@ -361,6 +407,17 @@ fn train_with_config(cfg: &Config, data_dir: &str) -> Result<()> {
             "Epoch {:3} | Loss: {:.4} | Train Acc: {:5.2}% | Test Acc: {:5.2}% | LR: {:.6}",
             epoch, train_loss, train_acc, test_acc, lr
         );
+
+        // Log to visualization
+        if let Some(ref mut rec) = recorder {
+            rec.set_epoch(epoch);
+            let _ = rec.log_epoch_metrics(train_loss, train_acc, test_acc, lr);
+            // Log weights every 5 epochs to avoid too much data
+            if epoch % 5 == 0 || epoch == 1 {
+                let _ = rec.log_weights("fc1", &trainer.network.fc1.weight);
+                let _ = rec.log_weights("fc2", &trainer.network.fc2.weight);
+            }
+        }
     }
 
     println!("{:-<60}", "");
