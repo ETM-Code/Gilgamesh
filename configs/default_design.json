@@ -59,8 +59,8 @@
       "epochs": 30,
       "row_spacing_start": 0.0015,
       "row_spacing_end": 0.0008,
-      "pulse_width": 0.45,
-      "input_scale": 269.0,
+      "pulse_width": 0.9,
+      "input_scale": 1000.0,
       "sample_limit": 2048
     }
   }

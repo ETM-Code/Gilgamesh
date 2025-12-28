@@ -97,6 +97,10 @@ pub struct TrainerConfig {
     pub input_scale: f64,
     #[serde(default)]
     pub sample_limit: Option<usize>,
+    /// Softmax temperature for cross-entropy loss (default 1.0).
+    /// Higher values flatten the distribution; lower values sharpen it.
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
     /// Surrogate gradient configuration (not serializable, set programmatically).
     #[serde(skip)]
     pub surrogate: SurrogateConfig,
@@ -113,6 +117,7 @@ impl Default for TrainerConfig {
             pulse_width: default_pulse_width(),
             input_scale: default_input_scale(),
             sample_limit: None,
+            temperature: default_temperature(),
             surrogate: SurrogateConfig::default(),
         }
     }
@@ -139,11 +144,15 @@ fn default_row_spacing() -> f64 {
 }
 
 fn default_pulse_width() -> f64 {
-    0.6
+    0.9  // Fraction of row_spacing; longer pulses needed to charge membrane
 }
 
 fn default_input_scale() -> f64 {
-    1.0
+    1000.0  // Pixels are [0,1], needs to overcome short pulse + high tau to reach threshold
+}
+
+fn default_temperature() -> f64 {
+    1.0  // Standard cross-entropy (no temperature scaling)
 }
 
 impl TrainerConfig {
@@ -217,6 +226,7 @@ impl TemporalEncoder {
 
             for (row_idx, &value) in column.iter().enumerate() {
                 let start = (row_idx as f64).mul_add(spacing, 0.0);
+                // Value is already normalized to [0, 1] by dataset loader
                 let amplitude = value * scale;
                 times.push(start);
                 values.push(amplitude);
@@ -296,6 +306,7 @@ impl RateEncoder {
             .zip(self.neuron_indices.iter())
             .enumerate()
             .map(|(idx, (&value, &neuron_idx))| {
+                // Value is already normalized to [0, 1] by dataset loader
                 let amplitude = value * scale;
                 StimulusChannel {
                     id: format!("rate_pixel{}", idx),
@@ -412,14 +423,13 @@ where
                         continue;
                     }
 
-                    // Max-over-time readout
-                    let max_over_time: Vec<f64> = (0..num_outputs)
-                        .map(|i| samples.iter().map(|s| s[i]).fold(f64::NEG_INFINITY, f64::max))
-                        .collect();
+                    let logits =
+                        reduce_readout_samples(readout.r#type.clone(), samples, num_outputs);
 
-                    let temperature = 10.0;
-                    let max_z = max_over_time.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    let scaled: Vec<f64> = max_over_time.iter().map(|z| (z - max_z) / temperature).collect();
+                    let temperature = config.temperature;
+                    let max_z = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    let scaled: Vec<f64> =
+                        logits.iter().map(|z| (z - max_z) / temperature).collect();
                     let exp_sum: f64 = scaled.iter().map(|z| z.exp()).sum();
                     let softmax: Vec<f64> = scaled.iter().map(|z| z.exp() / exp_sum).collect();
 
@@ -508,9 +518,6 @@ fn backpropagate(
             continue;
         }
 
-        // Surrogate gradient only for hidden layers, not output/readout (which use analog voltage)
-        let is_hidden_layer = matches!(layer.layer_type, LayerRuntimeType::Hidden);
-
         for neuron in start..end {
             let err = neuron_error[neuron];
             if err.abs() < EPS {
@@ -518,10 +525,13 @@ fn backpropagate(
             }
 
             // Compute surrogate gradient scaling for error backpropagation
-            // Only apply to hidden layers - output layers use analog voltage readout
-            let surrogate_scale = if surrogate_config.enabled && is_hidden_layer {
+            // Apply to spiking neurons (reasonable threshold < 10V), regardless of layer type.
+            // Non-spiking neurons use theta >> 10V (e.g., 1000V) as a sentinel value.
+            let theta = thresholds[neuron];
+            const SPIKING_THRESHOLD_LIMIT: f64 = 10.0;
+            let is_spiking_neuron = theta > 0.0 && theta < SPIKING_THRESHOLD_LIMIT;
+            let surrogate_scale = if surrogate_config.enabled && is_spiking_neuron {
                 if let Some(prox) = spike_proximity {
-                    let theta = thresholds[neuron];
                     let u_minus_theta = prox[neuron] * theta;
                     surrogate_config.surrogate.gradient(u_minus_theta + theta, theta)
                 } else {
@@ -617,10 +627,34 @@ fn apply_gradient(
     let reg = config.regularization;
 
     for (idx, g_val) in incoming.g.iter_mut().enumerate() {
-        let mut update = lr * grad[idx];
-        if reg > 0.0 {
-            update += reg * (*g_val);
+        let gradient = grad[idx];
+        let weight_decay = if reg > 0.0 { reg * (*g_val) } else { 0.0 };
+        *g_val -= lr * (gradient + weight_decay);
+    }
+}
+
+/// Reduce readout samples to logits for classification.
+/// - Analog readouts: max-over-time (integrator behavior)
+/// - Spike readouts: sum-over-time (spike count)
+pub fn reduce_readout_samples(
+    readout_type: crate::network::compiled::ReadoutRuntimeType,
+    samples: &[Vec<f64>],
+    num_outputs: usize,
+) -> Vec<f64> {
+    match readout_type {
+        // Analog readouts work best with max-over-time (matches existing training behavior).
+        crate::network::compiled::ReadoutRuntimeType::Analog => (0..num_outputs)
+            .map(|i| samples.iter().map(|s| s[i]).fold(f64::NEG_INFINITY, f64::max))
+            .collect(),
+        // Spike readouts are naturally compared by spike count / total activity over time.
+        crate::network::compiled::ReadoutRuntimeType::Spike => {
+            let mut sums = vec![0.0; num_outputs];
+            for sample in samples {
+                for (i, value) in sample.iter().take(num_outputs).enumerate() {
+                    sums[i] += value;
+                }
+            }
+            sums
         }
-        *g_val -= update;
     }
 }

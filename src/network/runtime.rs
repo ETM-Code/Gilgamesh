@@ -1,7 +1,7 @@
 use crate::math_functions::lif::relax_towards;
 use crate::math_functions::neuron_physics::compute_pulse_stretched_signal;
 use crate::network::compiled::{CompiledNetwork, ReadoutRuntimeType, StimulusChannel};
-use rayon::prelude::*;
+use crate::training::surrogate::{FastSigmoid, SurrogateGradient};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -275,11 +275,11 @@ pub fn simulate_network(network: &CompiledNetwork, opts: &SimulationOptions) -> 
             // e_ij[t] = decay * e_ij[t-1] + surrogate(u_j) * x_i[t]
             if let Some(syn_elig) = synapse_eligibility.as_mut() {
                 let theta = network.neuron.theta0[neuron];
-                // Surrogate gradient: peaked around threshold
-                // Using fast sigmoid: 1 / (1 + |u - theta| / 0.5)^2
-                let surrogate = if theta > 0.0 && theta < 1.0 {
-                    let x = (u_next - theta).abs() / 0.3;
-                    1.0 / (1.0 + x).powi(2)
+                // Surrogate gradient: use FastSigmoid (slope=25) to match backprop in training.rs
+                // Must use same formula for consistent gradients between forward eligibility and backward pass
+                const SPIKING_THRESHOLD_LIMIT: f64 = 10.0;
+                let surrogate = if theta > 0.0 && theta < SPIKING_THRESHOLD_LIMIT {
+                    FastSigmoid::default().gradient(u_next, theta)
                 } else {
                     1.0 // Non-spiking neurons: pass gradient through
                 };

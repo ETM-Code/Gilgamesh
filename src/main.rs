@@ -14,7 +14,8 @@ use gilgamesh::network::compiler::{compile_design, randomize_weights};
 use gilgamesh::network::design::{Design, TrainingConfigDefaults};
 use gilgamesh::network::runtime::{simulate_network, SimulationOptions, SimulationResult};
 use gilgamesh::network::training::{
-    train_network_with_callback, RateEncoder, TemporalEncoder, TrainerConfig, TrainingExample,
+    reduce_readout_samples, train_network_with_callback, RateEncoder, TemporalEncoder,
+    TrainerConfig, TrainingExample,
 };
 use gilgamesh::network::visualization::write_visualization_outputs;
 use gilgamesh::spice_comparator::{run_comparison, ComparisonConfig};
@@ -510,6 +511,17 @@ fn main() -> Result<()> {
             let spacing = config.spacing_for_epoch(config.epochs.saturating_sub(1));
             let pulse_width = config.pulse_width_for_spacing(spacing);
             let scale = config.input_scale;
+
+            eprintln!("DEBUG: spacing={}, pulse_width={}, scale={}", spacing, pulse_width, scale);
+            eprintln!("DEBUG: has_encoder={}, has_rate_encoder={}", example.encoder.is_some(), example.rate_encoder.is_some());
+
+            if let Some(encoder) = example.encoder.as_ref() {
+                let stim = encoder.build_stimuli(spacing, pulse_width, scale);
+                for s in &stim {
+                    let max_val = s.values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    eprintln!("DEBUG: stim {} targets {:?}, max_value={}", s.id, s.target_indices, max_val);
+                }
+            }
 
             if let Some(encoder) = example.rate_encoder.as_ref() {
                 // Rate-coded: all pixels at once
@@ -1050,6 +1062,12 @@ fn evaluate_accuracy(
         ));
     }
 
+    let readout = network
+        .readouts
+        .iter()
+        .find(|r| r.id == readout_id)
+        .ok_or_else(|| anyhow!("readout '{}' not found in compiled network", readout_id))?;
+
     let mut correct = 0usize;
     let spacing = cfg.spacing_for_epoch(cfg.epochs.saturating_sub(1));
     let pulse_width = cfg.pulse_width_for_spacing(spacing);
@@ -1074,18 +1092,20 @@ fn evaluate_accuracy(
         }
 
         let result = simulate_network(network, &sim_opts);
-        let final_values = result
-            .final_readouts
+        let samples = result
+            .readouts
             .get(readout_id)
-            .or_else(|| {
-                result
-                    .readouts
-                    .get(readout_id)
-                    .and_then(|samples| samples.last())
-            })
             .ok_or_else(|| anyhow!("readout '{}' missing from simulation output", readout_id))?;
+        if samples.is_empty() {
+            return Err(anyhow!(
+                "readout '{}' produced no samples during simulation",
+                readout_id
+            ));
+        }
 
-        let predicted = argmax_index(final_values);
+        let num_outputs = samples.first().map(|s| s.len()).unwrap_or(0);
+        let logits = reduce_readout_samples(readout.r#type.clone(), samples, num_outputs);
+        let predicted = argmax_index(&logits);
         if predicted == label {
             correct += 1;
         }
