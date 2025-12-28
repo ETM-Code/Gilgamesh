@@ -17,6 +17,7 @@ pub mod training;
 pub mod data;
 pub mod tensor;
 pub mod visualization;
+pub mod dashboard;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};

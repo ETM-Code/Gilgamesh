@@ -11,6 +11,8 @@ blas-accelerate = ["ndarray/blas", "dep:blas-src", "blas-src/accelerate"]  # mac
 blas-openblas = ["ndarray/blas", "dep:blas-src", "blas-src/openblas"]      # Linux
 # Visualization with Rerun.io
 visualization = ["dep:rerun"]
+# Interactive dashboard with egui
+dashboard = ["dep:eframe", "dep:egui", "dep:egui_plot"]
 
 [dependencies]
 # Linear algebra (BLAS optional via features)
@@ -40,6 +42,11 @@ mnist = "0.6"
 
 # Visualization (optional)
 rerun = { version = "0.21", optional = true }
+
+# Dashboard (optional)
+eframe = { version = "0.29", optional = true }
+egui = { version = "0.29", optional = true }
+egui_plot = { version = "0.29", optional = true }
 
 [profile.release]
 opt-level = 3
