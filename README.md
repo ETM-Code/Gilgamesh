@@ -1,166 +1,223 @@
-# Gilgamesh Neural Network Toolkit
+# gilgamesh
 
-This repository contains a software stack for compiling neuromorphic design descriptions, simulating them, training synaptic weights, and comparing behaviour against SPICE-based references.
+A Rust implementation of hardware-accurate spiking neural networks (SNNs). Features dual-mode operation: a simple beta-decay model (snnTorch-compatible) for fast prototyping and a physics-accurate RC membrane model for chip deployment.
+
+## Features
+
+- **Dual-mode neurons**: Simple (snnTorch-compatible) or Physics-accurate RC dynamics
+- **Leaky Integrate-and-Fire (LIF)** neurons with surrogate gradient learning
+- **Temporal input encoding**: Row-by-row presentation for hardware-like input
+- **Analog output mode**: Membrane voltage signals alongside discrete spikes
+- **Physics constraints**: Voltage clamping to hardware rails (0-5V)
+- **Training features**: Adam optimizer, cosine LR schedule, gradient clipping, weight decay
+- **Configurable via JSON**: All parameters controllable through config files
+
+## Building
+
+### Standard build (portable)
+```bash
+cargo build --release
+```
+
+### With BLAS acceleration (recommended, 2-5x faster)
+
+**macOS** (Apple Accelerate):
+```bash
+cargo build --release --features blas-accelerate
+```
+
+**Linux** (OpenBLAS):
+```bash
+# Install: sudo apt install libopenblas-dev
+cargo build --release --features blas-openblas
+```
 
 ## Quick Start
 
 ```bash
-# Train using defaults from configs/default_design.json
-cargo run -- train
+# Simple training with CLI args
+./target/release/gilgamesh train --epochs 15 --data-dir ./data
 
-# Visualise a single training sample (plots and JSON traces)
-cargo run -- visualize --sample 0 --neurons 8
+# Training with config file
+./target/release/gilgamesh train --config configs/test1_physics.json --data-dir ./data
 
-# Resume training from the latest checkpoint and keep going for 10 more epochs
-cargo run -- train --resume output/checkpoints/latest.json --epochs 10
+# Run unit tests
+./target/release/gilgamesh test
 ```
 
-All CLI subcommands honour the design-level defaults declared in `configs/default_design.json`. Override any option on the command line when needed.
+## Network Architecture
 
-## Design File Schema
+Default architecture for MNIST classification:
 
-A design JSON describes layers, connectivity rules, neuron templates, and training hints. Example (`configs/default_design.json`):
+```
+Input (49) → Linear → LIF (100) → Linear → LIF (10) → Spike Count → Prediction
+     │              └─ hidden layer ─┘           └─ output layer ─┘
+     └─ 7x7 downsampled MNIST images
+```
+
+- **Input**: 49 features (7x7 pixels)
+- **Hidden**: 100 LIF neurons with surrogate gradient
+- **Output**: 10 LIF neurons (one per digit class)
+- **Parameters**: 6,010 total (49×100 + 100 + 100×10 + 10)
+
+## Modes of Operation
+
+### Simple Mode (snnTorch-compatible)
+
+Uses discrete beta-decay membrane dynamics:
+```
+mem[t+1] = beta * mem[t] + input - spike * threshold
+```
+
+Where beta = 0.9 provides exponential decay. This matches snnTorch's Leaky neuron.
+
+### Physics Mode
+
+Uses continuous RC membrane dynamics derived from circuit physics:
+```
+decay = exp(-dt / tau_m)
+mem[t+1] = input * tau_m + (mem[t] - input * tau_m) * decay
+```
+
+Parameters:
+- `tau_m`: Membrane time constant (~9.5ms)
+- `dt`: Integration timestep (1ms default)
+- `v_min/v_max`: Hardware voltage rails (0-5V)
+
+The equivalence: `beta = exp(-dt / tau_m)`, so `tau_m = -dt / ln(beta)`
+
+## Input Encoding Modes
+
+### Rate-Coded (default)
+All 49 pixels presented simultaneously at every timestep. The pixel intensity determines spike probability or input current.
+
+### Temporal Encoding
+Rows presented sequentially, mimicking hardware scanning:
+- 7 rows presented over time with configurable spacing
+- `row_spacing`: Time between rows (default: 1.5ms)
+- `pulse_width`: Fraction of row spacing for pulse (default: 90%)
+
+## Analog Output Mode
+
+When `analog_gain > 0`, membrane voltage is added to the spike signal:
+```
+output = spikes + analog_gain * membrane_voltage
+```
+
+This provides richer inter-layer communication at the cost of potentially reduced sparsity.
+
+## Configuration
+
+All parameters are configurable via JSON:
 
 ```json
-"training": {
-  "dataset": "../src/inputs/training_set/converted/train_7x7.bin",
-  "test_dataset": "../src/inputs/testing_set/converted/test_7x7.bin",
-  "input_layer": "input",
-  "target_readout": "logits",
-  "checkpoint_dir": "../output/checkpoints",
-  "checkpoint_every": 5,
-  "config": {
-    "learning_rate": 0.003,
-    "epochs": 30,
-    "row_spacing_start": 0.0015,
-    "row_spacing_end": 0.0008,
-    "pulse_width": 0.45,
-    "input_scale": 1.0,
-    "sample_limit": 2048
+{
+  "mode": "physics",
+  "network": {
+    "input_size": 49,
+    "hidden_size": 100,
+    "output_size": 10
+  },
+  "neuron": {
+    "beta": 0.9,
+    "threshold": 1.0,
+    "slope": 25.0
+  },
+  "physics": {
+    "enabled": true,
+    "tau_m": 0.00949,
+    "tau_pulse": 0.00167,
+    "dt": 0.001
+  },
+  "input_encoding": {
+    "encoding_type": "temporal",
+    "row_spacing": 0.0015,
+    "pulse_width": 0.9
+  },
+  "output": {
+    "analog_gain": 0.1
+  },
+  "training": {
+    "lr": 0.001,
+    "epochs": 15,
+    "batch_size": 128,
+    "num_steps": 25,
+    "seed": 42
   }
 }
 ```
 
-Key fields:
+## Benchmark Results
 
-- `dataset`, `test_dataset`: training and evaluation datasets. Paths may be relative to the design file.
-- `input_layer`, `target_readout`: layer and readout IDs used for temporal encoding and classification.
-- `checkpoint_dir`, `checkpoint_every`: automatic checkpoint output path and frequency (epochs).
-- `config`: default hyperparameters (learning rate, epoch count, temporal spacing schedule, etc.).
+All tests on MNIST (60k train, 10k test, 7x7 downsampled), 15 epochs:
 
-## Training CLI
+| Test | Mode | Input Encoding | Analog | Best Test Acc | Notes |
+|------|------|----------------|--------|---------------|-------|
+| 1 | Physics | Rate-coded | No | **96.43%** | Best overall |
+| 2 | Physics | Rate-coded | 0.1 | **96.03%** | Minimal impact |
+| 3 | Physics | Temporal | No | 38.72% | Severe overfitting |
+| 4 | Physics | Temporal | 0.1 | 35.32% | Analog hurts here |
 
-`cargo run -- train` accepts the options below; all default to the values above unless overridden:
+### Key Findings
 
-| Flag | Description |
-| --- | --- |
-| `--design <path>` | Design JSON (defaults to `configs/default_design.json`). |
-| `--dataset <path>` / `--test-dataset <path>` | Override dataset locations. |
-| `--resume <checkpoint.json>` | Resume from a saved compiled network. If omitted, the trainer tries `checkpoint_dir/latest.json`. |
-| `--checkpoint-dir <dir>` | Where to write checkpoints (JSON). |
-| `--checkpoint-every <n>` | Save weights every `n` epochs (0 disables periodic saves). |
-| `--compiled-out <path>` | Write the final compiled network to disk. |
-| `--log <path>` | Emit per-epoch loss logs as JSON. |
-| `--epochs`, `--learning-rate`, ... | Override hyperparameters on the command line. |
+1. **Physics mode with rate-coded input achieves 96%+ accuracy**, matching snnTorch performance
+2. **Analog output has minimal impact** on rate-coded input (+/- 0.4%)
+3. **Temporal encoding causes severe overfitting**: 89% train vs 37% test accuracy
+4. **Analog output slightly hurts temporal encoding** (35% vs 39% test)
 
-### Checkpoints and Resume
+### Temporal Encoding Analysis
 
-- Checkpoints are stored as JSON under `checkpoint_dir` (defaults to `output/checkpoints`).
-- `checkpoint_epoch_####.json` captures weights at that epoch; `latest.json` always mirrors the most recent checkpoint.
-- To continue training, use `--resume path/to/checkpoint.json` or simply run `cargo run -- train` again (it auto-detects `latest.json`).
+The large train-test gap with temporal encoding suggests:
+- The network memorizes training patterns rather than learning generalizable features
+- Row-by-row presentation requires different architecture (e.g., recurrent connections, more hidden neurons)
+- May need regularization tuned for temporal dynamics
 
-## Visualisation CLI
+## Training Details
 
-`cargo run -- visualize` feeds a single sample through the compiled network and emits JSON + PNG line charts:
+- **Optimizer**: Adam with AdamW-style weight decay (0.01)
+- **Learning rate**: Cosine annealing from 0.001 to 0.00001
+- **Gradient clipping**: max_norm = 1.0
+- **Surrogate gradient**: Fast sigmoid with slope = 25
+- **Loss function**: Cross-entropy on spike counts
+
+## CLI Options
 
 ```
-cargo run -- visualize --sample 12 --layer hidden --neurons 16 --test
+gilgamesh train [OPTIONS]
+
+Options:
+  --config <FILE>       JSON config file (overrides other args)
+  --lr <RATE>           Learning rate [default: 0.001]
+  --epochs <N>          Number of epochs [default: 15]
+  --batch-size <N>      Batch size [default: 128]
+  --num-steps <N>       Timesteps per sample [default: 25]
+  --hidden-size <N>     Hidden layer neurons [default: 100]
+  --beta <VALUE>        Membrane decay factor [default: 0.9]
+  --seed <N>            Random seed [default: 42]
+  --data-dir <PATH>     MNIST data directory [default: ./data]
+  --slope <VALUE>       Surrogate gradient slope [default: 25.0]
+  --quantize            Enable 8-bit weight quantization
+  --noise               Enable noise injection
 ```
 
-Outputs land under `output/visualizations/{train|test}/sample_####/` and include:
+## Project Structure
 
-- `visualization.json` with times, readout histories, final readout values, and traced neuron voltages.
-- `readout_<id>.png` and `neuron_<index>.png` plots generated through Plotters.
-
-Useful flags:
-
-| Flag | Description |
-| --- | --- |
-| `--sample <n>` | (Optional) dataset index to visualise (default `0`). |
-| `--layer <id>` | (Optional) layer whose first N neurons are traced. |
-| `--neurons <n>` | Number of neurons to trace (default `8`). |
-| `--test` | Use the test dataset instead of the training set. |
-| `--output-dir <dir>` | Root directory for visualization exports. |
-
-## Simulation Exports
-
-`SimulationOptions::trace_neurons` and the `SimulationResult` now retain per-neuron traces. Any component calling `simulate_network` can request additional neurons to be recorded for bespoke tooling outside the Visualize CLI.
-
-## Development Commands
-
-```bash
-# Run the full test suite
-cargo test
-
-# Static checks
-cargo check
-
-# Short training sanity check
-cargo run -- train --epochs 1 --sample-limit 10
+```
+src/
+├── main.rs          # CLI entry point
+├── lib.rs           # Library exports
+├── config.rs        # JSON configuration
+├── network.rs       # Network architecture, forward/backward
+├── training.rs      # Trainer, optimizer, loss functions
+├── data.rs          # MNIST loading, input encoding
+├── neurons/
+│   └── leaky.rs     # LIF neuron (simple + physics modes)
+├── layers/
+│   └── linear.rs    # Dense layer with forward/backward
+├── surrogate.rs     # Surrogate gradient functions
+└── tensor.rs        # Loss functions, utilities
 ```
 
-For further analysis you can read `visualization.json` in a Python notebook or other tools, leveraging the timestamps, readout vectors, and neuron traces that the runtime captures.
+## License
 
-## Pulse Stretch Configuration
-
-The pulse stretch circuit extends spike duration for meaningful charge transfer to downstream neurons.
-
-```json
-"pulse_stretch": {
-  "enable": true,
-  "R_pw_ohm": 20000,
-  "C_pw_F": 1e-7,
-  "R_load_ohm": 10000
-}
-```
-
-Parameters:
-- `R_pw_ohm`: Pulldown resistor (determines decay when no load)
-- `C_pw_F`: Pulse capacitor
-- `R_load_ohm`: Optional load resistance (accounts for parallel discharge path)
-
-The effective time constant is: τ_eff = (R_pw || R_load) × C_pw
-
-Example: R_pw=20kΩ, R_load=10kΩ, C_pw=100nF → τ_eff = 6.67kΩ × 100nF = 0.67ms
-
-## SPICE vs. Rust Comparator (Python harness)
-
-Prereqs: ngspice on PATH; Python 3.11 recommended. Install matplotlib if you want plots (otherwise they are skipped).
-
-Typical commands (from repo root):
-
-```bash
-# Generate SPICE CSV + compare with Rust (detailed mode, release build, write JSON/CSV/plots)
-python3 tools/spice_compare.py --mode detailed
-
-# Reuse an existing SPICE CSV (skip ngspice) and still emit outputs
-python3 tools/spice_compare.py --mode detailed --skip-spice
-
-# Benchmark only the Rust core (no artifacts), assuming SPICE CSV already exists
-python3 tools/spice_compare.py --core-only --skip-spice --no-prebuild
-
-# Force debug build instead of release (slower, for debugging)
-python3 tools/spice_compare.py --debug --mode detailed
-
-# Use a different SPICE CSV
-python3 tools/spice_compare.py --mode detailed --spice-csv /path/to/lif_detailed.csv
-
-# Specify network/neuron JSONs explicitly
-python3 tools/spice_compare.py --network SPICE/neuronSim/defaults/network_default.json \
-  --neuron SPICE/neuronSim/defaults/neuron_default.json --mode detailed
-```
-
-Notes:
-- Artifacts default to `comparison_outputs/` (comparison JSON, equivalent CSV, plots if matplotlib is present).
-- `--core-only` prints metrics and timings (including simulate-only speedup) without writing JSON/CSV. Add `--no-prebuild` to skip `cargo build` if the binary is already built.
-- If `python3` points to 3.14 on your system, prefer the 3.11 interpreter you used earlier, e.g. `/opt/homebrew/opt/python@3.11/bin/python3.11 tools/spice_compare.py ...`.
+MIT

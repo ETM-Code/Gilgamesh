@@ -1,0 +1,40 @@
+{
+  "mode": "physics",
+  "network": {
+    "input_size": 49,
+    "hidden_size": 100,
+    "output_size": 10
+  },
+  "neuron": {
+    "beta": 0.9,
+    "threshold": 1.0,
+    "slope": 25.0
+  },
+  "physics": {
+    "enabled": true,
+    "tau_m": 0.00949,
+    "dt": 0.001
+  },
+  "input_encoding": {
+    "encoding_type": "temporal",
+    "row_spacing": 0.0015,
+    "pulse_width": 0.9
+  },
+  "output": {
+    "analog_gain": 0.0
+  },
+  "noise": {
+    "enabled": true,
+    "weight_std": 0.1,
+    "threshold_std": 0.02,
+    "membrane_std": 0.01,
+    "input_std": 0.1
+  },
+  "training": {
+    "lr": 0.001,
+    "epochs": 15,
+    "batch_size": 128,
+    "num_steps": 50,
+    "seed": 123
+  }
+}
