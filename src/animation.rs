@@ -310,8 +310,11 @@ fn view(app: &App, model: &Model, frame: Frame) {
         let from = &anim.neurons[synapse.from];
         let to = &anim.neurons[synapse.to];
 
-        // Skip if either neuron is off-screen
+        // Skip if either neuron is off-screen or has invalid position
         if from.pos.1 < -400.0 || to.pos.1 < -400.0 {
+            continue;
+        }
+        if !from.pos.0.is_finite() || !from.pos.1.is_finite() || !to.pos.0.is_finite() || !to.pos.1.is_finite() {
             continue;
         }
 
@@ -334,49 +337,53 @@ fn view(app: &App, model: &Model, frame: Frame) {
             .color(rgba(base_color.red, base_color.green, base_color.blue, alpha));
 
         // Draw propagation pulse
-        if synapse.propagation < 1.0 && synapse.propagation > 0.0 {
+        if synapse.propagation.is_finite() && synapse.propagation < 1.0 && synapse.propagation > 0.0 {
             let t = synapse.propagation;
             let pulse_x = from.pos.0 + (to.pos.0 - from.pos.0) * t;
             let pulse_y = from.pos.1 + (to.pos.1 - from.pos.1) * t;
 
-            let pulse_alpha = (1.0 - t) * 0.8;
-            draw.ellipse()
-                .x_y(pulse_x, pulse_y)
-                .radius(4.0)
-                .color(rgba(1.0, 1.0, 0.5, pulse_alpha));
+            if pulse_x.is_finite() && pulse_y.is_finite() {
+                let pulse_alpha = (1.0 - t) * 0.8;
+                draw.ellipse()
+                    .x_y(pulse_x, pulse_y)
+                    .radius(4.0)
+                    .color(rgba(1.0, 1.0, 0.5, pulse_alpha));
+            }
         }
     }
 
     // Draw neurons
     for neuron in &anim.neurons {
-        // Skip if off-screen
-        if neuron.pos.1 < -400.0 {
+        // Skip if off-screen or invalid position
+        if neuron.pos.1 < -400.0 || !neuron.pos.0.is_finite() || !neuron.pos.1.is_finite() {
             continue;
         }
 
         let base_radius = 8.0;
         let time_since_spike = anim.time - neuron.spike_time;
 
-        // Glow effect when recently spiked
-        if time_since_spike < 0.5 {
+        // Glow effect when recently spiked (only if valid time)
+        if time_since_spike.is_finite() && time_since_spike >= 0.0 && time_since_spike < 0.5 {
             let glow_intensity = (1.0 - time_since_spike / 0.5).powi(2);
             let glow_radius = base_radius + 20.0 * glow_intensity;
 
-            // Outer glow
-            draw.ellipse()
-                .x_y(neuron.pos.0, neuron.pos.1)
-                .radius(glow_radius)
-                .color(rgba(1.0, 0.9, 0.3, glow_intensity * 0.3));
+            if glow_radius > 0.0 && glow_intensity > 0.0 {
+                // Outer glow
+                draw.ellipse()
+                    .x_y(neuron.pos.0, neuron.pos.1)
+                    .radius(glow_radius)
+                    .color(rgba(1.0, 0.9, 0.3, glow_intensity * 0.3));
 
-            // Middle glow
-            draw.ellipse()
-                .x_y(neuron.pos.0, neuron.pos.1)
-                .radius(glow_radius * 0.6)
-                .color(rgba(1.0, 0.95, 0.5, glow_intensity * 0.5));
+                // Middle glow
+                draw.ellipse()
+                    .x_y(neuron.pos.0, neuron.pos.1)
+                    .radius(glow_radius * 0.6)
+                    .color(rgba(1.0, 0.95, 0.5, glow_intensity * 0.5));
+            }
         }
 
         // Neuron color based on membrane potential
-        let mem = neuron.membrane;
+        let mem = neuron.membrane.clamp(0.0, 1.0);
         let neuron_color = if neuron.spiking {
             rgb(1.0, 1.0, 0.8) // Bright white-yellow when spiking
         } else {
@@ -393,14 +400,6 @@ fn view(app: &App, model: &Model, frame: Frame) {
             .x_y(neuron.pos.0, neuron.pos.1)
             .radius(base_radius)
             .color(neuron_color);
-
-        // Draw outline
-        draw.ellipse()
-            .x_y(neuron.pos.0, neuron.pos.1)
-            .radius(base_radius)
-            .no_fill()
-            .stroke_weight(1.5)
-            .stroke(rgba(0.8, 0.8, 0.9, 0.6));
     }
 
     // Draw legend in corner (simplified to avoid text rendering issues)

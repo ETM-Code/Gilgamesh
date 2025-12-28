@@ -20,6 +20,7 @@ pub mod visualization;
 pub mod dashboard;
 pub mod animation;
 pub mod checkpoint;
+pub mod inspector;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};

@@ -156,6 +156,25 @@ enum Commands {
         #[arg(long, default_value = "0")]
         sample: usize,
     },
+
+    /// Visual test runner for inspecting single samples (requires --features dashboard)
+    Inspect {
+        /// Path to checkpoint file
+        #[arg(long)]
+        checkpoint: String,
+
+        /// Data directory
+        #[arg(long, default_value = "./data")]
+        data_dir: String,
+
+        /// Number of timesteps
+        #[arg(long, default_value = "25")]
+        num_steps: usize,
+
+        /// Random seed for sample selection
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 fn main() -> Result<()> {
@@ -222,6 +241,12 @@ fn main() -> Result<()> {
             speed,
             sample,
         } => run_animation(config, &data_dir, speed, sample),
+        Commands::Inspect {
+            checkpoint,
+            data_dir,
+            num_steps,
+            seed,
+        } => run_inspector(&checkpoint, &data_dir, num_steps, seed)
     }
 }
 
@@ -883,5 +908,28 @@ fn run_animation(config: Option<String>, data_dir: &str, speed: f32, sample: usi
 #[cfg(not(feature = "animation"))]
 fn run_animation(_config: Option<String>, _data_dir: &str, _speed: f32, _sample: usize) -> Result<()> {
     println!("Animation feature not enabled. Rebuild with --features animation");
+    Ok(())
+}
+
+/// Run the visual test inspector
+#[cfg(feature = "dashboard")]
+fn run_inspector(checkpoint: &str, data_dir: &str, num_steps: usize, seed: u64) -> Result<()> {
+    use gilgamesh::inspector::InspectorApp;
+
+    println!("=== gilgamesh Inspector ===");
+    println!("Checkpoint: {}", checkpoint);
+    println!("Data dir:   {}", data_dir);
+    println!("Timesteps:  {}", num_steps);
+    println!();
+
+    let app = InspectorApp::from_checkpoint(checkpoint, data_dir, num_steps, seed)
+        .context("Failed to initialize inspector")?;
+
+    app.run().map_err(|e| anyhow::anyhow!("Inspector error: {}", e))
+}
+
+#[cfg(not(feature = "dashboard"))]
+fn run_inspector(_checkpoint: &str, _data_dir: &str, _num_steps: usize, _seed: u64) -> Result<()> {
+    println!("Inspector feature not enabled. Rebuild with --features dashboard");
     Ok(())
 }
