@@ -120,6 +120,9 @@ impl Linear {
 
     /// Forward pass: y = x @ W + b
     ///
+    /// If current_gain is set, output is scaled: y = (x @ W + b) * gain
+    /// This converts normalized weights to physical synaptic currents.
+    ///
     /// Args:
     ///   input: [batch, in_features]
     ///
@@ -133,6 +136,10 @@ impl Linear {
                 row += b;
             }
         }
+        // Apply current gain for hardware simulation
+        if let Some(gain) = self.current_gain {
+            output *= gain;
+        }
         output
     }
 
@@ -140,6 +147,7 @@ impl Linear {
     ///
     /// Quantizes weights to n-bit resolution before computing output.
     /// Uses straight-through estimator: quantized forward, full-precision backward.
+    /// Applies current_gain scaling if set.
     ///
     /// Args:
     ///   input: [batch, in_features]
@@ -155,6 +163,9 @@ impl Linear {
                 row += b;
             }
         }
+        if let Some(gain) = self.current_gain {
+            output *= gain;
+        }
         output
     }
 
@@ -162,6 +173,7 @@ impl Linear {
     ///
     /// Adds Gaussian noise to weights before computing output.
     /// Noise is relative to weight magnitude: noisy_w = w + w * N(0, noise_std)
+    /// Applies current_gain scaling if set.
     ///
     /// Args:
     ///   input: [batch, in_features]
@@ -192,6 +204,9 @@ impl Linear {
             for mut row in output.rows_mut() {
                 row += b;
             }
+        }
+        if let Some(gain) = self.current_gain {
+            output *= gain;
         }
         output
     }
@@ -368,5 +383,63 @@ mod tests {
         let output_2bit = layer.forward_quantized(&input, 2);
         assert_eq!(output_2bit.shape(), &[1, 2]);
         assert!(output_2bit.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_current_gain_scaling() {
+        let layer = Linear::with_seed(3, 2, true, 42);
+        let input = array![[1.0, 2.0, 3.0]];
+
+        // Output without gain
+        let output_no_gain = layer.forward(&input);
+
+        // Add current gain
+        let gain = 1e-6; // 1µA per unit
+        let layer_with_gain = layer.clone().with_current_gain(gain);
+        let output_with_gain = layer_with_gain.forward(&input);
+
+        // Output should be scaled by gain
+        for (no_gain, with_gain) in output_no_gain.iter().zip(output_with_gain.iter()) {
+            let expected = no_gain * gain;
+            assert!(
+                (with_gain - expected).abs() < 1e-10,
+                "expected={}, got={}",
+                expected,
+                with_gain
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_gain_with_quantization() {
+        let gain = 5e-6; // 5µA per unit
+        let layer = Linear::with_seed(3, 2, true, 42).with_current_gain(gain);
+        let input = array![[1.0, 2.0, 3.0]];
+
+        // Both quantized and non-quantized should apply gain
+        let output_normal = layer.forward(&input);
+        let output_quantized = layer.forward_quantized(&input, 8);
+
+        // Both outputs should be in µA range (very small)
+        assert!(output_normal.iter().all(|&v| v.abs() < 1e-4));
+        assert!(output_quantized.iter().all(|&v| v.abs() < 1e-4));
+
+        // Shapes should match
+        assert_eq!(output_normal.shape(), output_quantized.shape());
+    }
+
+    #[test]
+    fn test_without_current_gain() {
+        let gain = 1e-6;
+        let layer = Linear::with_seed(3, 2, true, 42)
+            .with_current_gain(gain)
+            .without_current_gain();
+        let input = array![[1.0, 2.0, 3.0]];
+
+        // After removing gain, output should be normal scale
+        let output = layer.forward(&input);
+
+        // Should NOT be in µA range
+        assert!(output.iter().any(|&v| v.abs() > 0.01));
     }
 }

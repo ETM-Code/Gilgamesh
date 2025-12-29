@@ -194,6 +194,7 @@ impl Checkpoint {
                 .transpose()?,
             in_features: arch.input_size,
             out_features: arch.hidden_size,
+            current_gain: None,
         };
 
         let fc2 = Linear {
@@ -206,6 +207,7 @@ impl Checkpoint {
                 .transpose()?,
             in_features: arch.hidden_size,
             out_features: arch.output_size,
+            current_gain: None,
         };
 
         // Create LIF neurons with correct mode
