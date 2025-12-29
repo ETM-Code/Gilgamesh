@@ -11,6 +11,9 @@ A Rust implementation of hardware-accurate spiking neural networks (SNNs). Featu
 - **Physics constraints**: Voltage clamping to hardware rails (0-5V)
 - **Training features**: Adam optimizer, cosine LR schedule, gradient clipping, weight decay
 - **Configurable via JSON**: All parameters controllable through config files
+- **Interactive visualizer**: Real-time network activity with sample navigation (nannou)
+- **Training visualization**: Loss curves, accuracy, weight heatmaps in Rerun.io
+- **Checkpoint system**: Save/load trained networks for inference and visualization
 
 ## Building
 
@@ -36,13 +39,88 @@ cargo build --release --features blas-openblas
 
 ```bash
 # Simple training with CLI args
-./target/release/gilgamesh train --epochs 15 --data-dir ./data
+gilgamesh train --epochs 15 --data-dir ./data
 
 # Training with config file
-./target/release/gilgamesh train --config configs/test1_physics.json --data-dir ./data
+gilgamesh train --config configs/test1_physics.json --data-dir ./data
+
+# Train and save checkpoint
+gilgamesh train --epochs 10 --save-checkpoint model.json
 
 # Run unit tests
-./target/release/gilgamesh test
+gilgamesh test
+```
+
+### Interactive Network Visualizer
+
+Watch your trained network process MNIST samples in real-time:
+
+```bash
+# Build with animation support
+cargo build --release --features animation
+
+# Launch visualizer (auto-finds most recent checkpoint)
+./target/release/gilgamesh animate
+
+# Or specify a checkpoint and starting sample
+./target/release/gilgamesh animate --checkpoint model.json --sample 0
+```
+
+**Controls:**
+- `←` / `→` : Previous / Next sample
+- `Space` : Pause / Resume
+- `R` : Restart current sample
+
+The visualizer shows:
+- MNIST image on the left with true label and prediction
+- Network activity with neurons colored by membrane potential
+- Spike propagation through synapses
+- Output probability bars with spike counts
+
+### Training Visualization with Rerun
+
+Monitor training metrics in real-time using Rerun.io:
+
+```bash
+# Build with visualization support
+cargo build --release --features visualization
+
+# Train with live Rerun viewer
+./target/release/gilgamesh train --visualize --save-checkpoint model.json
+
+# Or save to .rrd file for later viewing
+./target/release/gilgamesh train --visualize --visualize-file training.rrd
+rerun training.rrd
+```
+
+Logged data includes:
+- `training/loss`, `training/train_accuracy`, `training/test_accuracy`
+- `training/learning_rate` schedule
+- `weights/fc1`, `weights/fc2` as heatmaps (every 5 epochs)
+
+**Tip:** In Rerun, select the "epoch" timeline at the bottom and expand the entity tree on the left to see all metrics.
+
+### With Dashboard Features
+
+```bash
+# Build with dashboard support
+cargo build --release --features dashboard
+
+# Visual inspector (auto-detects most recent checkpoint)
+./target/release/gilgamesh inspect
+
+# Or specify a checkpoint
+./target/release/gilgamesh inspect --checkpoint model.json
+```
+
+### SPICE Hardware Validation
+
+```bash
+# Generate netlist for a specific sample
+gilgamesh spice --sample 42
+
+# Run ngspice automatically and compare results
+gilgamesh spice --run-ngspice
 ```
 
 ## Network Architecture
@@ -182,23 +260,103 @@ The large train-test gap with temporal encoding suggests:
 
 ## CLI Options
 
+### Training
 ```
 gilgamesh train [OPTIONS]
 
 Options:
-  --config <FILE>       JSON config file (overrides other args)
-  --lr <RATE>           Learning rate [default: 0.001]
-  --epochs <N>          Number of epochs [default: 15]
-  --batch-size <N>      Batch size [default: 128]
-  --num-steps <N>       Timesteps per sample [default: 25]
-  --hidden-size <N>     Hidden layer neurons [default: 100]
-  --beta <VALUE>        Membrane decay factor [default: 0.9]
-  --seed <N>            Random seed [default: 42]
-  --data-dir <PATH>     MNIST data directory [default: ./data]
-  --slope <VALUE>       Surrogate gradient slope [default: 25.0]
-  --quantize            Enable 8-bit weight quantization
-  --noise               Enable noise injection
+  --config <FILE>           JSON config file (overrides other args)
+  --lr <RATE>               Learning rate [default: 0.001]
+  --epochs <N>              Number of epochs [default: 15]
+  --batch-size <N>          Batch size [default: 128]
+  --num-steps <N>           Timesteps per sample [default: 25]
+  --hidden-size <N>         Hidden layer neurons [default: 100]
+  --beta <VALUE>            Membrane decay factor [default: 0.9]
+  --seed <N>                Random seed [default: 42]
+  --data-dir <PATH>         MNIST data directory [default: ./data]
+  --slope <VALUE>           Surrogate gradient slope [default: 25.0]
+  --quantize                Enable 8-bit weight quantization
+  --noise                   Enable noise injection
+  --save-checkpoint <PATH>  Save trained model to checkpoint file
+  --visualize               Enable Rerun visualization (requires --features visualization)
+  --visualize-file <PATH>   Save visualization to .rrd file instead of spawning viewer
 ```
+
+### Interactive Network Visualizer
+
+Real-time visualization of network activity with sample navigation.
+
+```
+gilgamesh animate [OPTIONS]
+
+Options:
+  --checkpoint <PATH>   Path to checkpoint file (auto-detects most recent if omitted)
+  --data-dir <PATH>     MNIST data directory [default: ./data]
+  --speed <MULT>        Animation speed multiplier [default: 1.0]
+  --sample <N>          Starting sample index [default: 0]
+```
+
+Features:
+- MNIST image display with label/prediction
+- Neuron membrane potentials visualized as color intensity
+- Spike propagation pulses along synapses
+- Output probability bars with spike counts
+- Arrow key navigation between test samples
+
+Requires: `--features animation`
+
+### Visual Inspector
+
+Interactively inspect individual test samples with a visual egui interface.
+
+```
+gilgamesh inspect [OPTIONS]
+
+Options:
+  --checkpoint <PATH>   Path to checkpoint file (auto-detects most recent if omitted)
+  --data-dir <PATH>     MNIST data directory [default: ./data]
+  --num-steps <N>       Timesteps for inference [default: 25]
+  --seed <N>            Random seed for sample selection [default: 42]
+```
+
+The inspector shows:
+- 7x7 input image (scaled up for visibility)
+- Bar chart of output neuron spike counts
+- Color-coded predictions: green=correct, red=wrong, blue=true label
+- Click "Next Sample" to cycle through random test samples
+
+Requires: `--features dashboard`
+
+### SPICE Comparison
+
+Generate ngspice-compatible netlists and compare simulation results for hardware validation.
+
+```
+gilgamesh spice [OPTIONS]
+
+Options:
+  --checkpoint <PATH>   Path to checkpoint file (auto-detects most recent if omitted)
+  --data-dir <PATH>     MNIST data directory [default: ./data]
+  --sample <N>          Test sample index (random if omitted)
+  --output-dir <PATH>   Directory for netlists and results [default: ./spice_output]
+  --run-ngspice         Run ngspice automatically (requires ngspice in PATH)
+  --num-steps <N>       Timesteps for simulation [default: 25]
+```
+
+Features:
+- LIF neuron subcircuit with RC membrane, comparator, reset switch, and pulse shaping
+- Full 49→100→10 network with VCCS (voltage-controlled current sources) for weights
+- Compares gilgamesh spike counts against ngspice simulation
+- Outputs comparison table with predictions from both simulators
+
+### Checkpoint Auto-Detection
+
+Both `inspect` and `spice` commands automatically find and use the most recently modified checkpoint file when `--checkpoint` is not specified. It searches:
+- Current directory (`*.json`)
+- `./checkpoints/*.json`
+- `./models/*.json`
+
+Files are validated to ensure they contain checkpoint data (architecture and weights).
 
 ## Project Structure
 
@@ -210,12 +368,18 @@ src/
 ├── network.rs       # Network architecture, forward/backward
 ├── training.rs      # Trainer, optimizer, loss functions
 ├── data.rs          # MNIST loading, input encoding
+├── checkpoint.rs    # Model serialization/deserialization
+├── inspector.rs     # Visual test runner (egui)
+├── spice.rs         # SPICE netlist generation and comparison
 ├── neurons/
 │   └── leaky.rs     # LIF neuron (simple + physics modes)
 ├── layers/
 │   └── linear.rs    # Dense layer with forward/backward
 ├── surrogate.rs     # Surrogate gradient functions
-└── tensor.rs        # Loss functions, utilities
+├── tensor.rs        # Loss functions, utilities
+├── dashboard.rs     # Training dashboard (egui)
+├── animation.rs     # Network animation (nannou)
+└── visualization.rs # Rerun.io visualization
 ```
 
 ## License

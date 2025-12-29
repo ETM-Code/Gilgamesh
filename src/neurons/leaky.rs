@@ -1174,7 +1174,7 @@ mod tests {
 
         // Large input, should spike
         let input = array![[2.0, 0.5]];
-        let (spikes, new_state, _) = lif.forward(&input, &state);
+        let (spikes, _new_state, _) = lif.forward(&input, &state);
 
         // First neuron should spike
         assert_eq!(spikes[[0, 0]], 1.0);

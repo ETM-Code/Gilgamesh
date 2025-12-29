@@ -242,7 +242,7 @@ mod tests {
         let layer = Linear::with_seed(3, 2, true, 42);
 
         let input = array![[1.0, 2.0, 3.0]];
-        let output = layer.forward(&input);
+        let _output = layer.forward(&input);
         let grad_output = array![[1.0, 1.0]];
 
         let (grad_input, grad_weight, grad_bias) = layer.backward(&input, &grad_output);

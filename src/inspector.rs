@@ -12,7 +12,7 @@
 use eframe::egui;
 
 #[cfg(feature = "dashboard")]
-use egui_plot::{Bar, BarChart, Plot};
+use egui_plot::{Bar, BarChart, GridMark, Plot};
 
 #[cfg(feature = "dashboard")]
 use rand::SeedableRng;
@@ -296,12 +296,34 @@ impl eframe::App for InspectorApp {
 
                         let chart = BarChart::new(bars).name("Spike Counts");
 
+                        // Custom grid spacer to show marks at each digit 0-9
+                        let x_grid_spacer = |_input: egui_plot::GridInput| {
+                            (0..=9)
+                                .map(|i| GridMark { value: i as f64, step_size: 1.0 })
+                                .collect()
+                        };
+
+                        // Custom formatter to show digit labels
+                        let x_formatter = |mark: GridMark, _range: &std::ops::RangeInclusive<f64>| {
+                            let digit = mark.value.round() as i32;
+                            if digit >= 0 && digit <= 9 {
+                                format!("{}", digit)
+                            } else {
+                                String::new()
+                            }
+                        };
+
                         Plot::new("spike_counts")
-                            .height(300.0)
-                            .width(400.0)
+                            .height(280.0)
                             .allow_zoom(false)
                             .allow_drag(false)
+                            .allow_scroll(false)
                             .show_axes([true, true])
+                            .include_x(-0.5)
+                            .include_x(9.5)
+                            .include_y(0.0)
+                            .x_grid_spacer(x_grid_spacer)
+                            .x_axis_formatter(x_formatter)
                             .show(ui, |plot_ui| {
                                 plot_ui.bar_chart(chart);
                             });

@@ -4,7 +4,6 @@
 //! with gradient tracking for backpropagation.
 
 use ndarray::{Array1, Array2, Axis};
-use std::ops::{Add, Mul, Sub};
 
 /// A 2D tensor with optional gradient storage
 #[derive(Clone, Debug)]

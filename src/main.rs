@@ -210,6 +210,41 @@ enum Commands {
         #[arg(long)]
         no_pulse_stretch: bool,
     },
+
+    /// Run single-neuron test for SPICE comparison
+    NeuronTest {
+        /// Membrane time constant (seconds)
+        #[arg(long, default_value = "0.0012")]
+        tau_m: f32,
+
+        /// Integration timestep (seconds)
+        #[arg(long, default_value = "0.000001")]
+        dt: f32,
+
+        /// Spike threshold voltage (V)
+        #[arg(long, default_value = "3.3")]
+        threshold: f32,
+
+        /// Reference voltage (V)
+        #[arg(long, default_value = "2.5")]
+        vref: f32,
+
+        /// Input current (A)
+        #[arg(long, default_value = "0.000001")]
+        input_current: f32,
+
+        /// Simulation duration (seconds)
+        #[arg(long, default_value = "0.05")]
+        duration: f32,
+
+        /// Pulse stretch time constant (seconds, 0 to disable)
+        #[arg(long, default_value = "0.00167")]
+        tau_pulse: f32,
+
+        /// Output CSV file
+        #[arg(long, default_value = "neuron_output.csv")]
+        output: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -292,6 +327,16 @@ fn main() -> Result<()> {
             analog_output,
             no_pulse_stretch,
         } => run_spice(checkpoint, &data_dir, sample, &output_dir, run_ngspice, num_steps, analog_output, !no_pulse_stretch),
+        Commands::NeuronTest {
+            tau_m,
+            dt,
+            threshold,
+            vref,
+            input_current,
+            duration,
+            tau_pulse,
+            output,
+        } => run_neuron_test(tau_m, dt, threshold, vref, input_current, duration, tau_pulse, &output),
     }
 }
 
@@ -1247,6 +1292,101 @@ fn run_spice(
         println!();
         println!("Or use --run-ngspice flag to run automatically");
     }
+
+    Ok(())
+}
+
+/// Run single-neuron test for SPICE comparison
+fn run_neuron_test(
+    tau_m: f32,
+    dt: f32,
+    threshold: f32,
+    vref: f32,
+    input_current: f32,
+    duration: f32,
+    tau_pulse: f32,
+    output_path: &str,
+) -> Result<()> {
+    use gilgamesh::neurons::Leaky;
+    use std::fs::File;
+    use std::io::Write;
+
+    println!("=== Single Neuron Test ===");
+    println!();
+    println!("Parameters:");
+    println!("  tau_m      = {:.4} ms", tau_m * 1000.0);
+    println!("  dt         = {:.4} us", dt * 1e6);
+    println!("  threshold  = {:.3} V", threshold);
+    println!("  vref       = {:.3} V", vref);
+    println!("  input      = {:.4} uA", input_current * 1e6);
+    println!("  duration   = {:.2} ms", duration * 1000.0);
+    println!("  tau_pulse  = {:.4} ms", tau_pulse * 1000.0);
+    println!();
+
+    // Create a single LIF neuron with physics mode
+    let neuron = if tau_pulse > 0.0 {
+        Leaky::new_physics_with_pulse(1, tau_m, dt, tau_pulse, threshold + 1.0)
+            .with_threshold(threshold - vref) // Threshold relative to vref
+    } else {
+        Leaky::new_physics(1, tau_m, dt)
+            .with_threshold(threshold - vref)
+    };
+
+    let num_steps = (duration / dt) as usize;
+    println!("Running {} timesteps...", num_steps);
+
+    // Open output file
+    let mut file = File::create(output_path)
+        .with_context(|| format!("Failed to create output file: {}", output_path))?;
+
+    // Write CSV header
+    writeln!(file, "time,membrane,spike,pulse")?;
+
+    // Initialize state
+    let mut state = neuron.init_state(1);
+    let mut spike_count = 0;
+    let mut pulse_value = 0.0f32;
+
+    // Convert input current to equivalent voltage input
+    // In the SPICE model, current flows through R_leak to develop voltage
+    // V = I * R, where R = tau_m / C_mem
+    // For simplicity, we'll use input_current as a scaled input value
+    // The actual scaling depends on the membrane capacitance
+    let c_mem = 10e-9; // 10 nF (matching SPICE default)
+    let r_leak = tau_m / c_mem;
+    let input_voltage = input_current * r_leak; // V = I * R
+
+    // Create input tensor (single neuron, single batch)
+    let input = ndarray::array![[input_voltage]];
+
+    for step in 0..num_steps {
+        let time = step as f32 * dt;
+
+        // Forward pass
+        let (spikes, new_state, _) = neuron.forward(&input, &state);
+
+        // Update pulse decay (simple exponential for now)
+        if spikes[[0, 0]] > 0.5 {
+            pulse_value = 5.0; // VDD
+            spike_count += 1;
+        } else if tau_pulse > 0.0 {
+            let decay = (-dt / tau_pulse).exp();
+            pulse_value *= decay;
+        }
+
+        // Get membrane voltage (add vref for absolute voltage)
+        let membrane = state.mem[[0, 0]] + vref;
+
+        // Write to CSV
+        writeln!(file, "{:.9},{:.6},{:.1},{:.6}", time, membrane, spikes[[0, 0]], pulse_value)?;
+
+        state = new_state;
+    }
+
+    println!();
+    println!("Simulation complete:");
+    println!("  Total spikes: {}", spike_count);
+    println!("  Output: {}", output_path);
 
     Ok(())
 }

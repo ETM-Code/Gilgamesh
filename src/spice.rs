@@ -221,11 +221,15 @@ impl SpiceParams {
     pub fn from_network(net: &Network) -> Self {
         let mut params = Self::default();
 
-        // Extract tau_m from network if available
-        if let Some(tau_m) = net.lif1.mode.tau_m() {
-            // tau = R * C, so R = tau / C
-            params.membrane.r_leak = tau_m / params.membrane.c_mem;
-        }
+        // Membrane time constant: always derive from the network.
+        //
+        // In Simple mode the network is trained with a discrete decay `beta`, which implies
+        // an effective tau assuming a 1ms step (see `Leaky::get_tau_m()`).
+        // If we keep the default SPICE tau (~1.2ms) while the network beta implies a much
+        // larger tau (often ~10–30ms), the leak is ~10–25× too strong and the membrane never
+        // reaches threshold for the same synaptic currents.
+        let tau_m = net.lif1.mode.tau_m().unwrap_or_else(|| net.lif1.get_tau_m());
+        params.membrane.r_leak = tau_m / params.membrane.c_mem;
 
         // Use network threshold (normalized to voltage)
         // The network threshold is typically 1.0, which maps to over_vref
@@ -343,7 +347,9 @@ impl SpiceNetlist {
                     // Scale weight to appropriate current (nA to uA range)
                     let scaled_weight = weight * 1e-6; // Convert to microamps/volt
                     content.push_str(&format!(
-                        "Gw1_{}_{} sum_h_{} 0 in_{} vref {:.6e}\n",
+                        // Inject current INTO the summing node for positive (weight * input).
+                        // In SPICE, a VCCS delivers current from n+ to n-.
+                        "Gw1_{}_{} 0 sum_h_{} in_{} vref {:.6e}\n",
                         i, h, h, i, scaled_weight
                     ));
                 }
@@ -357,7 +363,8 @@ impl SpiceNetlist {
                 let b = bias[h];
                 if b.abs() > 1e-6 {
                     let scaled_bias = b * 1e-6;
-                    content.push_str(&format!("Ib1_{} sum_h_{} 0 DC {:.6e}\n", h, h, scaled_bias));
+                    // Positive bias should depolarize (inject into sum).
+                    content.push_str(&format!("Ib1_{} 0 sum_h_{} DC {:.6e}\n", h, h, scaled_bias));
                 }
             }
         }
@@ -382,7 +389,8 @@ impl SpiceNetlist {
                 if weight.abs() > 1e-6 {
                     let scaled_weight = weight * 1e-6;
                     content.push_str(&format!(
-                        "Gw2_{}_{} sum_o_{} 0 pulse_h_{} 0 {:.6e}\n",
+                        // Inject current INTO the summing node for positive weights.
+                        "Gw2_{}_{} 0 sum_o_{} pulse_h_{} 0 {:.6e}\n",
                         h, o, o, h, scaled_weight
                     ));
                 }
@@ -396,7 +404,7 @@ impl SpiceNetlist {
                 let b = bias[o];
                 if b.abs() > 1e-6 {
                     let scaled_bias = b * 1e-6;
-                    content.push_str(&format!("Ib2_{} sum_o_{} 0 DC {:.6e}\n", o, o, scaled_bias));
+                    content.push_str(&format!("Ib2_{} 0 sum_o_{} DC {:.6e}\n", o, o, scaled_bias));
                 }
             }
         }
@@ -463,8 +471,11 @@ impl SpiceNetlist {
         s.push_str("\n");
 
         // ========== TIA with finite DC gain and compensation ==========
+        // Inverting integrator: Vmem = gain * (Vref - Vsum) for negative feedback
+        // When current flows INTO sum, sum rises slightly, mem drops (negative feedback)
         s.push_str("* ---------- TIA op-amp with finite gain and compensation ----------\n");
-        s.push_str("Eint mem 0 sum vref 2e5\n");
+        s.push_str("* Inverting integrator: Vmem = gain * (Vref - Vsum)\n");
+        s.push_str("Eint mem 0 vref sum 2e5\n");
         s.push_str("Rout_int mem 0 20\n");
         s.push_str("Cint mem 0 5p\n");
         s.push_str(&format!("Cmem mem sum {:.3e}\n", params.membrane.c_mem));
@@ -512,9 +523,11 @@ impl SpiceNetlist {
 
         s.push_str("Bdef vdef 0 V = V(vref) - V(mem)\n");
         s.push_str("Btheta_rel vtheta_rel 0 V = V(vth_node) - V(vref)\n");
+        // Compare deflection against the *physical* threshold above Vref (with hysteresis/adaptation).
+        // `vdef` and `vtheta_rel` are both in volts above Vref.
         s.push_str(&format!(
-            "Bcomp comp_raw 0 V = VLO + (VHI - VLO)*(0.5*(1 + tanh( ( V(vdef) - ( {} + {} ) ) / VSW )))\n",
-            params.threshold.over_vref, params.comparator.offset
+            "Bcomp comp_raw 0 V = VLO + (VHI - VLO)*(0.5*(1 + tanh( ( V(vdef) - ( V(vtheta_rel) + {} ) ) / VSW )))\n",
+            params.comparator.offset
         ));
         s.push_str(&format!("Rcout comp_raw comp_out {:.3e}\n", rout));
         s.push_str(&format!("Ccout comp_out 0 {:.3e}\n", rc));
@@ -751,6 +764,76 @@ impl SpiceOutput {
     pub fn get_voltage(&self, node: &str) -> Option<&Vec<f32>> {
         self.voltages.get(node)
     }
+
+    /// Parse ngspice wrdata output format
+    ///
+    /// wrdata format: each line has pairs of (time, value) for each variable
+    /// Example: t1 v1 t2 v2 t3 v3 ... (time repeats for each variable)
+    pub fn parse_wrdata<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let content = fs::read_to_string(path.as_ref())
+            .with_context(|| format!("Failed to read wrdata file: {:?}", path.as_ref()))?;
+
+        let mut time: Vec<f32> = Vec::new();
+        let mut all_values: Vec<Vec<f32>> = Vec::new();
+        let mut num_vars = 0;
+
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let values: Vec<f32> = line
+                .split_whitespace()
+                .filter_map(|s| s.parse::<f32>().ok())
+                .collect();
+
+            if values.is_empty() {
+                continue;
+            }
+
+            // wrdata format: t1 v1 t2 v2 t3 v3 ...
+            // Each pair is (time, value) for one variable
+            // Time should be the same for all variables in a row
+            let pairs = values.len() / 2;
+            if num_vars == 0 {
+                num_vars = pairs;
+                all_values = vec![Vec::new(); num_vars];
+            }
+
+            // Extract time from first pair
+            if pairs > 0 {
+                time.push(values[0]);
+            }
+
+            // Extract each variable's value (skip time in each pair)
+            for i in 0..pairs.min(num_vars) {
+                let value_idx = i * 2 + 1; // odd indices are values
+                if value_idx < values.len() {
+                    all_values[i].push(values[value_idx]);
+                }
+            }
+        }
+
+        // Build voltage map with generic names
+        // The order matches what we put in wrdata command:
+        // v(pulse_o_0) v(pulse_o_1) ... v(mem_o_0) v(mem_o_1) ... v(pulse_h_0) v(mem_h_0) ...
+        let mut voltages = HashMap::new();
+
+        // We saved: output pulses (10), output mems (10), then some hidden (pulse, mem pairs)
+        let output_size = 10;
+        for i in 0..output_size.min(num_vars) {
+            voltages.insert(format!("v(pulse_o_{})", i), all_values.get(i).cloned().unwrap_or_default());
+        }
+        for i in 0..output_size.min(num_vars.saturating_sub(output_size)) {
+            let idx = output_size + i;
+            if idx < all_values.len() {
+                voltages.insert(format!("v(mem_o_{})", i), all_values[idx].clone());
+            }
+        }
+
+        Ok(Self { time, voltages })
+    }
 }
 
 /// Run ngspice on a netlist file
@@ -762,23 +845,30 @@ pub fn run_ngspice<P1: AsRef<Path>, P2: AsRef<Path>>(netlist_path: P1, output_di
     fs::create_dir_all(output_dir)
         .with_context(|| format!("Failed to create output directory: {:?}", output_dir))?;
 
+    // Get absolute path to netlist (needed because we change working directory)
+    let netlist_abs = netlist_path.canonicalize()
+        .with_context(|| format!("Failed to resolve netlist path: {:?}", netlist_path))?;
+
     // Run ngspice in batch mode
+    // -b: batch mode (non-interactive)
+    // -r: specify raw output file
     let output = Command::new("ngspice")
         .args(["-b", "-r"])
         .arg(output_dir.join("gilgamesh_output.raw"))
-        .arg(netlist_path)
+        .arg(&netlist_abs)
         .current_dir(output_dir)
         .output()
         .with_context(|| "Failed to run ngspice. Is it installed?")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ngspice failed: {}", stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!("ngspice failed:\nstderr: {}\nstdout: {}", stderr, stdout);
     }
 
-    // Parse output
-    let raw_path = output_dir.join("gilgamesh_output.raw");
-    SpiceOutput::parse_raw(&raw_path)
+    // Parse output (wrdata format produces .txt file)
+    let txt_path = output_dir.join("gilgamesh_output.txt");
+    SpiceOutput::parse_wrdata(&txt_path)
 }
 
 /// Comparison result between gilgamesh and SPICE simulation

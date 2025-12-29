@@ -2,7 +2,7 @@
 //!
 //! Provides training loop, optimizer, and parallel batch processing.
 
-use crate::data::{BatchIterator, InputEncoder, InputEncodingType, MnistDataset};
+use crate::data::{BatchIterator, InputEncoder, MnistDataset};
 use crate::network::{Network, NetworkGradients};
 use crate::tensor::cross_entropy_loss;
 use ndarray::{Array1, Array2};
@@ -96,7 +96,6 @@ impl AdamOptimizer {
 
     pub fn step(&mut self, net: &mut Network, grads: &NetworkGradients) {
         self.t += 1;
-        let t = self.t as f32;
 
         // Bias correction factors
         let bc1 = 1.0 - self.beta1.powi(self.t as i32);

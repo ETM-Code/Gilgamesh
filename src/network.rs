@@ -1105,7 +1105,7 @@ mod tests {
         let net = Network::new(49, 100, 10, 0.9, 42);
         let input = Array2::from_elem((2, 49), 0.1);
 
-        let (spikes, _, caches) = net.forward(&input, 5);
+        let (_spikes, _, caches) = net.forward(&input, 5);
 
         // Gradient of cross-entropy loss (mock)
         let grad_output = Array2::from_elem((2, 10), 0.1);
@@ -1268,9 +1268,12 @@ mod tests {
         );
 
         // Test with temporal encoding (row-by-row)
+        // Temporal encoding outputs 7 features (one row at a time), so we need
+        // a network with 7 inputs, not 49
+        let net_temporal = Network::new(7, 100, 10, 0.9, 42);
         let encoder_temporal = InputEncoder::temporal(7, 0.002, 0.9, 0.001);
         let (spikes_temporal, mem_temporal, caches_temporal) =
-            net.forward_with_encoding(&input, &encoder_temporal, 10);
+            net_temporal.forward_with_encoding(&input, &encoder_temporal, 10);
 
         // With temporal encoding, timesteps may be auto-adjusted
         // 7 rows * 2ms spacing = 14ms = 14 timesteps at dt=1ms
@@ -1279,13 +1282,7 @@ mod tests {
         assert_eq!(spikes_temporal.shape(), &[4, 10]);
         assert_eq!(mem_temporal.shape(), &[4, 10]);
 
-        // Temporal and rate-coded should produce different results
-        // (because input is presented differently)
-        let diff_temporal: f32 = (&spikes_temporal - &spikes_regular)
-            .mapv(|x| x.abs())
-            .sum();
-        // Note: could be zero if input happens to give same result, but generally different
-        // Just check it ran without error
+        // Just check it ran without error and produced valid output
         assert!(spikes_temporal.iter().all(|v| v.is_finite()));
     }
 
@@ -1315,7 +1312,7 @@ mod tests {
 
         // With analog enabled, results may differ from pure spike mode
         // (membrane contributes to inter-layer signal)
-        let diff_analog: f32 = (&spikes_analog - &spikes_regular)
+        let _diff_analog: f32 = (&spikes_analog - &spikes_regular)
             .mapv(|x| x.abs())
             .sum();
         // Just verify it runs and produces valid output

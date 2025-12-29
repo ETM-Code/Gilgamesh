@@ -38,12 +38,13 @@ serde_json = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 indicatif = "0.17"
+glob = "0.3"
 
 # MNIST data loading
 mnist = "0.6"
 
-# Visualization (optional)
-rerun = { version = "0.21", optional = true }
+# Visualization (optional) - using default features to avoid wgpu conflicts with nannou
+rerun = { version = "0.21", default-features = false, features = ["sdk"], optional = true }
 
 # Dashboard (optional)
 eframe = { version = "0.29", optional = true }
