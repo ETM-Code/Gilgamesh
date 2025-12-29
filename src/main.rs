@@ -1311,25 +1311,33 @@ fn run_neuron_test(
     use std::fs::File;
     use std::io::Write;
 
+    // Circuit parameters (matching SPICE defaults)
+    let c_mem = 10e-9; // 10 nF membrane capacitance
+    let r_leak = tau_m / c_mem; // Leak resistance from tau = RC
+
     println!("=== Single Neuron Test ===");
     println!();
     println!("Parameters:");
     println!("  tau_m      = {:.4} ms", tau_m * 1000.0);
     println!("  dt         = {:.4} us", dt * 1e6);
-    println!("  threshold  = {:.3} V", threshold);
+    println!("  threshold  = {:.3} V (over vref)", threshold - vref);
     println!("  vref       = {:.3} V", vref);
     println!("  input      = {:.4} uA", input_current * 1e6);
     println!("  duration   = {:.2} ms", duration * 1000.0);
     println!("  tau_pulse  = {:.4} ms", tau_pulse * 1000.0);
+    println!("  C_mem      = {:.1} nF", c_mem * 1e9);
+    println!("  R_leak     = {:.1} kΩ", r_leak / 1000.0);
     println!();
 
     // Create a single LIF neuron with physics mode
+    // Threshold is relative to ground (membrane starts at 0 internally)
+    let over_vref_threshold = threshold - vref; // e.g., 3.3 - 2.5 = 0.8V over vref
     let neuron = if tau_pulse > 0.0 {
-        Leaky::new_physics_with_pulse(1, tau_m, dt, tau_pulse, threshold + 1.0)
-            .with_threshold(threshold - vref) // Threshold relative to vref
+        Leaky::new_physics_with_pulse(1, tau_m, dt, tau_pulse, 5.0)
+            .with_threshold(over_vref_threshold)
     } else {
         Leaky::new_physics(1, tau_m, dt)
-            .with_threshold(threshold - vref)
+            .with_threshold(over_vref_threshold)
     };
 
     let num_steps = (duration / dt) as usize;
@@ -1347,17 +1355,22 @@ fn run_neuron_test(
     let mut spike_count = 0;
     let mut pulse_value = 0.0f32;
 
-    // Convert input current to equivalent voltage input
-    // In the SPICE model, current flows through R_leak to develop voltage
-    // V = I * R, where R = tau_m / C_mem
-    // For simplicity, we'll use input_current as a scaled input value
-    // The actual scaling depends on the membrane capacitance
-    let c_mem = 10e-9; // 10 nF (matching SPICE default)
-    let r_leak = tau_m / c_mem;
-    let input_voltage = input_current * r_leak; // V = I * R
+    // For passive RC membrane (matching real neuromorphic hardware):
+    // dV/dt = I/C - V/tau
+    // Per timestep: dV = (I * dt) / C
+    //
+    // Steady-state: V_ss = I * R = I * tau / C
+    // With I=1µA, tau=1.2ms, C=10nF: V_ss = 0.12V
+    //
+    // This matches the passive SPICE model (no op-amp TIA).
+    // For TIA-based SPICE (with op-amp gain), the effective transimpedance
+    // is ~20x higher, but that's not realistic for ASIC/PCB implementation.
+    let input_per_step = (input_current * dt) / c_mem;
+    println!("  Input/step = {:.6} V", input_per_step);
+    println!();
 
     // Create input tensor (single neuron, single batch)
-    let input = ndarray::array![[input_voltage]];
+    let input = ndarray::array![[input_per_step]];
 
     for step in 0..num_steps {
         let time = step as f32 * dt;
@@ -1374,8 +1387,9 @@ fn run_neuron_test(
             pulse_value *= decay;
         }
 
-        // Get membrane voltage (add vref for absolute voltage)
-        let membrane = state.mem[[0, 0]] + vref;
+        // Get membrane voltage (ground-referenced, matching SPICE v(mem))
+        // Internal membrane is relative to virtual ground, same as SPICE
+        let membrane = state.mem[[0, 0]];
 
         // Write to CSV
         writeln!(file, "{:.9},{:.6},{:.1},{:.6}", time, membrane, spikes[[0, 0]], pulse_value)?;

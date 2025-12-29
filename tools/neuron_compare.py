@@ -347,27 +347,52 @@ def plot_comparison(
     t_spice: List[float], v_spice: List[float],
     t_rust: List[float], v_rust: List[float],
     output_path: Path,
-    metrics: dict
+    metrics: dict,
+    pulse_spice: List[float] = None,
+    pulse_rust: List[float] = None,
 ):
-    """Generate comparison plot."""
+    """Generate comparison plot with membrane and pulse outputs."""
     if not HAS_MATPLOTLIB:
         print("matplotlib not installed - skipping plot")
         return
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    import numpy as np
 
-    # Top: Overlay
+    # Determine number of subplots based on available data
+    has_pulse = pulse_spice is not None or pulse_rust is not None
+    n_plots = 3 if has_pulse else 2
+
+    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 4 * n_plots), sharex=True)
+
+    # Top: Membrane voltage overlay
     ax1 = axes[0]
-    ax1.plot([t * 1000 for t in t_spice], v_spice, 'b-', label='SPICE', linewidth=1.5)
-    ax1.plot([t * 1000 for t in t_rust], v_rust, 'r--', label='Gilgamesh', linewidth=1.5)
+    ax1.plot([t * 1000 for t in t_spice], v_spice, 'b-', label='SPICE v(mem)', linewidth=1.5)
+    ax1.plot([t * 1000 for t in t_rust], v_rust, 'r--', label='Gilgamesh mem', linewidth=1.5)
     ax1.set_ylabel('Membrane Voltage (V)')
-    ax1.set_title('Single LIF Neuron: SPICE vs Gilgamesh')
-    ax1.legend()
+    ax1.set_title('Single LIF Neuron: SPICE vs Gilgamesh - Membrane Dynamics')
+    ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
 
+    # Middle: Pulse/comparator output
+    if has_pulse:
+        ax2 = axes[1]
+        if pulse_spice is not None:
+            ax2.plot([t * 1000 for t in t_spice], pulse_spice, 'b-',
+                     label='SPICE v(comp_pulse)', linewidth=1.5)
+        if pulse_rust is not None:
+            ax2.plot([t * 1000 for t in t_rust], pulse_rust, 'r--',
+                     label='Gilgamesh pulse', linewidth=1.5)
+        ax2.set_ylabel('Pulse Output (V)')
+        ax2.set_title('Comparator / Pulse Stretcher Output')
+        ax2.legend(loc='upper right')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_ylim(-0.5, 5.5)  # Typical 0-5V range
+
+        ax_diff = axes[2]
+    else:
+        ax_diff = axes[1]
+
     # Bottom: Difference
-    ax2 = axes[1]
-    import numpy as np
     t_common = np.linspace(
         max(t_spice[0], t_rust[0]),
         min(t_spice[-1], t_rust[-1]),
@@ -377,12 +402,12 @@ def plot_comparison(
     v_rust_interp = np.interp(t_common, t_rust, v_rust)
     diff = v_spice_interp - v_rust_interp
 
-    ax2.plot(t_common * 1000, diff * 1000, 'g-', linewidth=1)
-    ax2.axhline(0, color='k', linestyle=':', linewidth=0.5)
-    ax2.set_xlabel('Time (ms)')
-    ax2.set_ylabel('Difference (mV)')
-    ax2.set_title(f'Error: RMS={metrics["rms_error"]*1000:.3f}mV, Max={metrics["max_abs_error"]*1000:.3f}mV')
-    ax2.grid(True, alpha=0.3)
+    ax_diff.plot(t_common * 1000, diff * 1000, 'g-', linewidth=1)
+    ax_diff.axhline(0, color='k', linestyle=':', linewidth=0.5)
+    ax_diff.set_xlabel('Time (ms)')
+    ax_diff.set_ylabel('Membrane Difference (mV)')
+    ax_diff.set_title(f'Membrane Error: RMS={metrics["rms_error"]*1000:.3f}mV, Max={metrics["max_abs_error"]*1000:.3f}mV, Corr={metrics["correlation"]:.4f}')
+    ax_diff.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
