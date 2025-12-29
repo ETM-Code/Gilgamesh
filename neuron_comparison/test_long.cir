@@ -1,0 +1,12 @@
+* 500ms simulation
+.include /Users/eoghancollins/Tarskii/gilgamesh/neuron_comparison/neuron_long.subckt
+Vdd vdd 0 DC 5.0
+Vref vref 0 DC 2.5
+Xneuron mem vref vdd comp_pulse sum lif_passive_passive
+Iin 0 sum DC 8e-6
+.ic V(mem)=2.5
+.tran 1e-6 0.5 0 1e-6
+.control
+run
+.endc
+.end

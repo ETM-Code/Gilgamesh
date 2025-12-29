@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(checkpoint.architecture.input_size, 49);
         assert_eq!(checkpoint.architecture.hidden_size, 100);
         assert_eq!(checkpoint.architecture.output_size, 10);
-        assert_eq!(checkpoint.architecture.mode, "simple");
+        assert_eq!(checkpoint.architecture.mode, "physics"); // Now defaults to Physics mode
 
         // Reconstruct network
         let net2 = checkpoint.to_network().unwrap();

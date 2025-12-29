@@ -21,7 +21,7 @@ pub struct Network {
 }
 
 impl Network {
-    /// Create a new network with specified architecture (Simple mode)
+    /// Create a new network with specified architecture (defaults to Physics mode)
     pub fn new(input_size: usize, hidden_size: usize, output_size: usize, beta: f32, seed: u64) -> Self {
         let spike_grad = SurrogateGradient::fast_sigmoid(25.0);
 

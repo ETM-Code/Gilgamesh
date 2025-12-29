@@ -49,6 +49,10 @@ pub struct Linear {
     pub in_features: usize,
     /// Output features
     pub out_features: usize,
+    /// Current gain for hardware simulation (converts normalized output to physical current)
+    /// When set, output is scaled by this factor to produce physical current values.
+    /// Use HardwareConfig::compute_current_gain() to get appropriate value.
+    pub current_gain: Option<f32>,
 }
 
 impl Linear {
@@ -85,7 +89,33 @@ impl Linear {
             bias: bias_vec,
             in_features,
             out_features,
+            current_gain: None,
         }
+    }
+
+    /// Set current gain for hardware simulation
+    ///
+    /// When set, the forward pass output is scaled by this factor to convert
+    /// normalized weight outputs to physical synaptic currents.
+    ///
+    /// # Arguments
+    /// * `gain` - Current gain in Amps (use HardwareConfig::compute_current_gain())
+    ///
+    /// # Example
+    /// ```ignore
+    /// let hw = HardwareConfig::default();
+    /// let fc = Linear::new(100, 50, true)
+    ///     .with_current_gain(hw.compute_current_gain());
+    /// ```
+    pub fn with_current_gain(mut self, gain: f32) -> Self {
+        self.current_gain = Some(gain);
+        self
+    }
+
+    /// Clear current gain (return to normalized output)
+    pub fn without_current_gain(mut self) -> Self {
+        self.current_gain = None;
+        self
     }
 
     /// Forward pass: y = x @ W + b

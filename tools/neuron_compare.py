@@ -2,13 +2,17 @@
 """
 Single-neuron SPICE vs Gilgamesh comparison tool.
 
-Compares the membrane voltage dynamics of a single LIF neuron between:
-1. ngspice simulation (using the pulse-stretch neuron generator)
-2. Gilgamesh Rust implementation
+Automates the full comparison pipeline:
+1. Generates SPICE netlist (passive RC model)
+2. Runs ngspice simulation
+3. Runs Gilgamesh Rust simulation
+4. Parses both outputs
+5. Generates comprehensive comparison plots
 
 Usage:
-    python tools/neuron_compare.py --input-current 1e-6 --duration 0.05
-    python tools/neuron_compare.py --neuron-config path/to/neuron.json
+    python tools/neuron_compare.py
+    python tools/neuron_compare.py --input-current 10e-6 --duration 0.05
+    python tools/neuron_compare.py --output-dir ./my_comparison
 """
 
 from __future__ import annotations
@@ -23,7 +27,9 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
+
+import numpy as np
 
 # Add SPICE neuronSim to path for importing the generator
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -35,6 +41,7 @@ sys.path.insert(0, str(SPICE_NEURON_SIM))
 
 try:
     import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
@@ -54,114 +61,119 @@ class NeuronParams:
     threshold_over_vref: float = 0.8  # Threshold at Vref + 0.8V = 3.3V
 
     # Pulse stretching
-    tau_pulse: float = 1.67e-3  # 1.67 ms
+    # Shorter tau gives faster reset, closer to Gilgamesh instantaneous reset
+    tau_pulse: float = 0.5e-3  # 0.5 ms (reset held for ~0.35ms)
+
+    # Reset switch threshold
+    # Lower = longer reset hold time (switch stays on longer)
+    # Higher = shorter reset hold time (switch turns off sooner)
+    reset_switch_vt: float = 2.5  # Default: half of VDD
+
+    # Hardware timing (for Gilgamesh to match SPICE)
+    comparator_delay: float = 50e-9  # 50ns comparator propagation delay
+    reset_hold: float = 0.0  # Reset hold period (0 = auto-calculate from tau_pulse)
+    v_peak: float = 2.6  # Peak pulse voltage (accounts for diode drop in SPICE)
 
     # Simulation
     dt: float = 1e-6           # 1 us timestep
     duration: float = 0.05     # 50 ms total
 
     # Input
-    input_current: float = 1e-6  # 1 uA constant input
+    input_current: float = 10e-6  # 10 uA constant input (enough to spike)
 
     @property
     def tau_m(self) -> float:
         return self.c_mem * self.r_leak
 
     @property
+    def effective_reset_hold(self) -> float:
+        """Calculate effective reset hold period.
+
+        If reset_hold is 0, auto-calculate from tau_pulse.
+
+        Theoretical: tau_pulse * ln(2) ≈ 0.693 * tau_pulse (time for pulse to reach VDD/2)
+        Empirical: ~0.3 * tau_pulse works better because Gilgamesh uses instant reset
+        while SPICE uses RC decay, so Gilgamesh needs a shorter hold period.
+        """
+        if self.reset_hold > 0:
+            return self.reset_hold
+        # Auto-calculate from tau_pulse (empirically calibrated)
+        return self.tau_pulse * 0.3  # ~0.15ms for tau_pulse=0.5ms
+
+    @property
     def num_steps(self) -> int:
         return int(self.duration / self.dt)
 
-    def to_neuron_json(self) -> dict:
-        """Convert to the JSON format expected by the SPICE generator."""
-        # Calculate pulse stretch R and C from tau
-        # tau = R * C, use C = 100nF, solve for R
-        c_pw = 100e-9
-        r_pw = self.tau_pulse / c_pw
+    @property
+    def v_steady_state(self) -> float:
+        """Steady-state voltage above Vref with constant input."""
+        return self.input_current * self.r_leak
 
-        return {
-            "name": "test_neuron",
-            "supplies": {"vdd": self.vdd, "vref": self.vref},
-            "membrane": {"C_mem_F": self.c_mem, "R_leak_ohm": self.r_leak},
-            "threshold": {
-                "over_vref_V": self.threshold_over_vref,
-                "hysteresis_V": 0.05,
-                "C_adapt_F": 22e-9,
-                "divider_scale": 5.0
-            },
-            "reset": {
-                "enable": True,
-                "series_R_ohm": 200.0,
-                "mux_Ron_ohm": 10.0,
-                "mux_Roff_ohm": 1e9,
-                "mux_Coff_F": 7e-12,
-                "switch_Vt": 2.5,
-                "switch_Vh": 0.1
-            },
-            "comparator": {
-                "offset_V": 0.003,
-                "prop_delay_s": 40e-9,
-                "vlow_V": 0.0,
-                "vhigh_V": self.vdd,
-                "gain_fast": 2000.0
-            },
-            "analog_out": {
-                "gain": 1.0,
-                "sign": 1,
-                "clamp_to_rails": False,
-                "analog_out_R_ohm": 10e3,
-                "inverting": True,
-                "R1_ohm": 10e3,
-                "R2_ohm": 10e3,
-                "bias_current_A": 10e-6
-            },
-            "bias_currents": {"tia_A": 20e-6, "comparator_A": 2e-6},
-            "simulation": {"tstop_s": self.duration, "tstep_s": self.dt},
-            "pulse_stretch": {
-                "enable": True,
-                "R_pw_ohm": r_pw,
-                "C_pw_F": c_pw
-            }
-        }
+    def print_summary(self):
+        """Print parameter summary."""
+        print("=" * 60)
+        print("Neuron Parameters")
+        print("=" * 60)
+        print(f"  C_mem:      {self.c_mem * 1e9:.1f} nF")
+        print(f"  R_leak:     {self.r_leak / 1e3:.1f} kΩ")
+        print(f"  tau_m:      {self.tau_m * 1000:.3f} ms")
+        print(f"  Threshold:  {self.vref + self.threshold_over_vref:.2f} V ({self.threshold_over_vref:.2f} V above Vref)")
+        print(f"  tau_pulse:  {self.tau_pulse * 1000:.3f} ms")
+        print(f"  Input:      {self.input_current * 1e6:.2f} µA")
+        print(f"  V_ss:       {self.v_steady_state:.3f} V above Vref")
+        print(f"  Duration:   {self.duration * 1000:.1f} ms")
+        print(f"  dt:         {self.dt * 1e6:.1f} µs")
+        print(f"  Will spike: {'Yes' if self.v_steady_state > self.threshold_over_vref else 'No'}")
+        print("-" * 60)
+        print("Hardware Timing (Gilgamesh)")
+        print("-" * 60)
+        print(f"  Comp delay: {self.comparator_delay * 1e9:.1f} ns")
+        print(f"  Reset hold: {self.effective_reset_hold * 1000:.3f} ms (from tau_pulse)")
+        print(f"  V_peak:     {self.v_peak:.2f} V (with diode drop)")
+        print("=" * 60)
 
 
-def generate_spice_netlist(params: NeuronParams, output_dir: Path, passive: bool = True) -> Path:
-    """Generate a single-neuron SPICE netlist with constant current input.
+@dataclass
+class SimulationResults:
+    """Container for simulation results."""
+    time: np.ndarray
+    membrane: np.ndarray  # Relative to Vref
+    pulse: np.ndarray     # Comparator/pulse output (0-5V)
+    spike_times: List[float]  # Times when spikes occurred
+    source: str  # "spice" or "gilgamesh"
 
-    Args:
-        params: Neuron parameters
-        output_dir: Output directory
-        passive: If True, use passive RC model (no op-amp). If False, use TIA model.
-    """
+
+def generate_spice_netlist(params: NeuronParams, output_dir: Path) -> Path:
+    """Generate passive SPICE netlist."""
+    from lif_neuron_generator_passive import PassiveNeuronConfig, generate_passive_neuron
+
+    cfg = PassiveNeuronConfig.default()
+    cfg.supplies.vdd = params.vdd
+    cfg.supplies.vref = params.vref
+    cfg.membrane.C_mem_F = params.c_mem
+    cfg.membrane.R_leak_ohm = params.r_leak
+    cfg.threshold.over_vref_V = params.threshold_over_vref
+    cfg.simulation.tstop_s = params.duration
+    cfg.simulation.tstep_s = params.dt
+
+    if params.tau_pulse > 0:
+        cfg.pulse_stretch.enable = True
+        cfg.pulse_stretch.C_pw_F = 100e-9
+        cfg.pulse_stretch.R_pw_ohm = params.tau_pulse / cfg.pulse_stretch.C_pw_F
+
+    # Configure reset switch threshold for faster turn-off
+    cfg.reset.switch_vt = params.reset_switch_vt
+
+    subckt = generate_passive_neuron(cfg)
+    subckt_path = output_dir / "neuron_passive.subckt"
+    with open(subckt_path, 'w') as f:
+        f.write(subckt)
+
     csv_abs = (output_dir / 'spice_output.csv').resolve()
+    subckt_abs = subckt_path.resolve()
 
-    if passive:
-        # Use passive RC model (matches real hardware)
-        sys.path.insert(0, str(SPICE_NEURON_SIM))
-        from lif_neuron_generator_passive import PassiveNeuronConfig, generate_passive_neuron
-
-        # Create passive config
-        cfg = PassiveNeuronConfig.default()
-        cfg.supplies.vdd = params.vdd
-        cfg.supplies.vref = params.vref
-        cfg.membrane.C_mem_F = params.c_mem
-        cfg.membrane.R_leak_ohm = params.c_mem * params.c_mem  # This is wrong, fix:
-        cfg.membrane.R_leak_ohm = params.tau_m / params.c_mem  # R = tau / C
-        cfg.threshold.over_vref_V = params.threshold_over_vref
-        cfg.simulation.tstop_s = params.duration
-        cfg.simulation.tstep_s = params.dt
-        if params.tau_pulse > 0:
-            cfg.pulse_stretch.enable = True
-            cfg.pulse_stretch.C_pw_F = 100e-9
-            cfg.pulse_stretch.R_pw_ohm = params.tau_pulse / cfg.pulse_stretch.C_pw_F
-
-        subckt = generate_passive_neuron(cfg)
-        subckt_path = output_dir / "neuron_passive.subckt"
-        with open(subckt_path, 'w') as f:
-            f.write(subckt)
-
-        subckt_abs = subckt_path.resolve()
-        netlist = f"""* Passive LIF Neuron Test - Gilgamesh Comparison
-* Generated by neuron_compare.py (PASSIVE mode - no op-amp)
+    netlist = f"""* Passive LIF Neuron Test - Gilgamesh Comparison
+* Generated by neuron_compare.py
 
 .include {subckt_abs}
 
@@ -169,78 +181,26 @@ def generate_spice_netlist(params: NeuronParams, output_dir: Path, passive: bool
 Vdd vdd 0 DC {params.vdd}
 Vref vref 0 DC {params.vref}
 
-* Neuron instance
-* Pins: mem vref vdd comp_pulse sum
+* Neuron instance (pins: mem vref vdd comp_pulse sum)
 Xneuron mem vref vdd comp_pulse sum lif_passive_passive
 
-* Constant current input (into membrane node)
+* Constant current input
 Iin 0 sum DC {params.input_current}
 
-* Initial conditions (membrane at Vref)
+* Initial conditions
 .ic V(mem)={params.vref}
 
 * Transient analysis
 .tran {params.dt} {params.duration} 0 {params.dt}
 
-* Save data
+* Save membrane, pulse output, and comparator output
 .control
 run
-wrdata {csv_abs} v(mem) v(comp_pulse)
+wrdata {csv_abs} v(mem) v(comp_pulse) v(xneuron.comp_out)
 .endc
 
 .end
 """
-    else:
-        # Use TIA model (original, with op-amp)
-        from lif_neuron_generator_pulse_stretch import NeuronConfig, generate_detailed_neuron
-
-        # Write neuron config JSON
-        neuron_json = params.to_neuron_json()
-        neuron_json_path = output_dir / "neuron_config.json"
-        with open(neuron_json_path, 'w') as f:
-            json.dump(neuron_json, f, indent=2)
-
-        # Load config and generate subcircuit
-        cfg = NeuronConfig.load(str(neuron_json_path))
-        subckt = generate_detailed_neuron(cfg)
-
-        # Write subcircuit
-        subckt_path = output_dir / "neuron.subckt"
-        with open(subckt_path, 'w') as f:
-            f.write(subckt)
-
-        subckt_abs = subckt_path.resolve()
-        netlist = f"""* Single LIF Neuron Test - Gilgamesh Comparison
-* Generated by neuron_compare.py (TIA mode - with op-amp)
-
-.include {subckt_abs}
-
-* Power supplies
-Vdd vdd 0 DC {params.vdd}
-Vref vref 0 DC {params.vref}
-
-* Neuron instance
-* Pins: mem vref vdd comp_pulse analog_out sum
-Xneuron mem vref vdd comp_pulse analog_out sum test_neuron_detailed
-
-* Constant current input (into sum node)
-Iin 0 sum DC {params.input_current}
-
-* Initial conditions
-.ic V(mem)={params.vref} V(sum)={params.vref}
-
-* Transient analysis
-.tran {params.dt} {params.duration} 0 {params.dt}
-
-* Save data
-.control
-run
-wrdata {csv_abs} v(mem) v(comp_pulse) v(sum)
-.endc
-
-.end
-"""
-
     netlist_path = output_dir / "test_neuron.cir"
     with open(netlist_path, 'w') as f:
         f.write(netlist)
@@ -249,18 +209,17 @@ wrdata {csv_abs} v(mem) v(comp_pulse) v(sum)
 
 
 def run_ngspice(netlist_path: Path, output_dir: Path) -> Optional[Path]:
-    """Run ngspice and return path to output CSV."""
+    """Run ngspice simulation."""
     ngspice = shutil.which("ngspice")
     if ngspice is None:
         print("ERROR: ngspice not found in PATH")
         return None
 
     log_path = output_dir / "ngspice.log"
-    netlist_abs = netlist_path.resolve()
+    print(f"Running ngspice: {netlist_path.name}")
 
-    print(f"Running ngspice: {netlist_abs}")
     result = subprocess.run(
-        [ngspice, "-b", str(netlist_abs)],
+        [ngspice, "-b", str(netlist_path.resolve())],
         cwd=str(output_dir.resolve()),
         capture_output=True,
         text=True
@@ -274,7 +233,7 @@ def run_ngspice(netlist_path: Path, output_dir: Path) -> Optional[Path]:
 
     if result.returncode != 0:
         print(f"ngspice failed with code {result.returncode}")
-        print(result.stderr[:500] if result.stderr else "No stderr")
+        print(result.stderr[:500] if result.stderr else "Check ngspice.log")
         return None
 
     csv_path = output_dir / "spice_output.csv"
@@ -285,15 +244,12 @@ def run_ngspice(netlist_path: Path, output_dir: Path) -> Optional[Path]:
     return csv_path
 
 
-def parse_spice_csv(csv_path: Path, vref: float = 2.5) -> Tuple[List[float], List[float], List[float]]:
-    """Parse ngspice wrdata output. Returns (times, v_mem_relative, v_spike).
-
-    Note: SPICE outputs absolute voltage, we convert to relative (above Vref)
-    to match Gilgamesh output.
-    """
+def parse_spice_csv(csv_path: Path, vref: float = 2.5) -> SimulationResults:
+    """Parse ngspice wrdata output."""
     times = []
     v_mem = []
-    v_spike = []
+    v_pulse = []
+    v_comp = []
 
     with open(csv_path, 'r') as f:
         for line in f:
@@ -305,22 +261,40 @@ def parse_spice_csv(csv_path: Path, vref: float = 2.5) -> Tuple[List[float], Lis
                 try:
                     t = float(parts[0])
                     vm_abs = float(parts[1])
-                    # Convert to relative voltage (above Vref)
-                    vm = vm_abs - vref
-                    # Pulse output is in column 3 (index 2) for passive, or column 3 for TIA
-                    vs = float(parts[3]) if len(parts) > 3 else (float(parts[2]) if len(parts) > 2 else 0.0)
+                    # wrdata format: time val1 time val2 time val3 ...
+                    vp = float(parts[3]) if len(parts) > 3 else 0.0
+                    vc = float(parts[5]) if len(parts) > 5 else vp
+
                     times.append(t)
-                    v_mem.append(vm)
-                    v_spike.append(vs)
-                except ValueError:
+                    v_mem.append(vm_abs - vref)  # Convert to relative
+                    v_pulse.append(vp)
+                    v_comp.append(vc)
+                except (ValueError, IndexError):
                     continue
 
-    return times, v_mem, v_spike
+    # Detect spike times (when pulse goes high)
+    times_arr = np.array(times)
+    pulse_arr = np.array(v_pulse)
+    spike_times = []
+
+    if len(pulse_arr) > 1:
+        # Find rising edges above 2.5V threshold
+        above_thresh = pulse_arr > 2.5
+        rising_edges = np.diff(above_thresh.astype(int)) > 0
+        spike_indices = np.where(rising_edges)[0]
+        spike_times = times_arr[spike_indices].tolist()
+
+    return SimulationResults(
+        time=times_arr,
+        membrane=np.array(v_mem),
+        pulse=pulse_arr,
+        spike_times=spike_times,
+        source="spice"
+    )
 
 
-def run_gilgamesh_neuron(params: NeuronParams, output_dir: Path) -> Optional[Path]:
-    """Run Gilgamesh single-neuron simulation."""
-    # Build gilgamesh if needed
+def run_gilgamesh(params: NeuronParams, output_dir: Path) -> Optional[Path]:
+    """Run Gilgamesh neuron simulation."""
     print("Building Gilgamesh...")
     result = subprocess.run(
         ["cargo", "build", "--release"],
@@ -333,7 +307,6 @@ def run_gilgamesh_neuron(params: NeuronParams, output_dir: Path) -> Optional[Pat
         print(f"cargo build failed: {result.stderr[:500]}")
         return None
 
-    # Run the neuron-test command
     csv_path = output_dir / "gilgamesh_output.csv"
 
     cmd = [
@@ -351,15 +324,19 @@ def run_gilgamesh_neuron(params: NeuronParams, output_dir: Path) -> Optional[Pat
     if params.tau_pulse > 0:
         cmd.extend(["--tau-pulse", str(params.tau_pulse)])
 
-    print(f"Running Gilgamesh: {' '.join(cmd)}")
+    # Hardware timing parameters
+    if params.comparator_delay > 0:
+        cmd.extend(["--comparator-delay", str(params.comparator_delay)])
+    if params.effective_reset_hold > 0:
+        cmd.extend(["--reset-hold", str(params.effective_reset_hold)])
+    # Peak voltage (with diode drop)
+    cmd.extend(["--v-peak", str(params.v_peak)])
+
+    print(f"Running Gilgamesh neuron-test...")
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print(f"Gilgamesh neuron-test failed: {result.stderr}")
-        # Check if command exists
-        if "neuron-test" in result.stderr or "unrecognized" in result.stderr.lower():
-            print("\nNOTE: The neuron-test command needs to be added to Gilgamesh CLI.")
-            print("Run: gilgamesh --help  to see available commands.")
+        print(f"Gilgamesh failed: {result.stderr}")
         return None
 
     if not csv_path.exists():
@@ -369,146 +346,197 @@ def run_gilgamesh_neuron(params: NeuronParams, output_dir: Path) -> Optional[Pat
     return csv_path
 
 
-def parse_gilgamesh_csv(csv_path: Path) -> Tuple[List[float], List[float], List[float]]:
+def parse_gilgamesh_csv(csv_path: Path) -> SimulationResults:
     """Parse Gilgamesh CSV output."""
     times = []
     v_mem = []
     spikes = []
+    pulse = []
 
     with open(csv_path, 'r') as f:
         reader = csv.DictReader(f)
         for row in reader:
             times.append(float(row['time']))
             v_mem.append(float(row['membrane']))
-            spikes.append(float(row.get('spike', 0)))
+            spike_val = float(row.get('spike', 0))
+            spikes.append(spike_val)
+            # If there's a pulse column, use it; otherwise derive from spike
+            pulse_val = float(row.get('pulse', spike_val * 5.0))
+            pulse.append(pulse_val)
 
-    return times, v_mem, spikes
+    times_arr = np.array(times)
+    pulse_arr = np.array(pulse)
 
+    # Detect spike times using rising edges (same as SPICE)
+    spike_times = []
+    if len(pulse_arr) > 1:
+        # Find rising edges above 2.5V threshold
+        above_thresh = pulse_arr > 2.5
+        rising_edges = np.diff(above_thresh.astype(int)) > 0
+        spike_indices = np.where(rising_edges)[0]
+        spike_times = times_arr[spike_indices].tolist()
 
-def compute_metrics(
-    t_spice: List[float], v_spice: List[float],
-    t_rust: List[float], v_rust: List[float]
-) -> dict:
-    """Compute comparison metrics between SPICE and Rust traces."""
-    import numpy as np
-
-    # Interpolate to common time base
-    t_common = np.linspace(
-        max(t_spice[0], t_rust[0]),
-        min(t_spice[-1], t_rust[-1]),
-        min(len(t_spice), len(t_rust))
+    return SimulationResults(
+        time=times_arr,
+        membrane=np.array(v_mem),
+        pulse=pulse_arr,
+        spike_times=spike_times,
+        source="gilgamesh"
     )
 
-    v_spice_interp = np.interp(t_common, t_spice, v_spice)
-    v_rust_interp = np.interp(t_common, t_rust, v_rust)
 
-    diff = v_spice_interp - v_rust_interp
+def compute_metrics(spice: SimulationResults, rust: SimulationResults) -> Dict:
+    """Compute comparison metrics."""
+    # Interpolate to common time base
+    t_start = max(spice.time[0], rust.time[0])
+    t_end = min(spice.time[-1], rust.time[-1])
+    n_samples = min(len(spice.time), len(rust.time))
+    t_common = np.linspace(t_start, t_end, n_samples)
+
+    v_spice = np.interp(t_common, spice.time, spice.membrane)
+    v_rust = np.interp(t_common, rust.time, rust.membrane)
+
+    diff = v_spice - v_rust
 
     return {
-        "rms_error": float(np.sqrt(np.mean(diff**2))),
-        "max_abs_error": float(np.max(np.abs(diff))),
-        "mean_abs_error": float(np.mean(np.abs(diff))),
-        "correlation": float(np.corrcoef(v_spice_interp, v_rust_interp)[0, 1]),
-        "num_samples": len(t_common)
+        "rms_error_mV": float(np.sqrt(np.mean(diff**2)) * 1000),
+        "max_abs_error_mV": float(np.max(np.abs(diff)) * 1000),
+        "mean_abs_error_mV": float(np.mean(np.abs(diff)) * 1000),
+        "correlation": float(np.corrcoef(v_spice, v_rust)[0, 1]) if len(v_spice) > 1 else 0.0,
+        "spice_spike_count": len(spice.spike_times),
+        "rust_spike_count": len(rust.spike_times),
+        "num_samples": n_samples
     }
 
 
 def plot_comparison(
-    t_spice: List[float], v_spice: List[float],
-    t_rust: List[float], v_rust: List[float],
-    output_path: Path,
-    metrics: dict,
-    pulse_spice: List[float] = None,
-    pulse_rust: List[float] = None,
+    spice: SimulationResults,
+    rust: SimulationResults,
+    params: NeuronParams,
+    metrics: Dict,
+    output_path: Path
 ):
-    """Generate comparison plot with membrane and pulse outputs."""
+    """Generate comprehensive comparison plot."""
     if not HAS_MATPLOTLIB:
         print("matplotlib not installed - skipping plot")
         return
 
-    import numpy as np
+    fig = plt.figure(figsize=(14, 8))
+    gs = gridspec.GridSpec(3, 1, height_ratios=[2, 1.5, 1], hspace=0.3)
 
-    # Determine number of subplots based on available data
-    has_pulse = pulse_spice is not None or pulse_rust is not None
-    n_plots = 3 if has_pulse else 2
+    t_spice_ms = spice.time * 1000
+    t_rust_ms = rust.time * 1000
 
-    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 4 * n_plots), sharex=True)
-
-    # Top: Membrane voltage overlay
-    ax1 = axes[0]
-    ax1.plot([t * 1000 for t in t_spice], v_spice, 'b-', label='SPICE v(mem)', linewidth=1.5)
-    ax1.plot([t * 1000 for t in t_rust], v_rust, 'r--', label='Gilgamesh mem', linewidth=1.5)
-    ax1.set_ylabel('Membrane Voltage (V)')
-    ax1.set_title('Single LIF Neuron: SPICE vs Gilgamesh - Membrane Dynamics')
+    # 1. Membrane voltage comparison
+    ax1 = fig.add_subplot(gs[0])
+    ax1.plot(t_spice_ms, spice.membrane, 'b-', label='SPICE v(mem)', linewidth=1.2, alpha=0.8)
+    ax1.plot(t_rust_ms, rust.membrane, 'r--', label='Gilgamesh', linewidth=1.2, alpha=0.8)
+    ax1.axhline(params.threshold_over_vref, color='g', linestyle=':', linewidth=1, label=f'Threshold ({params.threshold_over_vref}V)')
+    ax1.set_ylabel('Membrane (V above Vref)')
+    ax1.set_title(f'LIF Neuron: SPICE vs Gilgamesh (τ_m={params.tau_m*1000:.2f}ms, I={params.input_current*1e6:.1f}µA)')
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
+    ax1.set_xlim(0, params.duration * 1000)
 
-    # Middle: Pulse/comparator output
-    if has_pulse:
-        ax2 = axes[1]
-        if pulse_spice is not None:
-            ax2.plot([t * 1000 for t in t_spice], pulse_spice, 'b-',
-                     label='SPICE v(comp_pulse)', linewidth=1.5)
-        if pulse_rust is not None:
-            ax2.plot([t * 1000 for t in t_rust], pulse_rust, 'r--',
-                     label='Gilgamesh pulse', linewidth=1.5)
-        ax2.set_ylabel('Pulse Output (V)')
-        ax2.set_title('Comparator / Pulse Stretcher Output')
-        ax2.legend(loc='upper right')
-        ax2.grid(True, alpha=0.3)
-        ax2.set_ylim(-0.5, 5.5)  # Typical 0-5V range
+    # 2. Pulse output comparison (overlaid)
+    ax2 = fig.add_subplot(gs[1], sharex=ax1)
+    ax2.plot(t_spice_ms, spice.pulse, 'b-', linewidth=1.2, alpha=0.8, label=f'SPICE ({len(spice.spike_times)} spikes)')
+    ax2.plot(t_rust_ms, rust.pulse, 'r--', linewidth=1.2, alpha=0.8, label=f'Gilgamesh ({len(rust.spike_times)} spikes)')
+    ax2.axhline(2.5, color='orange', linestyle=':', linewidth=0.8, label='Switch Vt (2.5V)')
+    ax2.set_ylabel('Pulse Output (V)')
+    ax2.set_title('Pulse Output Comparison')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    max_pulse = max(spice.pulse.max(), rust.pulse.max())
+    ax2.set_ylim(-0.2, max_pulse + 0.5)
 
-        ax_diff = axes[2]
-    else:
-        ax_diff = axes[1]
-
-    # Bottom: Difference
+    # 3. Error/difference
+    ax3 = fig.add_subplot(gs[2], sharex=ax1)
     t_common = np.linspace(
-        max(t_spice[0], t_rust[0]),
-        min(t_spice[-1], t_rust[-1]),
-        min(len(t_spice), len(t_rust))
+        max(spice.time[0], rust.time[0]),
+        min(spice.time[-1], rust.time[-1]),
+        min(len(spice.time), len(rust.time))
     )
-    v_spice_interp = np.interp(t_common, t_spice, v_spice)
-    v_rust_interp = np.interp(t_common, t_rust, v_rust)
-    diff = v_spice_interp - v_rust_interp
+    v_spice_interp = np.interp(t_common, spice.time, spice.membrane)
+    v_rust_interp = np.interp(t_common, rust.time, rust.membrane)
+    diff_mV = (v_spice_interp - v_rust_interp) * 1000
 
-    ax_diff.plot(t_common * 1000, diff * 1000, 'g-', linewidth=1)
-    ax_diff.axhline(0, color='k', linestyle=':', linewidth=0.5)
-    ax_diff.set_xlabel('Time (ms)')
-    ax_diff.set_ylabel('Membrane Difference (mV)')
-    ax_diff.set_title(f'Membrane Error: RMS={metrics["rms_error"]*1000:.3f}mV, Max={metrics["max_abs_error"]*1000:.3f}mV, Corr={metrics["correlation"]:.4f}')
-    ax_diff.grid(True, alpha=0.3)
+    ax3.plot(t_common * 1000, diff_mV, 'g-', linewidth=0.8)
+    ax3.axhline(0, color='k', linestyle=':', linewidth=0.5)
+    ax3.fill_between(t_common * 1000, diff_mV, alpha=0.3, color='green')
+    ax3.set_xlabel('Time (ms)')
+    ax3.set_ylabel('Error (mV)')
+    ax3.set_title(f'Membrane Error: RMS={metrics["rms_error_mV"]:.2f}mV, Max={metrics["max_abs_error_mV"]:.2f}mV, Corr={metrics["correlation"]:.4f}')
+    ax3.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Plot saved: {output_path}")
+
+
+def plot_spice_only(spice: SimulationResults, params: NeuronParams, output_path: Path):
+    """Plot SPICE results only (when Gilgamesh not available)."""
+    if not HAS_MATPLOTLIB:
+        return
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    t_ms = spice.time * 1000
+
+    axes[0].plot(t_ms, spice.membrane, 'b-', linewidth=1)
+    axes[0].axhline(params.threshold_over_vref, color='g', linestyle=':', label='Threshold')
+    axes[0].set_ylabel('Membrane (V above Vref)')
+    axes[0].set_title(f'SPICE LIF Neuron (τ_m={params.tau_m*1000:.2f}ms, I={params.input_current*1e6:.1f}µA)')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(t_ms, spice.pulse, 'b-', linewidth=1)
+    axes[1].axhline(2.5, color='orange', linestyle=':', label='Switch threshold')
+    axes[1].set_xlabel('Time (ms)')
+    axes[1].set_ylabel('Pulse Output (V)')
+    axes[1].set_title(f'Comparator/Pulse Output ({len(spice.spike_times)} spikes detected)')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_ylim(-0.5, 5.5)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
     plt.close()
-    print(f"Plot saved to: {output_path}")
+    print(f"Plot saved: {output_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-current", type=float, default=1e-6,
-                        help="Input current in Amps (default: 1e-6)")
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--input-current", type=float, default=10e-6,
+                        help="Input current in Amps (default: 10e-6 = 10µA)")
     parser.add_argument("--duration", type=float, default=0.05,
-                        help="Simulation duration in seconds (default: 0.05)")
+                        help="Simulation duration in seconds (default: 0.05 = 50ms)")
     parser.add_argument("--dt", type=float, default=1e-6,
-                        help="Timestep in seconds (default: 1e-6)")
+                        help="Timestep in seconds (default: 1e-6 = 1µs)")
     parser.add_argument("--tau-m", type=float, default=None,
-                        help="Membrane time constant (default: computed from C*R)")
-    parser.add_argument("--tau-pulse", type=float, default=1.67e-3,
-                        help="Pulse stretch time constant (default: 1.67e-3)")
+                        help="Membrane time constant (default: C*R = 1.2ms)")
+    parser.add_argument("--tau-pulse", type=float, default=0.5e-3,
+                        help="Pulse stretch time constant (default: 0.5ms for faster reset)")
+    parser.add_argument("--comparator-delay", type=float, default=50e-9,
+                        help="Comparator propagation delay in seconds (default: 50ns)")
+    parser.add_argument("--reset-hold", type=float, default=0.0,
+                        help="Reset hold period in seconds (default: auto from tau_pulse)")
+    parser.add_argument("--v-peak", type=float, default=2.6,
+                        help="Peak pulse voltage in V (default: 2.6, accounts for diode drop)")
+    parser.add_argument("--no-hardware-timing", action="store_true",
+                        help="Disable hardware timing in Gilgamesh (instant response)")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Output directory (default: temp dir)")
-    parser.add_argument("--keep-files", action="store_true",
-                        help="Keep intermediate files")
+                        help="Output directory (default: gilgamesh/neuron_comparison)")
     parser.add_argument("--skip-spice", action="store_true",
                         help="Skip SPICE simulation (use existing files)")
     parser.add_argument("--skip-rust", action="store_true",
                         help="Skip Gilgamesh simulation")
-    parser.add_argument("--passive", action="store_true", default=True,
-                        help="Use passive RC SPICE model (default, matches hardware)")
-    parser.add_argument("--tia", action="store_true",
-                        help="Use TIA op-amp SPICE model (not realistic for hardware)")
+    parser.add_argument("--spice-only", action="store_true",
+                        help="Only run SPICE (no Gilgamesh)")
 
     args = parser.parse_args()
 
@@ -518,106 +546,75 @@ def main():
         duration=args.duration,
         dt=args.dt,
         tau_pulse=args.tau_pulse,
+        comparator_delay=0.0 if args.no_hardware_timing else args.comparator_delay,
+        reset_hold=0.0 if args.no_hardware_timing else args.reset_hold,
+        v_peak=args.v_peak,
     )
 
     if args.tau_m:
-        # Adjust C or R to match requested tau_m
         params.r_leak = args.tau_m / params.c_mem
 
-    print("=== Single Neuron SPICE vs Gilgamesh Comparison ===")
-    print(f"Parameters:")
-    print(f"  tau_m = {params.tau_m * 1000:.3f} ms")
-    print(f"  tau_pulse = {params.tau_pulse * 1000:.3f} ms")
-    print(f"  threshold = {params.vref + params.threshold_over_vref:.2f} V")
-    print(f"  input = {params.input_current * 1e6:.2f} uA")
-    print(f"  duration = {params.duration * 1000:.1f} ms")
-    print(f"  dt = {params.dt * 1e6:.1f} us")
-    print()
+    params.print_summary()
 
-    # Create output directory
+    # Output directory
     if args.output_dir:
         output_dir = args.output_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
     else:
-        output_dir = Path(tempfile.mkdtemp(prefix="neuron_compare_"))
-
-    print(f"Output directory: {output_dir}")
-
-    # Determine SPICE mode
-    use_passive = not args.tia  # Default to passive unless --tia specified
-    mode_str = "PASSIVE (no op-amp)" if use_passive else "TIA (with op-amp)"
-    print(f"SPICE mode: {mode_str}")
+        output_dir = GILGAMESH_ROOT / "neuron_comparison"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\nOutput directory: {output_dir}")
 
     # Run SPICE
-    spice_csv = None
+    spice_results = None
     if not args.skip_spice:
-        netlist_path = generate_spice_netlist(params, output_dir, passive=use_passive)
-        print(f"Generated netlist: {netlist_path}")
+        print("\n--- Running SPICE Simulation ---")
+        netlist_path = generate_spice_netlist(params, output_dir)
         spice_csv = run_ngspice(netlist_path, output_dir)
+        if spice_csv:
+            spice_results = parse_spice_csv(spice_csv, vref=params.vref)
+            print(f"SPICE: {len(spice_results.time)} samples, {len(spice_results.spike_times)} spikes detected")
     else:
         spice_csv = output_dir / "spice_output.csv"
-        if not spice_csv.exists():
-            print(f"SPICE CSV not found: {spice_csv}")
-            spice_csv = None
+        if spice_csv.exists():
+            spice_results = parse_spice_csv(spice_csv, vref=params.vref)
+            print(f"Loaded existing SPICE: {len(spice_results.time)} samples")
 
     # Run Gilgamesh
-    rust_csv = None
-    if not args.skip_rust:
-        rust_csv = run_gilgamesh_neuron(params, output_dir)
-    else:
+    rust_results = None
+    if not args.skip_rust and not args.spice_only:
+        print("\n--- Running Gilgamesh Simulation ---")
+        rust_csv = run_gilgamesh(params, output_dir)
+        if rust_csv:
+            rust_results = parse_gilgamesh_csv(rust_csv)
+            print(f"Gilgamesh: {len(rust_results.time)} samples, {len(rust_results.spike_times)} spikes")
+    elif not args.spice_only:
         rust_csv = output_dir / "gilgamesh_output.csv"
-        if not rust_csv.exists():
-            print(f"Gilgamesh CSV not found: {rust_csv}")
-            rust_csv = None
+        if rust_csv.exists():
+            rust_results = parse_gilgamesh_csv(rust_csv)
+            print(f"Loaded existing Gilgamesh: {len(rust_results.time)} samples")
 
-    # Compare results
-    if spice_csv and rust_csv:
-        print("\nParsing results...")
-        t_spice, v_spice, _ = parse_spice_csv(spice_csv, vref=params.vref)
-        t_rust, v_rust, _ = parse_gilgamesh_csv(rust_csv)
+    # Generate plots and metrics
+    print("\n--- Results ---")
 
-        print(f"SPICE: {len(t_spice)} samples")
-        print(f"Gilgamesh: {len(t_rust)} samples")
+    if spice_results and rust_results:
+        metrics = compute_metrics(spice_results, rust_results)
+        print(f"RMS Error:     {metrics['rms_error_mV']:.3f} mV")
+        print(f"Max Error:     {metrics['max_abs_error_mV']:.3f} mV")
+        print(f"Correlation:   {metrics['correlation']:.6f}")
+        print(f"SPICE spikes:  {metrics['spice_spike_count']}")
+        print(f"Rust spikes:   {metrics['rust_spike_count']}")
 
-        if t_spice and t_rust:
-            metrics = compute_metrics(t_spice, v_spice, t_rust, v_rust)
-            print("\n=== Comparison Metrics ===")
-            print(f"  RMS Error:     {metrics['rms_error'] * 1000:.4f} mV")
-            print(f"  Max Abs Error: {metrics['max_abs_error'] * 1000:.4f} mV")
-            print(f"  Mean Abs Error:{metrics['mean_abs_error'] * 1000:.4f} mV")
-            print(f"  Correlation:   {metrics['correlation']:.6f}")
+        with open(output_dir / "metrics.json", 'w') as f:
+            json.dump(metrics, f, indent=2)
 
-            # Save metrics
-            with open(output_dir / "metrics.json", 'w') as f:
-                json.dump(metrics, f, indent=2)
+        plot_comparison(spice_results, rust_results, params, metrics, output_dir / "comparison.png")
 
-            # Plot
-            plot_comparison(
-                t_spice, v_spice,
-                t_rust, v_rust,
-                output_dir / "comparison.png",
-                metrics
-            )
-    elif spice_csv:
-        print("\nOnly SPICE results available - plotting...")
-        t_spice, v_spice, _ = parse_spice_csv(spice_csv, vref=params.vref)
-        if HAS_MATPLOTLIB and t_spice:
-            plt.figure(figsize=(10, 6))
-            plt.plot([t * 1000 for t in t_spice], v_spice, 'b-')
-            plt.xlabel('Time (ms)')
-            plt.ylabel('Membrane Voltage (V)')
-            plt.title('SPICE LIF Neuron Response')
-            plt.grid(True, alpha=0.3)
-            plt.savefig(output_dir / "spice_only.png", dpi=150)
-            plt.close()
-            print(f"Plot saved to: {output_dir / 'spice_only.png'}")
+    elif spice_results:
+        print(f"SPICE spikes: {len(spice_results.spike_times)}")
+        print(f"Membrane range: {spice_results.membrane.min():.3f}V to {spice_results.membrane.max():.3f}V")
+        plot_spice_only(spice_results, params, output_dir / "spice_only.png")
 
-    # Cleanup
-    if not args.keep_files and not args.output_dir:
-        print(f"\nCleaning up temp directory: {output_dir}")
-        shutil.rmtree(output_dir)
-    else:
-        print(f"\nFiles kept in: {output_dir}")
+    print(f"\nFiles saved to: {output_dir}")
 
 
 if __name__ == "__main__":

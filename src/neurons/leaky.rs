@@ -70,6 +70,16 @@ pub enum NeuronMode {
         /// Maximum membrane voltage (hardware rail)
         #[serde(default = "default_v_max")]
         v_max: f32,
+        /// Comparator propagation delay (seconds)
+        /// Models the time from threshold crossing to spike output
+        /// Based on NCS2250: ~50ns typical
+        #[serde(default = "default_comparator_delay")]
+        comparator_delay_s: f32,
+        /// Reset hold period (seconds)
+        /// Time membrane is held at reset value after spike
+        /// Models the pulse stretcher controlling the reset switch
+        #[serde(default = "default_reset_hold")]
+        reset_hold_s: f32,
     },
 }
 
@@ -101,9 +111,33 @@ fn default_v_max() -> f32 {
     5.0 // Hardware supply rail
 }
 
+fn default_comparator_delay() -> f32 {
+    0.0 // Default: no delay (instant, for backwards compatibility)
+    // Set to 50e-9 (50ns) for realistic NCS2250 behavior
+}
+
+fn default_reset_hold() -> f32 {
+    0.0 // Default: no hold (instant reset, for backwards compatibility)
+    // Set to 0.35e-3 (0.35ms) for realistic pulse-stretcher controlled reset
+}
+
 impl Default for NeuronMode {
     fn default() -> Self {
-        NeuronMode::Simple
+        // Default to Physics mode for hardware-accurate simulation
+        // Use sensible defaults matching typical passive RC neuron circuits
+        NeuronMode::Physics {
+            tau_m: 0.0012,       // 1.2ms (matches SPICE: 120kΩ * 10nF)
+            dt: 1e-6,            // 1µs timestep
+            tau_pulse: 0.5e-3,   // 0.5ms pulse stretch
+            v_peak: 2.6,         // Peak with diode drop
+            tau_theta: default_tau_theta(),
+            theta_low: default_theta_low(),
+            theta_high: default_theta_high(),
+            v_min: default_v_min(),
+            v_max: default_v_max(),
+            comparator_delay_s: 50e-9,  // 50ns comparator delay
+            reset_hold_s: 0.15e-3,      // 0.15ms reset hold
+        }
     }
 }
 
@@ -126,6 +160,8 @@ impl NeuronMode {
             theta_high: default_theta_high(),
             v_min: default_v_min(),
             v_max: default_v_max(),
+            comparator_delay_s: default_comparator_delay(),
+            reset_hold_s: default_reset_hold(),
         }
     }
 
@@ -141,6 +177,8 @@ impl NeuronMode {
             theta_high: default_theta_high(),
             v_min: default_v_min(),
             v_max: default_v_max(),
+            comparator_delay_s: default_comparator_delay(),
+            reset_hold_s: default_reset_hold(),
         }
     }
 
@@ -164,6 +202,32 @@ impl NeuronMode {
             theta_high,
             v_min: default_v_min(),
             v_max: default_v_max(),
+            comparator_delay_s: default_comparator_delay(),
+            reset_hold_s: default_reset_hold(),
+        }
+    }
+
+    /// Create physics mode with hardware timing parameters
+    pub fn physics_with_hardware_timing(
+        tau_m: f32,
+        dt: f32,
+        tau_pulse: f32,
+        v_peak: f32,
+        comparator_delay_s: f32,
+        reset_hold_s: f32,
+    ) -> Self {
+        NeuronMode::Physics {
+            tau_m,
+            dt,
+            tau_pulse,
+            v_peak,
+            tau_theta: default_tau_theta(),
+            theta_low: default_theta_low(),
+            theta_high: default_theta_high(),
+            v_min: default_v_min(),
+            v_max: default_v_max(),
+            comparator_delay_s,
+            reset_hold_s,
         }
     }
 
@@ -256,6 +320,27 @@ impl NeuronMode {
             NeuronMode::Physics { dt, .. } => Some(*dt),
         }
     }
+
+    /// Get comparator propagation delay (seconds)
+    pub fn comparator_delay(&self) -> f32 {
+        match self {
+            NeuronMode::Simple => 0.0,
+            NeuronMode::Physics { comparator_delay_s, .. } => *comparator_delay_s,
+        }
+    }
+
+    /// Get reset hold period (seconds)
+    pub fn reset_hold(&self) -> f32 {
+        match self {
+            NeuronMode::Simple => 0.0,
+            NeuronMode::Physics { reset_hold_s, .. } => *reset_hold_s,
+        }
+    }
+
+    /// Check if hardware timing is enabled (either delay or hold > 0)
+    pub fn has_hardware_timing(&self) -> bool {
+        self.comparator_delay() > 0.0 || self.reset_hold() > 0.0
+    }
 }
 
 /// Leaky Integrate-and-Fire neuron layer
@@ -284,8 +369,26 @@ pub struct Leaky {
 }
 
 impl Leaky {
-    /// Create a new Leaky neuron layer (defaults to Simple mode)
+    /// Create a new Leaky neuron layer (defaults to Physics mode)
+    ///
+    /// The beta parameter is used for backward compatibility but may be
+    /// overridden by the Physics mode's tau_m/dt settings.
     pub fn new(size: usize, beta: f32) -> Self {
+        Self {
+            beta: beta.clamp(0.0, 1.0),
+            threshold: 1.0,
+            spike_grad: SurrogateGradient::fast_sigmoid(25.0),
+            reset_mechanism: ResetMechanism::Subtract,
+            size,
+            mode: NeuronMode::default(), // Now defaults to Physics mode
+        }
+    }
+
+    /// Create a new Leaky neuron layer with Simple mode (backward compatibility)
+    ///
+    /// Use this when you want the original snnTorch-style behavior without
+    /// hardware-accurate physics simulation.
+    pub fn new_simple(size: usize, beta: f32) -> Self {
         Self {
             beta: beta.clamp(0.0, 1.0),
             threshold: 1.0,
@@ -315,6 +418,8 @@ impl Leaky {
                 theta_high: default_theta_high(),
                 v_min: default_v_min(),
                 v_max: default_v_max(),
+                comparator_delay_s: default_comparator_delay(),
+                reset_hold_s: default_reset_hold(),
             },
         }
     }
@@ -344,6 +449,8 @@ impl Leaky {
                 theta_high: default_theta_high(),
                 v_min: default_v_min(),
                 v_max: default_v_max(),
+                comparator_delay_s: default_comparator_delay(),
+                reset_hold_s: default_reset_hold(),
             },
         }
     }
@@ -376,6 +483,8 @@ impl Leaky {
                 theta_high,
                 v_min: default_v_min(),
                 v_max: default_v_max(),
+                comparator_delay_s: default_comparator_delay(),
+                reset_hold_s: default_reset_hold(),
             },
         }
     }
@@ -429,6 +538,8 @@ impl Leaky {
             mem: Array2::zeros((batch_size, self.size)),
             time_since_spike: None,
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         }
     }
 
@@ -438,6 +549,8 @@ impl Leaky {
             mem: Array2::zeros((batch_size, self.size)),
             time_since_spike: Some(Array2::from_elem((batch_size, self.size), f32::INFINITY)),
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         }
     }
 
@@ -451,6 +564,8 @@ impl Leaky {
                 (batch_size, self.size),
                 initial_threshold,
             )),
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         }
     }
 
@@ -464,6 +579,20 @@ impl Leaky {
                 (batch_size, self.size),
                 initial_threshold,
             )),
+            pending_spike_steps: None,
+            reset_hold_steps: None,
+        }
+    }
+
+    /// Initialize membrane state with hardware timing enabled
+    /// Used for SPICE-accurate simulation with comparator delay and reset hold
+    pub fn init_state_with_hardware_timing(&self, batch_size: usize) -> LeakyState {
+        LeakyState {
+            mem: Array2::zeros((batch_size, self.size)),
+            time_since_spike: Some(Array2::from_elem((batch_size, self.size), f32::INFINITY)),
+            adaptive_threshold: None,
+            pending_spike_steps: Some(Array2::zeros((batch_size, self.size))),
+            reset_hold_steps: Some(Array2::zeros((batch_size, self.size))),
         }
     }
 
@@ -578,6 +707,8 @@ impl Leaky {
             mem: mem_new,
             time_since_spike: None,
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         };
 
         (spikes, new_state, cache)
@@ -625,6 +756,8 @@ impl Leaky {
             mem: mem_new,
             time_since_spike: None,
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         };
 
         (spikes, new_state, cache)
@@ -706,6 +839,8 @@ impl Leaky {
             mem: mem_new,
             time_since_spike: None,
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         };
 
         (spikes, new_state, cache)
@@ -807,6 +942,8 @@ impl Leaky {
             mem: mem_new,
             time_since_spike: new_time_since_spike,
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         };
 
         (pulse_output, new_state, cache)
@@ -895,6 +1032,8 @@ impl Leaky {
             mem: mem_new,
             time_since_spike: None,
             adaptive_threshold: new_threshold,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         };
 
         (spikes, new_state, cache)
@@ -1020,6 +1159,195 @@ impl Leaky {
             mem: mem_new,
             time_since_spike: new_time_since_spike,
             adaptive_threshold: new_threshold,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
+        };
+
+        (pulse_output, new_state, cache)
+    }
+
+    /// Forward pass with hardware timing simulation
+    ///
+    /// Models realistic circuit behavior:
+    /// - Comparator propagation delay: spike output is delayed after threshold crossing
+    /// - Reset hold period: membrane is held at reset value for a configurable duration
+    ///
+    /// This matches SPICE circuit behavior more closely than instant reset.
+    ///
+    /// Args:
+    ///   input: Current injection [batch, size]
+    ///   state: Previous membrane state (should have hardware timing enabled)
+    ///   dt: Integration timestep
+    ///
+    /// Returns:
+    ///   (spikes, new_state, cache for backward)
+    pub fn forward_with_hardware_timing(
+        &self,
+        input: &Array2<f32>,
+        state: &LeakyState,
+        dt: f32,
+    ) -> (Array2<f32>, LeakyState, LeakyCache) {
+        use ndarray::Zip;
+
+        let shape = state.mem.raw_dim();
+        let comparator_delay = self.mode.comparator_delay();
+        let reset_hold = self.mode.reset_hold();
+
+        // Convert delays to step counts
+        let delay_steps = if comparator_delay > 0.0 {
+            (comparator_delay / dt).ceil() as u16
+        } else {
+            0
+        };
+        let hold_steps = if reset_hold > 0.0 {
+            (reset_hold / dt).ceil() as u16
+        } else {
+            0
+        };
+
+        // Get or initialize timing state
+        let mut pending = state.pending_spike_steps.clone()
+            .unwrap_or_else(|| Array2::zeros(shape));
+        let mut hold = state.reset_hold_steps.clone()
+            .unwrap_or_else(|| Array2::zeros(shape));
+
+        // Initialize output spikes array (will be filled by pending spike completion)
+        let mut emitted_spikes = Array2::zeros(shape);
+
+        // Step 1: Decrement pending spike counters and emit spikes when ready
+        Zip::from(&mut pending)
+            .and(&mut emitted_spikes)
+            .for_each(|p, e| {
+                if *p > 0 {
+                    *p -= 1;
+                    if *p == 0 {
+                        *e = 1.0; // Emit spike
+                    }
+                }
+            });
+
+        // Step 2: Compute membrane update
+        // During reset hold: apply RC decay toward vref (0) with fast time constant
+        // This models the reset switch pulling membrane to vref through R_reset (~200 ohm)
+        // tau_reset = R_reset * C_mem = 200 * 10nF = 2µs (very fast)
+        let mut mem_new = state.mem.clone();
+        let mem_integrated = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
+
+        // Reset decay factor: tau_reset = 2µs, very fast decay toward vref
+        let tau_reset = 2e-6_f32;
+        let reset_decay = (-dt / tau_reset).exp();
+
+        Zip::from(&mut mem_new)
+            .and(&mem_integrated)
+            .and(&hold)
+            .for_each(|m, &integrated, &h| {
+                if h == 0 {
+                    // Normal integration
+                    *m = integrated;
+                } else {
+                    // During reset hold: RC decay toward vref (0)
+                    // membrane = membrane * exp(-dt/tau_reset)
+                    *m *= reset_decay;
+                }
+            });
+
+        // Step 3: Detect new threshold crossings (only for neurons not in hold, no pending spike,
+        // and didn't just emit a spike this timestep)
+        let mem_shifted = &mem_new - self.threshold;
+        let mut new_crossings = Array2::zeros(shape);
+        Zip::from(&mut new_crossings)
+            .and(&mem_shifted)
+            .and(&pending)
+            .and(&hold)
+            .and(&emitted_spikes)
+            .for_each(|cross, &shifted, &pend, &h, &just_emitted| {
+                // Only detect crossing if:
+                // - Membrane is above threshold
+                // - No pending spike already
+                // - Not in reset hold
+                // - Didn't just emit a spike (prevents immediate re-trigger)
+                if shifted > 0.0 && pend == 0 && h == 0 && just_emitted == 0.0 {
+                    *cross = 1.0;
+                }
+            });
+
+        // Step 4: Schedule new spikes (apply delay or emit immediately)
+        if delay_steps > 0 {
+            Zip::from(&mut pending)
+                .and(&new_crossings)
+                .for_each(|p, &cross| {
+                    if cross > 0.0 {
+                        *p = delay_steps;
+                    }
+                });
+        } else {
+            // No delay - emit immediately
+            emitted_spikes = &emitted_spikes + &new_crossings;
+        }
+
+        // Step 5: Start reset hold for neurons that just emitted spikes
+        // (Reset is now handled by RC decay in Step 2 during hold period)
+        // No instant reset - membrane decays naturally toward vref
+
+        // Step 6: Start reset hold for neurons that emitted spikes
+        if hold_steps > 0 {
+            Zip::from(&mut hold)
+                .and(&emitted_spikes)
+                .for_each(|h, &spike| {
+                    if spike > 0.0 {
+                        *h = hold_steps;
+                    }
+                });
+        }
+
+        // Step 7: Decrement hold counters
+        hold.mapv_inplace(|h| if h > 0 { h - 1 } else { 0 });
+
+        // Update time_since_spike for pulse output calculation
+        let new_time_since_spike = if let Some(ref tss) = state.time_since_spike {
+            let mut new_tss = tss + dt;
+            Zip::from(&mut new_tss)
+                .and(&emitted_spikes)
+                .for_each(|t, &spike| {
+                    if spike > 0.0 {
+                        *t = 0.0;
+                    }
+                });
+            Some(new_tss)
+        } else {
+            None
+        };
+
+        // Compute pulse output if pulse mode is enabled
+        let pulse_output = if let Some(ref tss) = new_time_since_spike {
+            let tau_pulse = self.mode.tau_pulse();
+            let v_peak = self.mode.v_peak();
+            if tau_pulse > 0.0 {
+                tss.mapv(|t| {
+                    if t < 5.0 * tau_pulse {
+                        v_peak * (-t / tau_pulse).exp()
+                    } else {
+                        0.0
+                    }
+                })
+            } else {
+                &emitted_spikes * v_peak
+            }
+        } else {
+            emitted_spikes.clone()
+        };
+
+        let cache = LeakyCache {
+            mem_shifted: mem_shifted.clone(),
+            spikes: emitted_spikes.clone(),
+        };
+
+        let new_state = LeakyState {
+            mem: mem_new,
+            time_since_spike: new_time_since_spike,
+            adaptive_threshold: state.adaptive_threshold.clone(),
+            pending_spike_steps: Some(pending),
+            reset_hold_steps: Some(hold),
         };
 
         (pulse_output, new_state, cache)
@@ -1074,6 +1402,14 @@ pub struct LeakyState {
     /// θ(t+dt) = θ_target + (θ(t) - θ_target) * exp(-dt/τ_θ)
     /// None means using fixed threshold from Leaky::threshold
     pub adaptive_threshold: Option<Array2<f32>>,
+    /// Pending spike delay counter (steps remaining until spike is emitted)
+    /// 0 = no pending spike, >0 = steps until spike output
+    /// Models comparator propagation delay
+    pub pending_spike_steps: Option<Array2<u16>>,
+    /// Reset hold counter (steps remaining in reset hold period)
+    /// 0 = not in hold, >0 = steps until membrane can integrate again
+    /// Models pulse-stretcher controlled reset switch
+    pub reset_hold_steps: Option<Array2<u16>>,
 }
 
 impl LeakyState {
@@ -1083,6 +1419,8 @@ impl LeakyState {
             mem,
             time_since_spike: None,
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         }
     }
 
@@ -1093,6 +1431,8 @@ impl LeakyState {
             mem,
             time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
             adaptive_threshold: None,
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         }
     }
 
@@ -1103,6 +1443,8 @@ impl LeakyState {
             mem,
             time_since_spike: None,
             adaptive_threshold: Some(Array2::from_elem(shape, initial_threshold)),
+            pending_spike_steps: None,
+            reset_hold_steps: None,
         }
     }
 
@@ -1113,6 +1455,32 @@ impl LeakyState {
             mem,
             time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
             adaptive_threshold: Some(Array2::from_elem(shape, initial_threshold)),
+            pending_spike_steps: None,
+            reset_hold_steps: None,
+        }
+    }
+
+    /// Create new state with hardware timing enabled
+    pub fn new_with_hardware_timing(mem: Array2<f32>) -> Self {
+        let shape = mem.raw_dim();
+        Self {
+            mem,
+            time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
+            adaptive_threshold: None,
+            pending_spike_steps: Some(Array2::zeros(shape)),
+            reset_hold_steps: Some(Array2::zeros(shape)),
+        }
+    }
+
+    /// Create new state with all features (pulse, adaptation, hardware timing)
+    pub fn new_full_physics(mem: Array2<f32>, initial_threshold: f32) -> Self {
+        let shape = mem.raw_dim();
+        Self {
+            mem,
+            time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
+            adaptive_threshold: Some(Array2::from_elem(shape, initial_threshold)),
+            pending_spike_steps: Some(Array2::zeros(shape)),
+            reset_hold_steps: Some(Array2::zeros(shape)),
         }
     }
 
@@ -1121,6 +1489,12 @@ impl LeakyState {
         self.mem.fill(0.0);
         if let Some(ref mut tss) = self.time_since_spike {
             tss.fill(f32::INFINITY);
+        }
+        if let Some(ref mut pending) = self.pending_spike_steps {
+            pending.fill(0);
+        }
+        if let Some(ref mut hold) = self.reset_hold_steps {
+            hold.fill(0);
         }
         // Note: adaptive_threshold is not reset here - call reset_threshold() if needed
     }
@@ -1184,7 +1558,8 @@ mod tests {
 
     #[test]
     fn test_leaky_reset_subtract() {
-        let lif = Leaky::new(1, 0.9).with_reset_mechanism(ResetMechanism::Subtract);
+        // Use Simple mode for testing basic snnTorch-style behavior
+        let lif = Leaky::new_simple(1, 0.9).with_reset_mechanism(ResetMechanism::Subtract);
 
         // Build up membrane over time
         let mut state = lif.init_state(1);
@@ -1236,9 +1611,14 @@ mod tests {
 
     #[test]
     fn test_neuron_mode_simple() {
+        // new() now defaults to Physics mode
         let lif = Leaky::new(2, 0.9);
-        assert!(!lif.is_physics_mode());
-        assert!(matches!(lif.mode, NeuronMode::Simple));
+        assert!(lif.is_physics_mode());
+
+        // new_simple() for backward compatibility with Simple mode
+        let lif_simple = Leaky::new_simple(2, 0.9);
+        assert!(!lif_simple.is_physics_mode());
+        assert!(matches!(lif_simple.mode, NeuronMode::Simple));
     }
 
     #[test]
@@ -1394,12 +1774,14 @@ mod tests {
 
     #[test]
     fn test_get_dt_and_tau() {
-        let lif_simple = Leaky::new(2, 0.9);
+        // Simple mode: dt derived from beta assuming 1ms timestep
+        let lif_simple = Leaky::new_simple(2, 0.9);
         assert!((lif_simple.get_dt() - 0.001).abs() < 1e-6);
 
         let tau_expected = -0.001f32 / 0.9f32.ln();
         assert!((lif_simple.get_tau_m() - tau_expected).abs() < 1e-5);
 
+        // Physics mode: dt and tau_m explicitly set
         let lif_physics = Leaky::new_physics(2, 0.005, 0.0001);
         assert!((lif_physics.get_dt() - 0.0001).abs() < 1e-8);
         assert!((lif_physics.get_tau_m() - 0.005).abs() < 1e-6);
@@ -1539,7 +1921,7 @@ mod tests {
     #[test]
     fn test_simple_mode_no_clamping() {
         // Simple mode should NOT clamp (backward compatibility)
-        let lif = Leaky::new(1, 0.9);
+        let lif = Leaky::new_simple(1, 0.9);
 
         // Check that simple mode returns infinite bounds
         assert!(lif.mode.v_min().is_infinite(), "Simple mode should have -inf v_min");
