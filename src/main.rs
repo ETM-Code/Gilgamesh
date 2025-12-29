@@ -138,11 +138,11 @@ enum Commands {
         data_dir: String,
     },
 
-    /// Launch stunning network animation (requires --features animation)
+    /// Launch interactive network visualizer (requires --features animation)
     Animate {
-        /// Path to JSON config file
+        /// Path to checkpoint file (auto-finds latest if not specified)
         #[arg(long)]
-        config: Option<String>,
+        checkpoint: Option<String>,
 
         /// Data directory (for loading sample images)
         #[arg(long, default_value = "./data")]
@@ -152,16 +152,16 @@ enum Commands {
         #[arg(long, default_value = "1.0")]
         speed: f32,
 
-        /// Sample index to animate (from test set)
+        /// Starting sample index
         #[arg(long, default_value = "0")]
         sample: usize,
     },
 
     /// Visual test runner for inspecting single samples (requires --features dashboard)
     Inspect {
-        /// Path to checkpoint file
+        /// Path to checkpoint file (uses most recent if not specified)
         #[arg(long)]
-        checkpoint: String,
+        checkpoint: Option<String>,
 
         /// Data directory
         #[arg(long, default_value = "./data")]
@@ -174,6 +174,41 @@ enum Commands {
         /// Random seed for sample selection
         #[arg(long, default_value = "42")]
         seed: u64,
+    },
+
+    /// Compare gilgamesh simulation with ngspice for hardware validation
+    Spice {
+        /// Path to checkpoint file (uses most recent if not specified)
+        #[arg(long)]
+        checkpoint: Option<String>,
+
+        /// Data directory
+        #[arg(long, default_value = "./data")]
+        data_dir: String,
+
+        /// Sample index from test set (random if not specified)
+        #[arg(long)]
+        sample: Option<usize>,
+
+        /// Output directory for netlists and results
+        #[arg(long, default_value = "./spice_output")]
+        output_dir: String,
+
+        /// Run ngspice automatically (requires ngspice in PATH)
+        #[arg(long)]
+        run_ngspice: bool,
+
+        /// Number of timesteps
+        #[arg(long, default_value = "25")]
+        num_steps: usize,
+
+        /// Enable analog output stage in SPICE netlist
+        #[arg(long)]
+        analog_output: bool,
+
+        /// Disable pulse stretching circuit
+        #[arg(long)]
+        no_pulse_stretch: bool,
     },
 }
 
@@ -236,18 +271,85 @@ fn main() -> Result<()> {
             data_dir,
         } => run_dashboard(config, epochs, &data_dir),
         Commands::Animate {
-            config,
+            checkpoint,
             data_dir,
             speed,
             sample,
-        } => run_animation(config, &data_dir, speed, sample),
+        } => run_animation(checkpoint, &data_dir, speed, sample),
         Commands::Inspect {
             checkpoint,
             data_dir,
             num_steps,
             seed,
-        } => run_inspector(&checkpoint, &data_dir, num_steps, seed)
+        } => run_inspector(checkpoint, &data_dir, num_steps, seed),
+        Commands::Spice {
+            checkpoint,
+            data_dir,
+            sample,
+            output_dir,
+            run_ngspice,
+            num_steps,
+            analog_output,
+            no_pulse_stretch,
+        } => run_spice(checkpoint, &data_dir, sample, &output_dir, run_ngspice, num_steps, analog_output, !no_pulse_stretch),
     }
+}
+
+/// Find the most recently modified checkpoint file in common locations
+fn find_latest_checkpoint() -> Option<String> {
+    use std::fs;
+    use std::time::SystemTime;
+
+    let search_patterns = [
+        "./*.json",
+        "./checkpoints/*.json",
+        "./models/*.json",
+        "./*.checkpoint.json",
+    ];
+
+    let mut candidates: Vec<(String, SystemTime)> = Vec::new();
+
+    for pattern in &search_patterns {
+        if let Ok(entries) = glob::glob(pattern) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = fs::metadata(&entry) {
+                    if let Ok(modified) = metadata.modified() {
+                        // Quick check: try to see if it looks like a checkpoint
+                        if let Ok(contents) = fs::read_to_string(&entry) {
+                            if contents.contains("\"architecture\"") && contents.contains("\"weights\"") {
+                                candidates.push((entry.to_string_lossy().to_string(), modified));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Also check current directory for any .json that looks like a checkpoint
+    if let Ok(entries) = fs::read_dir(".") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(false, |e| e == "json") {
+                if let Ok(metadata) = fs::metadata(&path) {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(contents) = fs::read_to_string(&path) {
+                            if contents.contains("\"architecture\"") && contents.contains("\"weights\"") {
+                                let path_str = path.to_string_lossy().to_string();
+                                if !candidates.iter().any(|(p, _)| p == &path_str) {
+                                    candidates.push((path_str, modified));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by modification time (most recent first)
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.into_iter().next().map(|(path, _)| path)
 }
 
 /// Train from a JSON config file
@@ -526,7 +628,7 @@ fn train_with_config(
     Ok(())
 }
 
-fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch_size: usize) -> Result<()> {
+fn evaluate(_checkpoint: &str, _data_dir: &str, _num_steps: usize, _batch_size: usize) -> Result<()> {
     println!("Evaluation not yet implemented (requires checkpoint loading)");
     Ok(())
 }
@@ -550,7 +652,7 @@ fn test_implementation(quick: bool) -> Result<()> {
     let lif = Leaky::new(3, 0.9);
     let state = lif.init_state(1);
     let input = array![[2.0, 0.5, 0.3]];
-    let (spikes, new_state, _) = lif.forward(&input, &state);
+    let (spikes, _new_state, _) = lif.forward(&input, &state);
     println!("  Input: {:?}", input);
     println!("  Spikes: {:?}", spikes);
     println!("  First neuron spiked: {} ✓", spikes[[0, 0]] == 1.0);
@@ -578,7 +680,7 @@ fn test_implementation(quick: bool) -> Result<()> {
 
     // Test 5: Gradient computation
     println!("\nTest 5: Gradient computation (backward pass)");
-    let (spikes, _, caches) = net.forward(&test_input, 5);
+    let (_spikes, _, caches) = net.forward(&test_input, 5);
     let grad_output = Array2::from_elem((4, 10), 0.1);
     let grads = net.backward(&test_input, &caches, &grad_output);
     println!("  FC1 weight grad shape: {:?}", grads.fc1_weight.shape());
@@ -744,125 +846,168 @@ fn run_dashboard(_config: Option<String>, _epochs: usize, _data_dir: &str) -> Re
     Ok(())
 }
 
-/// Run the stunning network animation
+/// Run the interactive network animation with checkpoint loading
 #[cfg(feature = "animation")]
-fn run_animation(config: Option<String>, data_dir: &str, speed: f32, sample: usize) -> Result<()> {
-    use gilgamesh::animation::{create_shared_animation, run_animation as run_nannou, NetworkAnimation};
+fn run_animation(checkpoint: Option<String>, data_dir: &str, speed: f32, start_sample: usize) -> Result<()> {
+    use gilgamesh::animation::{create_shared_animation, run_animation as run_nannou};
+    use gilgamesh::checkpoint::Checkpoint;
     use std::thread;
     use std::time::Duration;
 
-    // Load config
-    let cfg = if let Some(ref path) = config {
-        Config::load(path).with_context(|| format!("Failed to load config from {}", path))?
-    } else {
-        Config::default()
+    println!("=== gilgamesh Interactive Visualizer ===");
+    println!();
+
+    // Find checkpoint: use provided path, or find most recent
+    let checkpoint_path = match checkpoint {
+        Some(path) => path,
+        None => {
+            match find_latest_checkpoint() {
+                Some(path) => {
+                    println!("Using most recent checkpoint: {}", path);
+                    path
+                }
+                None => {
+                    anyhow::bail!("No checkpoint specified and no checkpoint files found.\n\
+                        Train a model first: gilgamesh train --save-checkpoint model.json");
+                }
+            }
+        }
     };
+
+    // Load checkpoint and reconstruct network
+    println!("Loading checkpoint: {}", checkpoint_path);
+    let cp = Checkpoint::load(&checkpoint_path)
+        .with_context(|| format!("Failed to load checkpoint from {}", checkpoint_path))?;
+    let network = cp.to_network()
+        .with_context(|| "Failed to reconstruct network from checkpoint")?;
+
+    let input_size = cp.architecture.input_size;
+    let hidden_size = cp.architecture.hidden_size;
+    let output_size = cp.architecture.output_size;
+
+    println!("Network: {} → {} → {} ({})", input_size, hidden_size, output_size, cp.architecture.mode);
+    if let Some(ref meta) = cp.metadata {
+        println!("Trained: {} epochs, {:.2}% test accuracy", meta.epochs_trained, meta.final_test_accuracy);
+    }
 
     // Load dataset
     println!("Loading MNIST dataset...");
     let dataset = gilgamesh::data::MnistDataset::load(data_dir)
         .context("Failed to load MNIST dataset")?;
 
-    // Create network
-    let input_size = dataset.feature_dim();
-    let hidden_size = cfg.network.hidden_size;
-    let output_size = cfg.network.output_size;
-    let beta = cfg.neuron.beta;
-    let seed = cfg.training.seed;
+    let test_images = dataset.test_images.clone();
+    let test_labels = dataset.test_labels.clone();
+    let total_samples = test_images.nrows();
 
-    println!("Creating network: {} → {} → {}", input_size, hidden_size, output_size);
-    let network = Network::new(input_size, hidden_size, output_size, beta, seed);
-
-    // Get sample from test set
-    let test_images = &dataset.test_images;
-    let test_labels = &dataset.test_labels;
-    let sample_idx = sample.min(test_images.nrows() - 1);
-    let sample_image = test_images.row(sample_idx).to_owned();
-    let sample_label = test_labels[sample_idx];
-
-    println!("Animating sample {} (label: {})", sample_idx, sample_label);
+    println!("Loaded {} test samples", total_samples);
+    println!();
+    println!("Controls:");
+    println!("  ← / →  : Previous / Next sample");
+    println!("  Space  : Pause / Resume");
+    println!("  R      : Restart current sample");
+    println!();
 
     // Create shared animation state
     let animation = create_shared_animation(&[input_size, hidden_size, output_size]);
 
-    // Set animation speed
+    // Initialize animation state
+    let initial_sample = start_sample.min(total_samples - 1);
     {
         let mut anim = animation.lock().unwrap();
         anim.speed = speed;
+        anim.viewer.total_samples = total_samples;
+        anim.viewer.total_steps = 25; // Default timesteps
+
+        // Set initial sample
+        let image = test_images.row(initial_sample).to_vec();
+        anim.reset_for_sample(initial_sample, test_labels[initial_sample] as u8, &image);
+    }
+
+    // Convert weights to nested Vec for animation (once)
+    let fc1_weights: Vec<Vec<f32>> = network.fc1.weight
+        .outer_iter()
+        .map(|row| row.to_vec())
+        .collect();
+    let fc2_weights: Vec<Vec<f32>> = network.fc2.weight
+        .outer_iter()
+        .map(|row| row.to_vec())
+        .collect();
+
+    {
+        let mut anim = animation.lock().unwrap();
+        anim.set_weights(&[fc1_weights, fc2_weights]);
     }
 
     // Clone for simulation thread
     let animation_clone = animation.clone();
-    let num_steps = cfg.training.num_steps;
+    let num_steps = 25usize;
 
-    // Spawn simulation thread
+    // Spawn simulation thread that handles sample navigation
     thread::spawn(move || {
-        let sample_batch = sample_image.insert_axis(ndarray::Axis(0));
+        let mut current_sample = initial_sample;
 
-        // Run network step by step, updating animation
-        let state1 = network.lif1.init_state(1);
-        let state2 = network.lif2.init_state(1);
-
-        let mut hidden_state = state1;
-        let mut output_state = state2;
-
-        // Convert weights to nested Vec for animation
-        let fc1_weights: Vec<Vec<f32>> = network.fc1.weight
-            .outer_iter()
-            .map(|row| row.to_vec())
-            .collect();
-        let fc2_weights: Vec<Vec<f32>> = network.fc2.weight
-            .outer_iter()
-            .map(|row| row.to_vec())
-            .collect();
-
-        // Set weights (sample a subset for visualization)
-        {
-            let mut anim = animation_clone.lock().unwrap();
-            anim.set_weights(&[fc1_weights.clone(), fc2_weights.clone()]);
-        }
-
-        for step in 0..num_steps {
-            // Forward through network
-            let fc1_out = network.fc1.forward(&sample_batch);
-            let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
-            hidden_state = new_hidden_state;
-
-            let fc2_out = network.fc2.forward(&hidden_spikes);
-            let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
-            output_state = new_output_state;
-
-            // Update animation state
-            {
+        loop {
+            // Check for sample change requests
+            let (should_change, new_sample) = {
                 let mut anim = animation_clone.lock().unwrap();
+                if let Some(delta) = anim.viewer.sample_request.take() {
+                    let new_idx = if delta == 0 {
+                        // Restart current
+                        current_sample
+                    } else {
+                        // Navigate
+                        let new = current_sample as i32 + delta;
+                        new.clamp(0, (total_samples - 1) as i32) as usize
+                    };
+                    (true, new_idx)
+                } else {
+                    (false, current_sample)
+                }
+            };
 
-                // Build membrane and spike vectors for each layer
-                let input_mem: Vec<f32> = sample_batch.row(0).to_vec();
-                let hidden_mem: Vec<f32> = hidden_state.mem.row(0).to_vec();
-                let output_mem: Vec<f32> = output_state.mem.row(0).to_vec();
+            if should_change || current_sample != new_sample {
+                current_sample = new_sample;
 
-                let input_spikes: Vec<bool> = sample_batch.row(0).iter().map(|&v| v > 0.5).collect();
-                let hidden_spikes_bool: Vec<bool> = hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
-                let output_spikes_bool: Vec<bool> = output_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+                // Reset for new sample
+                let image = test_images.row(current_sample).to_vec();
+                let label = test_labels[current_sample] as u8;
 
-                anim.update_neurons(
-                    &[input_mem, hidden_mem, output_mem],
-                    &[input_spikes, hidden_spikes_bool, output_spikes_bool],
-                    0.04, // ~25 fps worth of simulation time
-                );
+                {
+                    let mut anim = animation_clone.lock().unwrap();
+                    anim.reset_for_sample(current_sample, label, &image);
+                }
             }
 
-            // Slow down simulation to match animation
-            thread::sleep(Duration::from_millis((40.0 / speed) as u64));
-        }
+            // Run simulation for current sample
+            let sample_image = test_images.row(current_sample).to_owned();
+            let sample_batch = sample_image.insert_axis(ndarray::Axis(0));
 
-        // Loop the animation
-        loop {
-            // Reset states
-            hidden_state = network.lif1.init_state(1);
-            output_state = network.lif2.init_state(1);
+            // Reset step counter at start of each simulation run
+            {
+                let mut anim = animation_clone.lock().unwrap();
+                anim.viewer.current_step = 0;
+                anim.viewer.simulation_complete = false;
+            }
 
-            for _step in 0..num_steps {
+            let mut hidden_state = network.lif1.init_state(1);
+            let mut output_state = network.lif2.init_state(1);
+
+            for step in 0..num_steps {
+                // Check if we need to switch samples mid-simulation
+                {
+                    let anim = animation_clone.lock().unwrap();
+                    if anim.viewer.sample_request.is_some() {
+                        break; // Exit loop to handle sample change
+                    }
+                    if anim.paused {
+                        // When paused, just wait
+                        drop(anim);
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                }
+
+                // Forward through network
                 let fc1_out = network.fc1.forward(&sample_batch);
                 let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
                 hidden_state = new_hidden_state;
@@ -871,8 +1016,12 @@ fn run_animation(config: Option<String>, data_dir: &str, speed: f32, sample: usi
                 let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
                 output_state = new_output_state;
 
+                // Update animation state
                 {
                     let mut anim = animation_clone.lock().unwrap();
+
+                    // Set step explicitly (don't rely on update_neurons incrementing)
+                    anim.viewer.current_step = step + 1;
 
                     let input_mem: Vec<f32> = sample_batch.row(0).to_vec();
                     let hidden_mem: Vec<f32> = hidden_state.mem.row(0).to_vec();
@@ -892,44 +1041,212 @@ fn run_animation(config: Option<String>, data_dir: &str, speed: f32, sample: usi
                 thread::sleep(Duration::from_millis((40.0 / speed) as u64));
             }
 
-            // Brief pause between loops
-            thread::sleep(Duration::from_millis(500));
+            // Mark simulation complete for this sample
+            {
+                let mut anim = animation_clone.lock().unwrap();
+                anim.viewer.simulation_complete = true;
+            }
+
+            // Brief pause before looping/checking for new sample
+            thread::sleep(Duration::from_millis(300));
         }
     });
 
     // Run animation window (blocking)
-    println!("Launching animation window...");
-    println!("Controls: Scroll to zoom, Drag to pan");
+    println!("Launching visualization window...");
     run_nannou(animation);
 
     Ok(())
 }
 
 #[cfg(not(feature = "animation"))]
-fn run_animation(_config: Option<String>, _data_dir: &str, _speed: f32, _sample: usize) -> Result<()> {
+fn run_animation(_checkpoint: Option<String>, _data_dir: &str, _speed: f32, _sample: usize) -> Result<()> {
     println!("Animation feature not enabled. Rebuild with --features animation");
     Ok(())
 }
 
 /// Run the visual test inspector
 #[cfg(feature = "dashboard")]
-fn run_inspector(checkpoint: &str, data_dir: &str, num_steps: usize, seed: u64) -> Result<()> {
+fn run_inspector(checkpoint: Option<String>, data_dir: &str, num_steps: usize, seed: u64) -> Result<()> {
     use gilgamesh::inspector::InspectorApp;
 
+    // Find checkpoint: use provided path, or find most recent
+    let checkpoint_path = match checkpoint {
+        Some(path) => path,
+        None => {
+            match find_latest_checkpoint() {
+                Some(path) => {
+                    println!("Using most recent checkpoint: {}", path);
+                    path
+                }
+                None => {
+                    anyhow::bail!("No checkpoint specified and no checkpoint files found.\n\
+                        Train a model first: gilgamesh train --save-checkpoint model.json");
+                }
+            }
+        }
+    };
+
     println!("=== gilgamesh Inspector ===");
-    println!("Checkpoint: {}", checkpoint);
+    println!("Checkpoint: {}", checkpoint_path);
     println!("Data dir:   {}", data_dir);
     println!("Timesteps:  {}", num_steps);
     println!();
 
-    let app = InspectorApp::from_checkpoint(checkpoint, data_dir, num_steps, seed)
+    let app = InspectorApp::from_checkpoint(&checkpoint_path, data_dir, num_steps, seed)
         .context("Failed to initialize inspector")?;
 
     app.run().map_err(|e| anyhow::anyhow!("Inspector error: {}", e))
 }
 
 #[cfg(not(feature = "dashboard"))]
-fn run_inspector(_checkpoint: &str, _data_dir: &str, _num_steps: usize, _seed: u64) -> Result<()> {
+fn run_inspector(_checkpoint: Option<String>, _data_dir: &str, _num_steps: usize, _seed: u64) -> Result<()> {
     println!("Inspector feature not enabled. Rebuild with --features dashboard");
+    Ok(())
+}
+
+/// Run SPICE comparison
+fn run_spice(
+    checkpoint: Option<String>,
+    data_dir: &str,
+    sample: Option<usize>,
+    output_dir: &str,
+    should_run_ngspice: bool,
+    num_steps: usize,
+    analog_output: bool,
+    pulse_stretch: bool,
+) -> Result<()> {
+    use gilgamesh::checkpoint::Checkpoint;
+    use gilgamesh::data::MnistDataset;
+    use gilgamesh::spice::{ComparisonResult, SpiceNetlist, SpiceParams, run_ngspice};
+    use rand::SeedableRng;
+    use rand_xoshiro::Xoshiro256PlusPlus;
+    use std::fs;
+    use std::path::Path;
+
+    println!("=== gilgamesh SPICE Comparison (Detailed Pulse-Stretch Model) ===");
+    println!();
+
+    // Find checkpoint: use provided path, find most recent, or use untrained network
+    let checkpoint_path = match checkpoint {
+        Some(path) => Some(path),
+        None => {
+            if let Some(path) = find_latest_checkpoint() {
+                println!("Using most recent checkpoint: {}", path);
+                Some(path)
+            } else {
+                None
+            }
+        }
+    };
+
+    // Load or create network
+    let network = if let Some(ref path) = checkpoint_path {
+        println!("Loading checkpoint: {}", path);
+        let cp = Checkpoint::load(path)
+            .with_context(|| format!("Failed to load checkpoint from {}", path))?;
+        cp.to_network()
+            .with_context(|| "Failed to reconstruct network from checkpoint")?
+    } else {
+        println!("No checkpoint found, using untrained network");
+        Network::new(49, 100, 10, 0.9, 42)
+    };
+
+    // Load dataset
+    println!("Loading MNIST dataset from {}...", data_dir);
+    let dataset = MnistDataset::load(data_dir)
+        .context("Failed to load MNIST dataset")?;
+
+    // Select sample
+    let sample_idx = sample.unwrap_or_else(|| {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(42);
+        use rand::Rng;
+        rng.gen_range(0..dataset.test_len())
+    });
+    let sample_idx = sample_idx.min(dataset.test_len() - 1);
+
+    let (images, labels) = dataset.get_test_batch(&[sample_idx]);
+    let input = images.row(0).to_owned();
+    let label = labels[0];
+
+    println!("Selected sample: {} (true label: {})", sample_idx, label);
+    println!();
+
+    // Build physics parameters with user options
+    let params = SpiceParams::from_network(&network)
+        .with_analog_output(analog_output)
+        .with_pulse_stretch(pulse_stretch);
+
+    println!("Circuit parameters:");
+    println!("  Supply:        VDD={:.1}V, Vref={:.1}V", params.supply.vdd, params.supply.vref);
+    println!("  Membrane:      C={:.3e}F, R={:.3e}Ω, tau={:.2}ms",
+             params.membrane.c_mem, params.membrane.r_leak, params.tau_m() * 1000.0);
+    println!("  Threshold:     Vref+{:.2}V, hysteresis={:.3}V",
+             params.threshold.over_vref, params.threshold.hysteresis);
+    println!("  Pulse stretch: {} (tau={:.2}ms)",
+             if pulse_stretch { "enabled" } else { "disabled" },
+             params.tau_pulse() * 1000.0);
+    println!("  Analog output: {}", if analog_output { "enabled" } else { "disabled" });
+    println!();
+
+    // Run gilgamesh simulation
+    println!("Running gilgamesh simulation ({} steps)...", num_steps);
+    let input_batch = input.clone().insert_axis(ndarray::Axis(0));
+    let trace = network.forward_traced(&input_batch, num_steps);
+
+    let gilgamesh_spikes: Vec<f32> = trace.output_spike_count.row(0).to_vec();
+    let gilgamesh_pred = gilgamesh_spikes
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    println!("Gilgamesh prediction: {} (correct: {})", gilgamesh_pred, gilgamesh_pred == label);
+
+    // Create output directory
+    let output_path = Path::new(output_dir);
+    fs::create_dir_all(output_path)
+        .with_context(|| format!("Failed to create output directory: {}", output_dir))?;
+
+    // Generate SPICE netlist
+    println!();
+    println!("Generating SPICE netlist (detailed pulse-stretch model)...");
+    let netlist = SpiceNetlist::from_network(&network, input.as_slice().unwrap(), num_steps, &params);
+
+    let netlist_path = output_path.join("gilgamesh.cir");
+    netlist.write(&netlist_path)?;
+    println!("Netlist written to: {:?}", netlist_path);
+
+    // Optionally run ngspice
+    if should_run_ngspice {
+        println!();
+        println!("Running ngspice...");
+
+        match run_ngspice(&netlist_path, output_path) {
+            Ok(spice_output) => {
+                println!("SPICE simulation complete");
+                println!();
+
+                // Compare results
+                let comparison = ComparisonResult::compare(&trace, &spice_output, &params);
+                comparison.print_summary();
+            }
+            Err(e) => {
+                println!("Error running ngspice: {}", e);
+                println!("Make sure ngspice is installed and in PATH");
+                println!();
+                println!("To run manually:");
+                println!("  cd {} && ngspice -b gilgamesh.cir", output_dir);
+            }
+        }
+    } else {
+        println!();
+        println!("Netlist generated. To run simulation:");
+        println!("  cd {} && ngspice -b gilgamesh.cir", output_dir);
+        println!();
+        println!("Or use --run-ngspice flag to run automatically");
+    }
+
     Ok(())
 }

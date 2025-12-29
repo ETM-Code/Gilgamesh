@@ -21,6 +21,7 @@ pub mod dashboard;
 pub mod animation;
 pub mod checkpoint;
 pub mod inspector;
+pub mod spice;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};
