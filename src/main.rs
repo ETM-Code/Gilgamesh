@@ -1307,37 +1307,44 @@ fn run_neuron_test(
     tau_pulse: f32,
     output_path: &str,
 ) -> Result<()> {
+    use gilgamesh::hardware::HardwareConfig;
     use gilgamesh::neurons::Leaky;
     use std::fs::File;
     use std::io::Write;
 
-    // Circuit parameters (matching SPICE defaults)
+    // Create hardware configuration
     let c_mem = 10e-9; // 10 nF membrane capacitance
     let r_leak = tau_m / c_mem; // Leak resistance from tau = RC
+    let v_threshold = threshold - vref; // Threshold above Vref
 
-    println!("=== Single Neuron Test ===");
+    let hw = HardwareConfig {
+        c_mem,
+        r_leak,
+        vdd: 5.0,
+        vref,
+        v_threshold,
+        dt,
+        i_syn_max: 3e-6,
+        i_total_max: 50e-6,
+    };
+
+    println!("=== Single Neuron Test (Hardware Mode) ===");
     println!();
-    println!("Parameters:");
-    println!("  tau_m      = {:.4} ms", tau_m * 1000.0);
-    println!("  dt         = {:.4} us", dt * 1e6);
-    println!("  threshold  = {:.3} V (over vref)", threshold - vref);
-    println!("  vref       = {:.3} V", vref);
-    println!("  input      = {:.4} uA", input_current * 1e6);
-    println!("  duration   = {:.2} ms", duration * 1000.0);
-    println!("  tau_pulse  = {:.4} ms", tau_pulse * 1000.0);
-    println!("  C_mem      = {:.1} nF", c_mem * 1e9);
-    println!("  R_leak     = {:.1} kΩ", r_leak / 1000.0);
+    hw.print_summary();
+    println!();
+    println!("Test parameters:");
+    println!("  Input current = {:.4} µA", input_current * 1e6);
+    println!("  Duration      = {:.2} ms", duration * 1000.0);
+    println!("  tau_pulse     = {:.4} ms", tau_pulse * 1000.0);
     println!();
 
     // Create a single LIF neuron with physics mode
-    // Threshold is relative to ground (membrane starts at 0 internally)
-    let over_vref_threshold = threshold - vref; // e.g., 3.3 - 2.5 = 0.8V over vref
     let neuron = if tau_pulse > 0.0 {
-        Leaky::new_physics_with_pulse(1, tau_m, dt, tau_pulse, 5.0)
-            .with_threshold(over_vref_threshold)
+        Leaky::new_physics_with_pulse(1, tau_m, dt, tau_pulse, hw.vdd)
+            .with_threshold(v_threshold)
     } else {
         Leaky::new_physics(1, tau_m, dt)
-            .with_threshold(over_vref_threshold)
+            .with_threshold(v_threshold)
     };
 
     let num_steps = (duration / dt) as usize;
@@ -1355,18 +1362,11 @@ fn run_neuron_test(
     let mut spike_count = 0;
     let mut pulse_value = 0.0f32;
 
-    // For passive RC membrane (matching real neuromorphic hardware):
-    // dV/dt = I/C - V/tau
-    // Per timestep: dV = (I * dt) / C
-    //
-    // Steady-state: V_ss = I * R = I * tau / C
-    // With I=1µA, tau=1.2ms, C=10nF: V_ss = 0.12V
-    //
-    // This matches the passive SPICE model (no op-amp TIA).
-    // For TIA-based SPICE (with op-amp gain), the effective transimpedance
-    // is ~20x higher, but that's not realistic for ASIC/PCB implementation.
-    let input_per_step = (input_current * dt) / c_mem;
-    println!("  Input/step = {:.6} V", input_per_step);
+    // Convert physical current to voltage increment per step
+    // This matches the passive SPICE model (no op-amp TIA)
+    let input_per_step = hw.dv_per_step(input_current);
+    println!("  Input/step    = {:.6} V ({:.4} mV)", input_per_step, input_per_step * 1e3);
+    println!("  Steady-state  = {:.4} V (I×R)", input_current * r_leak);
     println!();
 
     // Create input tensor (single neuron, single batch)
@@ -1380,7 +1380,7 @@ fn run_neuron_test(
 
         // Update pulse decay (simple exponential for now)
         if spikes[[0, 0]] > 0.5 {
-            pulse_value = 5.0; // VDD
+            pulse_value = hw.vdd; // VDD
             spike_count += 1;
         } else if tau_pulse > 0.0 {
             let decay = (-dt / tau_pulse).exp();
@@ -1388,7 +1388,6 @@ fn run_neuron_test(
         }
 
         // Get membrane voltage (ground-referenced, matching SPICE v(mem))
-        // Internal membrane is relative to virtual ground, same as SPICE
         let membrane = state.mem[[0, 0]];
 
         // Write to CSV
@@ -1400,6 +1399,7 @@ fn run_neuron_test(
     println!();
     println!("Simulation complete:");
     println!("  Total spikes: {}", spike_count);
+    println!("  Final membrane: {:.4} V", state.mem[[0, 0]]);
     println!("  Output: {}", output_path);
 
     Ok(())

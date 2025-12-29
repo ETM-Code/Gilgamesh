@@ -22,6 +22,7 @@ pub mod animation;
 pub mod checkpoint;
 pub mod inspector;
 pub mod spice;
+pub mod hardware;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};
@@ -30,3 +31,4 @@ pub use layers::linear::Linear;
 pub use network::Network;
 pub use surrogate::SurrogateGradient;
 pub use visualization::TrainingRecorder;
+pub use hardware::{HardwareConfig, HardwareMapping};
