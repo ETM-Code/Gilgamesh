@@ -1,7 +1,9 @@
 {
-  "rms_error": 0.39516741056903837,
-  "max_abs_error": 0.8004853074363711,
-  "mean_abs_error": 0.3201700741962144,
-  "correlation": 0.09346489863500565,
+  "rms_error_mV": 191.4794910840159,
+  "max_abs_error_mV": 835.4942669131483,
+  "mean_abs_error_mV": 60.99604383808684,
+  "correlation": 0.7437694919633877,
+  "spice_spike_count": 34,
+  "rust_spike_count": 34,
   "num_samples": 50000
 }

@@ -18,29 +18,13 @@ vref                                       2.5
 sum                                    2.50001
 mem                                        2.5
 xneuron.comp_raw                             0
-xneuron.comp_out                   4.36573e-26
-comp_pulse                        -7.29077e-23
+xneuron.comp_out                   6.93945e-26
+comp_pulse                        -3.46973e-25
 xneuron.reset_node                         2.5
-b.xneuron.bcomp#branch             4.36573e-27
+b.xneuron.bcomp#branch             6.93945e-29
 vref#branch                       -1.69407e-21
 vdd#branch                                   0
 
- Reference value :  3.94554e-03
- Reference value :  6.68782e-03
- Reference value :  9.44610e-03
- Reference value :  1.22056e-02
- Reference value :  1.49645e-02
- Reference value :  1.77310e-02
- Reference value :  2.04941e-02
- Reference value :  2.32572e-02
- Reference value :  2.60219e-02
- Reference value :  2.88059e-02
- Reference value :  3.15554e-02
- Reference value :  3.43184e-02
- Reference value :  3.70792e-02
- Reference value :  3.98456e-02
- Reference value :  4.26087e-02
- Reference value :  4.53606e-02
- Reference value :  4.80877e-02
-No. of Data Rows : 268192
+
+No. of Data Rows : 50369
 Note: Simulation executed from .control section 
