@@ -119,7 +119,7 @@ pub struct NetworkConfig {
 }
 
 fn default_input_size() -> usize { 49 }
-fn default_hidden_size() -> usize { 100 }
+fn default_hidden_size() -> usize { 9 }
 fn default_output_size() -> usize { 10 }
 
 impl Default for NetworkConfig {

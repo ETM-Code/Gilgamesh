@@ -1,13 +1,15 @@
-//! Network composition for spiking neural networks
-//!
-//! This module provides a complete SNN architecture matching the snnTorch example:
-//! Input -> Linear -> LIF -> Linear -> LIF -> Output
+//! Network struct and implementation
 
 use crate::layers::Linear;
-use crate::neurons::leaky::{Leaky, LeakyCache, LeakyState, NeuronMode};
+use crate::neurons::{Leaky, NeuronMode};
 use crate::surrogate::SurrogateGradient;
 use ndarray::{Array1, Array2};
 use rand::Rng;
+
+use super::cache::NetworkCache;
+use super::gradients::NetworkGradients;
+use super::state::NetworkState;
+use super::trace::SimulationTrace;
 
 /// A simple feedforward SNN matching snnTorch architecture
 ///
@@ -914,173 +916,6 @@ impl Network {
             output_spike_count: spike_count,
             output_final_mem: state.lif2_state.mem,
         }
-    }
-}
-
-/// Network state (membrane potentials)
-#[derive(Clone, Debug)]
-pub struct NetworkState {
-    pub lif1_state: LeakyState,
-    pub lif2_state: LeakyState,
-}
-
-impl NetworkState {
-    pub fn reset(&mut self) {
-        self.lif1_state.reset();
-        self.lif2_state.reset();
-    }
-}
-
-/// Cached values for backward pass
-#[derive(Clone, Debug)]
-pub struct NetworkCache {
-    // For rate-coded: input is same for all timesteps, passed separately to backward()
-    // For temporal: encoded_input stores the per-timestep input for correct gradients
-    pub encoded_input: Option<Array2<f32>>,
-    pub cur1: Array2<f32>,
-    pub spk1: Array2<f32>,
-    pub cur2: Array2<f32>,
-    pub lif1_cache: LeakyCache,
-    pub lif2_cache: LeakyCache,
-}
-
-/// Accumulated gradients for network parameters
-#[derive(Clone, Debug)]
-pub struct NetworkGradients {
-    pub fc1_weight: Array2<f32>,
-    pub fc1_bias: Option<Array1<f32>>,
-    pub fc2_weight: Array2<f32>,
-    pub fc2_bias: Option<Array1<f32>>,
-}
-
-impl NetworkGradients {
-    pub fn zeros_like(net: &Network) -> Self {
-        Self {
-            fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
-            fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
-            fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
-        }
-    }
-
-    /// Add another gradient to this one
-    pub fn add(&mut self, other: &NetworkGradients) {
-        self.fc1_weight = &self.fc1_weight + &other.fc1_weight;
-        if let (Some(ref mut a), Some(ref b)) = (&mut self.fc1_bias, &other.fc1_bias) {
-            *a = &*a + b;
-        }
-        self.fc2_weight = &self.fc2_weight + &other.fc2_weight;
-        if let (Some(ref mut a), Some(ref b)) = (&mut self.fc2_bias, &other.fc2_bias) {
-            *a = &*a + b;
-        }
-    }
-
-    /// Scale gradients by a factor
-    pub fn scale(&mut self, factor: f32) {
-        self.fc1_weight *= factor;
-        if let Some(ref mut b) = self.fc1_bias {
-            *b *= factor;
-        }
-        self.fc2_weight *= factor;
-        if let Some(ref mut b) = self.fc2_bias {
-            *b *= factor;
-        }
-    }
-
-    /// Compute the total L2 norm of all gradients
-    pub fn total_norm(&self) -> f32 {
-        let mut sum_sq = 0.0f32;
-
-        // FC1 weight
-        sum_sq += self.fc1_weight.iter().map(|x| x * x).sum::<f32>();
-
-        // FC1 bias
-        if let Some(ref b) = self.fc1_bias {
-            sum_sq += b.iter().map(|x| x * x).sum::<f32>();
-        }
-
-        // FC2 weight
-        sum_sq += self.fc2_weight.iter().map(|x| x * x).sum::<f32>();
-
-        // FC2 bias
-        if let Some(ref b) = self.fc2_bias {
-            sum_sq += b.iter().map(|x| x * x).sum::<f32>();
-        }
-
-        sum_sq.sqrt()
-    }
-
-    /// Clip gradients by global norm (in place)
-    /// Returns the original norm before clipping
-    pub fn clip_norm(&mut self, max_norm: f32) -> f32 {
-        let total_norm = self.total_norm();
-        if total_norm > max_norm {
-            let scale = max_norm / (total_norm + 1e-6);
-            self.scale(scale);
-        }
-        total_norm
-    }
-}
-
-/// Detailed trace of network simulation for visualization and analysis
-///
-/// Captures per-timestep membrane potentials, spikes, and currents for
-/// debugging, visualization, and comparison with SPICE simulation.
-#[derive(Clone, Debug)]
-pub struct SimulationTrace {
-    /// Membrane potentials over time for hidden layer [timestep][batch, neuron]
-    pub hidden_mem_history: Vec<Array2<f32>>,
-    /// Membrane potentials over time for output layer [timestep][batch, neuron]
-    pub output_mem_history: Vec<Array2<f32>>,
-    /// Spike events over time for hidden layer [timestep][batch, neuron]
-    pub hidden_spike_history: Vec<Array2<f32>>,
-    /// Spike events over time for output layer [timestep][batch, neuron]
-    pub output_spike_history: Vec<Array2<f32>>,
-    /// Input currents to hidden layer [timestep][batch, neuron]
-    pub hidden_current_history: Vec<Array2<f32>>,
-    /// Input currents to output layer [timestep][batch, neuron]
-    pub output_current_history: Vec<Array2<f32>>,
-    /// Final accumulated spike counts for output [batch, neuron]
-    pub output_spike_count: Array2<f32>,
-    /// Final membrane potential for output [batch, neuron]
-    pub output_final_mem: Array2<f32>,
-}
-
-impl SimulationTrace {
-    /// Get prediction for each sample in the batch (argmax of spike counts)
-    pub fn predictions(&self) -> Vec<usize> {
-        self.output_spike_count
-            .rows()
-            .into_iter()
-            .map(|row| {
-                row.iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap_or(0)
-            })
-            .collect()
-    }
-
-    /// Get spike counts as probabilities (normalized)
-    pub fn probabilities(&self) -> Array2<f32> {
-        let mut probs = self.output_spike_count.clone();
-        for mut row in probs.rows_mut() {
-            let sum: f32 = row.iter().sum();
-            if sum > 0.0 {
-                row.mapv_inplace(|x| x / sum);
-            } else {
-                // Uniform distribution if no spikes
-                let uniform = 1.0 / row.len() as f32;
-                row.fill(uniform);
-            }
-        }
-        probs
-    }
-
-    /// Number of timesteps in the trace
-    pub fn num_timesteps(&self) -> usize {
-        self.hidden_mem_history.len()
     }
 }
 

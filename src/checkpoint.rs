@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::layers::Linear;
 use crate::network::Network;
-use crate::neurons::leaky::Leaky;
+use crate::neurons::Leaky;
 use crate::surrogate::SurrogateGradient;
 
 /// Checkpoint format version for backwards compatibility

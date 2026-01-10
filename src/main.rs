@@ -49,7 +49,7 @@ enum Commands {
         num_steps: usize,
 
         /// Hidden layer size
-        #[arg(long, default_value = "100")]
+        #[arg(long, default_value = "9")]
         hidden_size: usize,
 
         /// Membrane decay (beta)
@@ -691,8 +691,45 @@ fn train_with_config(
     Ok(())
 }
 
-fn evaluate(_checkpoint: &str, _data_dir: &str, _num_steps: usize, _batch_size: usize) -> Result<()> {
-    println!("Evaluation not yet implemented (requires checkpoint loading)");
+fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch_size: usize) -> Result<()> {
+    use gilgamesh::checkpoint::Checkpoint;
+
+    println!("=== gilgamesh Evaluation ===");
+    println!();
+
+    // Load checkpoint
+    println!("Loading checkpoint: {}", checkpoint);
+    let cp = Checkpoint::load(checkpoint)
+        .with_context(|| format!("Failed to load checkpoint from {}", checkpoint))?;
+    let network = cp.to_network()
+        .with_context(|| "Failed to reconstruct network from checkpoint")?;
+
+    println!("Network: {} → {} → {} ({})",
+             cp.architecture.input_size,
+             cp.architecture.hidden_size,
+             cp.architecture.output_size,
+             cp.architecture.mode);
+
+    // Load dataset
+    println!("Loading MNIST dataset...");
+    let dataset = MnistDataset::load(data_dir)
+        .context("Failed to load MNIST dataset")?;
+    println!("Loaded {} test samples", dataset.test_len());
+    println!();
+
+    // Evaluate
+    let config = TrainingConfig {
+        lr: 0.0,
+        epochs: 0,
+        batch_size,
+        num_steps,
+        seed: 42,
+        num_workers: 0,
+    };
+    let trainer = Trainer::new(network, config);
+    let accuracy = trainer.evaluate(&dataset);
+
+    println!("Test Accuracy: {:.2}%", accuracy);
     Ok(())
 }
 

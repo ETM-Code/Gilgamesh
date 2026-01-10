@@ -26,7 +26,7 @@ pub mod hardware;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};
-pub use neurons::leaky::Leaky;
+pub use neurons::Leaky;
 pub use layers::linear::Linear;
 pub use network::Network;
 pub use surrogate::SurrogateGradient;
