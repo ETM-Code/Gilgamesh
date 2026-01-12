@@ -16,7 +16,7 @@ dashboard = ["dep:eframe", "dep:egui", "dep:egui_plot"]
 # Stunning network animations with nannou
 animation = ["dep:nannou"]
 # Web UI with embedded server
-web = ["dep:axum", "dep:tokio", "dep:tokio-tungstenite", "dep:tower-http", "dep:futures"]
+web = ["dep:axum", "dep:tokio", "dep:tokio-tungstenite", "dep:tower-http", "dep:futures", "dep:open"]
 
 [dependencies]
 # Linear algebra (BLAS optional via features)
@@ -62,6 +62,7 @@ tokio = { version = "1", features = ["full"], optional = true }
 tokio-tungstenite = { version = "0.26", optional = true }
 tower-http = { version = "0.6", features = ["fs", "cors"], optional = true }
 futures = { version = "0.3", optional = true }
+open = { version = "5", optional = true }
 
 [profile.release]
 opt-level = 3

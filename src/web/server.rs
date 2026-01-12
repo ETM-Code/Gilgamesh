@@ -23,7 +23,6 @@ use tower_http::{
 
 use super::protocol::{ClientMessage, ServerMessage, SimulationMode};
 use super::simulation::SimulationState;
-use crate::config::Config;
 
 /// Shared application state
 pub struct AppState {

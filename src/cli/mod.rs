@@ -249,6 +249,25 @@ pub(crate) enum Commands {
         #[arg(long, default_value = "neuron_output.csv")]
         output: String,
     },
+
+    /// Launch web-based UI (requires --features web)
+    Web {
+        /// Port to run web server on
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+
+        /// Path to checkpoint file (auto-finds latest if not specified)
+        #[arg(short, long)]
+        checkpoint: Option<String>,
+
+        /// Data directory for MNIST
+        #[arg(long, default_value = "./data")]
+        data_dir: String,
+
+        /// Open browser automatically
+        #[arg(long, default_value = "true")]
+        open: bool,
+    },
 }
 
 impl Cli {
@@ -372,6 +391,12 @@ impl Cli {
                 reset_hold,
                 &output,
             ),
+            Commands::Web {
+                port,
+                checkpoint,
+                data_dir,
+                open,
+            } => commands::run_web_server(port, checkpoint, &data_dir, open),
         }
     }
 }

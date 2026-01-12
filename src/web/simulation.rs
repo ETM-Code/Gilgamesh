@@ -6,8 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ndarray::Axis;
-use rand::Rng;
+use ndarray::{Array2, Axis};
 use tokio::time::sleep;
 
 use super::protocol::{NetworkTopology, NeuronState, ServerMessage, SimulationMode, SynapseInfo};
@@ -16,6 +15,7 @@ use crate::checkpoint::Checkpoint;
 use crate::config::Config;
 use crate::data::MnistDataset;
 use crate::network::Network;
+use crate::neurons::LeakyState;
 
 /// Simulation state shared between server and simulation loop
 pub struct SimulationState {
@@ -26,9 +26,9 @@ pub struct SimulationState {
     /// Loaded network (if any)
     pub network: Option<Network>,
     /// Test images
-    pub test_images: Option<ndarray::Array2<f32>>,
+    pub test_images: Option<Array2<f32>>,
     /// Test labels
-    pub test_labels: Option<Vec<u8>>,
+    pub test_labels: Option<Vec<usize>>,
     /// Total number of test samples
     pub total_samples: usize,
     /// Current sample index
@@ -50,9 +50,13 @@ pub struct SimulationState {
     /// Accumulated output spikes for current sample
     pub output_spikes: Vec<u32>,
     /// Hidden layer neuron state
-    hidden_state: Option<crate::neurons::LeakyState>,
+    hidden_state: Option<LeakyState>,
     /// Output layer neuron state
-    output_state: Option<crate::neurons::LeakyState>,
+    output_state: Option<LeakyState>,
+    /// Last hidden layer spikes (for visualization)
+    last_hidden_spikes: Vec<bool>,
+    /// Last output layer spikes (for visualization)
+    last_output_spikes: Vec<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +88,8 @@ impl SimulationState {
             output_spikes: vec![0; 10],
             hidden_state: None,
             output_state: None,
+            last_hidden_spikes: vec![],
+            last_output_spikes: vec![],
         }
     }
 
@@ -110,18 +116,20 @@ impl SimulationState {
             self.total_samples = self.test_images.as_ref().map(|i| i.nrows()).unwrap_or(0);
         }
 
+        // Initialize neuron states before moving network
+        let hidden_state = network.lif1.init_state(1);
+        let output_state = network.lif2.init_state(1);
+
         self.network = Some(network);
         self.checkpoint_path = Some(path.to_string_lossy().to_string());
         self.mode = SimulationMode::Inference;
         self.current_sample = 0;
         self.current_step = 0;
         self.output_spikes = vec![0; output_size];
-
-        // Initialize neuron states
-        if let Some(ref net) = self.network {
-            self.hidden_state = Some(net.lif1.init_state(1));
-            self.output_state = Some(net.lif2.init_state(1));
-        }
+        self.hidden_state = Some(hidden_state);
+        self.output_state = Some(output_state);
+        self.last_hidden_spikes = vec![false; hidden_size];
+        self.last_output_spikes = vec![false; output_size];
 
         Ok(())
     }
@@ -212,7 +220,11 @@ impl SimulationState {
     fn reset_for_sample(&mut self, sample_idx: usize) {
         self.current_sample = sample_idx;
         self.current_step = 0;
-        self.output_spikes = vec![0; self.layer_sizes.get(2).copied().unwrap_or(10)];
+        let output_size = self.layer_sizes.get(2).copied().unwrap_or(10);
+        let hidden_size = self.layer_sizes.get(1).copied().unwrap_or(9);
+        self.output_spikes = vec![0; output_size];
+        self.last_hidden_spikes = vec![false; hidden_size];
+        self.last_output_spikes = vec![false; output_size];
 
         // Reset neuron states
         if let Some(ref net) = self.network {
@@ -222,7 +234,7 @@ impl SimulationState {
     }
 
     /// Get current image pixels
-    fn get_image_pixels(&self) -> Vec<f32> {
+    pub fn get_image_pixels(&self) -> Vec<f32> {
         self.test_images
             .as_ref()
             .map(|images| images.row(self.current_sample).to_vec())
@@ -230,7 +242,7 @@ impl SimulationState {
     }
 
     /// Get current label
-    fn get_label(&self) -> u8 {
+    pub fn get_label(&self) -> usize {
         self.test_labels
             .as_ref()
             .and_then(|labels| labels.get(self.current_sample).copied())
@@ -286,8 +298,9 @@ async fn run_inference_step(state: &Arc<AppState>) {
             SampleRequest::Prev => sim.current_sample.saturating_sub(1),
             SampleRequest::Jump(idx) => idx.min(sim.total_samples.saturating_sub(1)),
             SampleRequest::Random => {
-                let mut rng = rand::rng();
-                rng.random_range(0..sim.total_samples)
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                rng.gen_range(0..sim.total_samples.max(1))
             }
             SampleRequest::Restart => sim.current_sample,
         };
@@ -301,73 +314,83 @@ async fn run_inference_step(state: &Arc<AppState>) {
         return;
     }
 
-    // Check if network is loaded
-    let network = match sim.network.as_ref() {
-        Some(n) => n,
-        None => return,
-    };
-
-    // Get current sample
-    let images = match sim.test_images.as_ref() {
-        Some(i) => i,
-        None => return,
-    };
-
-    if sim.current_sample >= images.nrows() {
+    // Check if network is loaded and we have images
+    let has_network = sim.network.is_some();
+    let has_images = sim.test_images.is_some();
+    if !has_network || !has_images {
         return;
     }
 
-    // Get sample and run one step
-    let sample_image = images.row(sim.current_sample).to_owned();
+    let current_sample = sim.current_sample;
+    let images = sim.test_images.as_ref().unwrap();
+    if current_sample >= images.nrows() {
+        return;
+    }
+
+    // Get sample data
+    let sample_image = images.row(current_sample).to_owned();
     let sample_batch = sample_image.insert_axis(Axis(0));
 
-    // Run forward pass for this step
+    // Take states first to avoid borrow checker issues
+    let hidden_state = sim.hidden_state.take();
+    let output_state = sim.output_state.take();
+
+    // Run forward pass
+    let network = sim.network.as_ref().unwrap();
+
+    // FC1 -> LIF1
     let fc1_out = network.fc1.forward(&sample_batch);
-
-    let hidden_state = sim.hidden_state.take().unwrap_or_else(|| network.lif1.init_state(1));
+    let hidden_state = hidden_state.unwrap_or_else(|| network.lif1.init_state(1));
     let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
-    sim.hidden_state = Some(new_hidden_state);
 
+    // FC2 -> LIF2
     let fc2_out = network.fc2.forward(&hidden_spikes);
-    let output_state = sim.output_state.take().unwrap_or_else(|| network.lif2.init_state(1));
-    let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
+    let output_state = output_state.unwrap_or_else(|| network.lif2.init_state(1));
+    let (output_spikes_arr, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
+
+    // Update state
+    sim.hidden_state = Some(new_hidden_state);
     sim.output_state = Some(new_output_state);
 
+    // Record spikes for visualization
+    sim.last_hidden_spikes = hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+    sim.last_output_spikes = output_spikes_arr.row(0).iter().map(|&v| v > 0.5).collect();
+
     // Accumulate output spikes
-    for (i, &spike) in output_spikes.row(0).iter().enumerate() {
+    for (i, &spike) in output_spikes_arr.row(0).iter().enumerate() {
         if spike > 0.5 && i < sim.output_spikes.len() {
             sim.output_spikes[i] += 1;
         }
     }
 
     sim.current_step += 1;
+    let current_step = sim.current_step;
+    let total_steps = sim.total_steps;
 
     // Broadcast current state
     broadcast_frame(&sim, state);
 
     // Check if sample is complete
-    if sim.current_step >= sim.total_steps {
-        // Wait a bit, then move to next sample
+    if current_step >= total_steps {
+        let total_samples = sim.total_samples;
+        let current_sample = sim.current_sample;
+
+        // Drop the lock before sleeping
         drop(sim);
         sleep(Duration::from_millis(500)).await;
 
+        // Advance to next sample
         let mut sim = state.simulation.write().await;
-        let next = (sim.current_sample + 1) % sim.total_samples.max(1);
+        let next = (current_sample + 1) % total_samples.max(1);
         sim.reset_for_sample(next);
     }
 }
 
 /// Broadcast current frame to all clients
 fn broadcast_frame(sim: &SimulationState, state: &AppState) {
-    let images = match sim.test_images.as_ref() {
-        Some(i) => i,
-        None => return,
-    };
-
-    let network = match sim.network.as_ref() {
-        Some(n) => n,
-        None => return,
-    };
+    if sim.test_images.is_none() || sim.network.is_none() {
+        return;
+    }
 
     // Build neuron states
     let mut neurons = Vec::new();
@@ -387,11 +410,12 @@ fn broadcast_frame(sim: &SimulationState, state: &AppState) {
     // Hidden layer
     if let Some(ref hidden_state) = sim.hidden_state {
         for (i, &mem) in hidden_state.mem.row(0).iter().enumerate() {
+            let spiking = sim.last_hidden_spikes.get(i).copied().unwrap_or(false);
             neurons.push(NeuronState {
                 layer: 1,
                 index: i,
                 membrane: mem.clamp(0.0, 1.0),
-                spiking: hidden_state.spk.row(0)[i] > 0.5,
+                spiking,
                 spike_count: 0,
             });
         }
@@ -400,11 +424,12 @@ fn broadcast_frame(sim: &SimulationState, state: &AppState) {
     // Output layer
     if let Some(ref output_state) = sim.output_state {
         for (i, &mem) in output_state.mem.row(0).iter().enumerate() {
+            let spiking = sim.last_output_spikes.get(i).copied().unwrap_or(false);
             neurons.push(NeuronState {
                 layer: 2,
                 index: i,
                 membrane: mem.clamp(0.0, 1.0),
-                spiking: output_state.spk.row(0)[i] > 0.5,
+                spiking,
                 spike_count: sim.output_spikes.get(i).copied().unwrap_or(0),
             });
         }
@@ -420,7 +445,7 @@ fn broadcast_frame(sim: &SimulationState, state: &AppState) {
         .unwrap_or(0);
 
     let label = sim.get_label();
-    let correct = prediction == label as usize;
+    let correct = prediction == label;
 
     // Determine image size (7x7 = 49 or 28x28 = 784)
     let image_size = if image_pixels.len() == 49 { 7 } else { 28 };
@@ -430,7 +455,7 @@ fn broadcast_frame(sim: &SimulationState, state: &AppState) {
         step: sim.current_step,
         total_steps: sim.total_steps,
         sample_index: sim.current_sample,
-        label,
+        label: label as u8,
         prediction,
         correct,
         output_spikes: sim.output_spikes.clone(),

@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --spike-glow: 0 0 20px rgba(251, 191, 36, 0.8);
+}
+
+.neuron-spike {
+  animation: spike-pulse 0.3s ease-out;
+}
+
+@keyframes spike-pulse {
+  0% {
+    box-shadow: var(--spike-glow);
+    transform: scale(1.2);
+  }
+  100% {
+    box-shadow: none;
+    transform: scale(1);
+  }
+}
+
+.membrane-fill {
+  transition: height 0.05s linear;
+}
