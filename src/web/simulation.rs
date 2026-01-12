@@ -1,0 +1,443 @@
+//! Simulation bridge for web UI
+//!
+//! Manages network state and broadcasts updates to connected clients.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use ndarray::Axis;
+use rand::Rng;
+use tokio::time::sleep;
+
+use super::protocol::{NetworkTopology, NeuronState, ServerMessage, SimulationMode, SynapseInfo};
+use super::server::AppState;
+use crate::checkpoint::Checkpoint;
+use crate::config::Config;
+use crate::data::MnistDataset;
+use crate::network::Network;
+
+/// Simulation state shared between server and simulation loop
+pub struct SimulationState {
+    /// Current mode
+    pub mode: SimulationMode,
+    /// Network configuration
+    pub config: Config,
+    /// Loaded network (if any)
+    pub network: Option<Network>,
+    /// Test images
+    pub test_images: Option<ndarray::Array2<f32>>,
+    /// Test labels
+    pub test_labels: Option<Vec<u8>>,
+    /// Total number of test samples
+    pub total_samples: usize,
+    /// Current sample index
+    pub current_sample: usize,
+    /// Current simulation step
+    pub current_step: usize,
+    /// Total steps per sample
+    pub total_steps: usize,
+    /// Animation speed multiplier
+    pub speed: f32,
+    /// Is simulation paused
+    pub paused: bool,
+    /// Request to change sample
+    pub sample_request: Option<SampleRequest>,
+    /// Layer sizes [input, hidden, output]
+    pub layer_sizes: Vec<usize>,
+    /// Path to loaded checkpoint
+    pub checkpoint_path: Option<String>,
+    /// Accumulated output spikes for current sample
+    pub output_spikes: Vec<u32>,
+    /// Hidden layer neuron state
+    hidden_state: Option<crate::neurons::LeakyState>,
+    /// Output layer neuron state
+    output_state: Option<crate::neurons::LeakyState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SampleRequest {
+    Next,
+    Prev,
+    Jump(usize),
+    Random,
+    Restart,
+}
+
+impl SimulationState {
+    pub fn new() -> Self {
+        Self {
+            mode: SimulationMode::Idle,
+            config: Config::default(),
+            network: None,
+            test_images: None,
+            test_labels: None,
+            total_samples: 0,
+            current_sample: 0,
+            current_step: 0,
+            total_steps: 25,
+            speed: 1.0,
+            paused: false,
+            sample_request: None,
+            layer_sizes: vec![],
+            checkpoint_path: None,
+            output_spikes: vec![0; 10],
+            hidden_state: None,
+            output_state: None,
+        }
+    }
+
+    /// Load a checkpoint and MNIST data
+    pub fn load_checkpoint(&mut self, path: &Path, data_dir: &Path) -> anyhow::Result<()> {
+        let cp = Checkpoint::load(path)?;
+        let network = cp.to_network()?;
+
+        let input_size = cp.architecture.input_size;
+        let hidden_size = cp.architecture.hidden_size;
+        let output_size = cp.architecture.output_size;
+
+        self.layer_sizes = vec![input_size, hidden_size, output_size];
+        self.config = Config::default();
+        self.config.network.input_size = input_size;
+        self.config.network.hidden_size = hidden_size;
+        self.config.network.output_size = output_size;
+
+        // Load MNIST if not already loaded
+        if self.test_images.is_none() {
+            let dataset = MnistDataset::load(data_dir.to_str().unwrap_or("./data"))?;
+            self.test_images = Some(dataset.test_images);
+            self.test_labels = Some(dataset.test_labels);
+            self.total_samples = self.test_images.as_ref().map(|i| i.nrows()).unwrap_or(0);
+        }
+
+        self.network = Some(network);
+        self.checkpoint_path = Some(path.to_string_lossy().to_string());
+        self.mode = SimulationMode::Inference;
+        self.current_sample = 0;
+        self.current_step = 0;
+        self.output_spikes = vec![0; output_size];
+
+        // Initialize neuron states
+        if let Some(ref net) = self.network {
+            self.hidden_state = Some(net.lif1.init_state(1));
+            self.output_state = Some(net.lif2.init_state(1));
+        }
+
+        Ok(())
+    }
+
+    /// Get network topology for initial handshake
+    pub fn get_topology(&self) -> Option<NetworkTopology> {
+        let network = self.network.as_ref()?;
+
+        let mut synapses = Vec::new();
+
+        // FC1: input -> hidden
+        for (to_idx, row) in network.fc1.weight.outer_iter().enumerate() {
+            for (from_idx, &weight) in row.iter().enumerate() {
+                synapses.push(SynapseInfo {
+                    from_layer: 0,
+                    from_index: from_idx,
+                    to_layer: 1,
+                    to_index: to_idx,
+                    weight,
+                });
+            }
+        }
+
+        // FC2: hidden -> output
+        for (to_idx, row) in network.fc2.weight.outer_iter().enumerate() {
+            for (from_idx, &weight) in row.iter().enumerate() {
+                synapses.push(SynapseInfo {
+                    from_layer: 1,
+                    from_index: from_idx,
+                    to_layer: 2,
+                    to_index: to_idx,
+                    weight,
+                });
+            }
+        }
+
+        let total_neurons: usize = self.layer_sizes.iter().sum();
+
+        Some(NetworkTopology {
+            layer_sizes: self.layer_sizes.clone(),
+            total_neurons,
+            synapses,
+        })
+    }
+
+    /// Get weight matrices for visualization
+    pub fn get_weight_matrices(&self) -> Option<Vec<(String, Vec<f32>, usize, usize)>> {
+        let network = self.network.as_ref()?;
+
+        let fc1_data: Vec<f32> = network.fc1.weight.iter().cloned().collect();
+        let fc1_shape = network.fc1.weight.dim();
+
+        let fc2_data: Vec<f32> = network.fc2.weight.iter().cloned().collect();
+        let fc2_shape = network.fc2.weight.dim();
+
+        Some(vec![
+            ("fc1".to_string(), fc1_data, fc1_shape.0, fc1_shape.1),
+            ("fc2".to_string(), fc2_data, fc2_shape.0, fc2_shape.1),
+        ])
+    }
+
+    /// Move to next sample
+    pub fn next_sample(&mut self) {
+        self.sample_request = Some(SampleRequest::Next);
+    }
+
+    /// Move to previous sample
+    pub fn prev_sample(&mut self) {
+        self.sample_request = Some(SampleRequest::Prev);
+    }
+
+    /// Jump to specific sample
+    pub fn jump_to_sample(&mut self, index: usize) {
+        self.sample_request = Some(SampleRequest::Jump(index));
+    }
+
+    /// Jump to random sample
+    pub fn random_sample(&mut self) {
+        self.sample_request = Some(SampleRequest::Random);
+    }
+
+    /// Restart current sample
+    pub fn restart_sample(&mut self) {
+        self.sample_request = Some(SampleRequest::Restart);
+    }
+
+    /// Reset for a new sample
+    fn reset_for_sample(&mut self, sample_idx: usize) {
+        self.current_sample = sample_idx;
+        self.current_step = 0;
+        self.output_spikes = vec![0; self.layer_sizes.get(2).copied().unwrap_or(10)];
+
+        // Reset neuron states
+        if let Some(ref net) = self.network {
+            self.hidden_state = Some(net.lif1.init_state(1));
+            self.output_state = Some(net.lif2.init_state(1));
+        }
+    }
+
+    /// Get current image pixels
+    fn get_image_pixels(&self) -> Vec<f32> {
+        self.test_images
+            .as_ref()
+            .map(|images| images.row(self.current_sample).to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Get current label
+    fn get_label(&self) -> u8 {
+        self.test_labels
+            .as_ref()
+            .and_then(|labels| labels.get(self.current_sample).copied())
+            .unwrap_or(0)
+    }
+}
+
+impl Default for SimulationState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Main simulation loop - runs in background and broadcasts state
+pub async fn run_simulation_loop(state: Arc<AppState>) {
+    let mut frame_interval = tokio::time::interval(Duration::from_millis(33)); // ~30fps
+
+    loop {
+        frame_interval.tick().await;
+
+        // Get current mode and handle requests
+        let mode = {
+            let sim = state.simulation.read().await;
+            sim.mode
+        };
+
+        match mode {
+            SimulationMode::Idle => {
+                // Just wait
+                sleep(Duration::from_millis(100)).await;
+            }
+
+            SimulationMode::Inference => {
+                run_inference_step(&state).await;
+            }
+
+            SimulationMode::Training => {
+                // Training is handled separately
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// Run one step of inference simulation
+async fn run_inference_step(state: &Arc<AppState>) {
+    let mut sim = state.simulation.write().await;
+
+    // Handle sample change requests
+    if let Some(request) = sim.sample_request.take() {
+        let new_sample = match request {
+            SampleRequest::Next => (sim.current_sample + 1).min(sim.total_samples.saturating_sub(1)),
+            SampleRequest::Prev => sim.current_sample.saturating_sub(1),
+            SampleRequest::Jump(idx) => idx.min(sim.total_samples.saturating_sub(1)),
+            SampleRequest::Random => {
+                let mut rng = rand::rng();
+                rng.random_range(0..sim.total_samples)
+            }
+            SampleRequest::Restart => sim.current_sample,
+        };
+        sim.reset_for_sample(new_sample);
+    }
+
+    // Check if paused
+    if sim.paused {
+        // Still broadcast current state even when paused
+        broadcast_frame(&sim, state);
+        return;
+    }
+
+    // Check if network is loaded
+    let network = match sim.network.as_ref() {
+        Some(n) => n,
+        None => return,
+    };
+
+    // Get current sample
+    let images = match sim.test_images.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
+
+    if sim.current_sample >= images.nrows() {
+        return;
+    }
+
+    // Get sample and run one step
+    let sample_image = images.row(sim.current_sample).to_owned();
+    let sample_batch = sample_image.insert_axis(Axis(0));
+
+    // Run forward pass for this step
+    let fc1_out = network.fc1.forward(&sample_batch);
+
+    let hidden_state = sim.hidden_state.take().unwrap_or_else(|| network.lif1.init_state(1));
+    let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
+    sim.hidden_state = Some(new_hidden_state);
+
+    let fc2_out = network.fc2.forward(&hidden_spikes);
+    let output_state = sim.output_state.take().unwrap_or_else(|| network.lif2.init_state(1));
+    let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
+    sim.output_state = Some(new_output_state);
+
+    // Accumulate output spikes
+    for (i, &spike) in output_spikes.row(0).iter().enumerate() {
+        if spike > 0.5 && i < sim.output_spikes.len() {
+            sim.output_spikes[i] += 1;
+        }
+    }
+
+    sim.current_step += 1;
+
+    // Broadcast current state
+    broadcast_frame(&sim, state);
+
+    // Check if sample is complete
+    if sim.current_step >= sim.total_steps {
+        // Wait a bit, then move to next sample
+        drop(sim);
+        sleep(Duration::from_millis(500)).await;
+
+        let mut sim = state.simulation.write().await;
+        let next = (sim.current_sample + 1) % sim.total_samples.max(1);
+        sim.reset_for_sample(next);
+    }
+}
+
+/// Broadcast current frame to all clients
+fn broadcast_frame(sim: &SimulationState, state: &AppState) {
+    let images = match sim.test_images.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
+
+    let network = match sim.network.as_ref() {
+        Some(n) => n,
+        None => return,
+    };
+
+    // Build neuron states
+    let mut neurons = Vec::new();
+
+    // Input layer - use image pixels as "membrane"
+    let image_pixels = sim.get_image_pixels();
+    for (i, &pixel) in image_pixels.iter().enumerate() {
+        neurons.push(NeuronState {
+            layer: 0,
+            index: i,
+            membrane: pixel,
+            spiking: pixel > 0.5,
+            spike_count: 0,
+        });
+    }
+
+    // Hidden layer
+    if let Some(ref hidden_state) = sim.hidden_state {
+        for (i, &mem) in hidden_state.mem.row(0).iter().enumerate() {
+            neurons.push(NeuronState {
+                layer: 1,
+                index: i,
+                membrane: mem.clamp(0.0, 1.0),
+                spiking: hidden_state.spk.row(0)[i] > 0.5,
+                spike_count: 0,
+            });
+        }
+    }
+
+    // Output layer
+    if let Some(ref output_state) = sim.output_state {
+        for (i, &mem) in output_state.mem.row(0).iter().enumerate() {
+            neurons.push(NeuronState {
+                layer: 2,
+                index: i,
+                membrane: mem.clamp(0.0, 1.0),
+                spiking: output_state.spk.row(0)[i] > 0.5,
+                spike_count: sim.output_spikes.get(i).copied().unwrap_or(0),
+            });
+        }
+    }
+
+    // Calculate prediction
+    let prediction = sim
+        .output_spikes
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, &count)| count)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+
+    let label = sim.get_label();
+    let correct = prediction == label as usize;
+
+    // Determine image size (7x7 = 49 or 28x28 = 784)
+    let image_size = if image_pixels.len() == 49 { 7 } else { 28 };
+
+    let msg = ServerMessage::AnimationFrame {
+        neurons,
+        step: sim.current_step,
+        total_steps: sim.total_steps,
+        sample_index: sim.current_sample,
+        label,
+        prediction,
+        correct,
+        output_spikes: sim.output_spikes.clone(),
+        image_pixels,
+        image_size,
+        paused: sim.paused,
+    };
+
+    state.broadcast(msg);
+}
