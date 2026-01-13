@@ -75,7 +75,7 @@ pub async fn run_server(
     // Serve frontend static files if directory exists
     let app = if let Some(frontend) = frontend_dir {
         if frontend.exists() {
-            app.nest_service("/", ServeDir::new(frontend))
+            app.fallback_service(ServeDir::new(frontend))
         } else {
             println!("Warning: Frontend directory not found: {}", frontend.display());
             app
@@ -84,7 +84,7 @@ pub async fn run_server(
         // Try default location
         let default_frontend = PathBuf::from("frontend/dist");
         if default_frontend.exists() {
-            app.nest_service("/", ServeDir::new(default_frontend))
+            app.fallback_service(ServeDir::new(default_frontend))
         } else {
             app
         }
