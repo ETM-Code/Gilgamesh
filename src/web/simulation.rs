@@ -258,29 +258,27 @@ impl Default for SimulationState {
 
 /// Main simulation loop - runs in background and broadcasts state
 pub async fn run_simulation_loop(state: Arc<AppState>) {
-    let mut frame_interval = tokio::time::interval(Duration::from_millis(33)); // ~30fps
-
     loop {
-        frame_interval.tick().await;
-
-        // Get current mode and handle requests
-        let mode = {
+        // Get current mode and speed
+        let (mode, speed) = {
             let sim = state.simulation.read().await;
-            sim.mode
+            (sim.mode, sim.speed)
         };
+
+        // Adjust frame rate based on speed (slower = longer between frames)
+        let frame_delay = (100.0 / speed.max(0.1)) as u64; // Base ~100ms per step at 1x
 
         match mode {
             SimulationMode::Idle => {
-                // Just wait
                 sleep(Duration::from_millis(100)).await;
             }
 
             SimulationMode::Inference => {
                 run_inference_step(&state).await;
+                sleep(Duration::from_millis(frame_delay)).await;
             }
 
             SimulationMode::Training => {
-                // Training is handled separately
                 sleep(Duration::from_millis(100)).await;
             }
         }
@@ -374,10 +372,14 @@ async fn run_inference_step(state: &Arc<AppState>) {
     if current_step >= total_steps {
         let total_samples = sim.total_samples;
         let current_sample = sim.current_sample;
+        let speed = sim.speed;
 
         // Drop the lock before sleeping
         drop(sim);
-        sleep(Duration::from_millis(500)).await;
+
+        // Longer pause between samples so user can see the result
+        let pause_time = (2000.0 / speed.max(0.1)) as u64;
+        sleep(Duration::from_millis(pause_time)).await;
 
         // Advance to next sample
         let mut sim = state.simulation.write().await;
