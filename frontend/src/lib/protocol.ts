@@ -87,6 +87,9 @@ export interface Ack {
   command: string;
 }
 
+// End of sample behavior
+export type EndOfSampleBehavior = 'auto-advance' | 'stop' | 'loop';
+
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'GetStatus' }
@@ -97,6 +100,7 @@ export type ClientMessage =
   | { type: 'Pause' }
   | { type: 'Resume' }
   | { type: 'SetSpeed'; speed: number }
+  | { type: 'SetEndOfSampleBehavior'; behavior: EndOfSampleBehavior }
   | { type: 'RestartSample' }
   | { type: 'StartTraining'; config: Record<string, unknown> }
   | { type: 'StopTraining' }

@@ -6,29 +6,34 @@ interface NetworkCanvasProps {
   topology: NetworkTopology | null;
   width: number;
   height: number;
+  speed: number;
+  pulseStyle: 'ball' | 'electricity';
+  showInputCurrent: boolean;
 }
 
-interface NeuronPosition {
-  x: number;
-  y: number;
-  layer: number;
-  index: number;
-}
-
-// Layer colors - vibrant gradients
+// Layer colors
 const LAYER_COLORS = [
   { base: '#3b82f6', glow: '#60a5fa', name: 'Input' },    // Blue
   { base: '#a855f7', glow: '#c084fc', name: 'Hidden' },   // Purple
   { base: '#f97316', glow: '#fb923c', name: 'Output' },   // Orange
 ];
 
-export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanvasProps) {
+// Synapse colors
+const EXCITATORY_COLOR = { base: '#3b82f6', glow: '#60a5fa' }; // Blue
+const INHIBITORY_COLOR = { base: '#ef4444', glow: '#f87171' }; // Red
+
+export function NetworkCanvas({
+  neurons,
+  topology,
+  width,
+  height,
+  speed,
+  pulseStyle,
+  showInputCurrent,
+}: NetworkCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
-  const pulseTimeRef = useRef<number>(0);
-  const prevNeuronsRef = useRef<Map<string, NeuronState>>(new Map());
-
-  // Track active pulses for animation
+  const timeRef = useRef<number>(0);
   const pulsesRef = useRef<Array<{
     fromX: number;
     fromY: number;
@@ -38,88 +43,125 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
     color: string;
     weight: number;
   }>>([]);
+  const prevSpikingRef = useRef<Set<string>>(new Set());
 
-  // Calculate neuron positions - vertical layout like reference
-  const positions = useMemo(() => {
-    if (!topology) return new Map<string, NeuronPosition>();
+  // Build neuron state lookup
+  const neuronStates = useMemo(() => {
+    const map = new Map<string, NeuronState>();
+    neurons.forEach(n => map.set(`${n.layer}-${n.index}`, n));
+    return map;
+  }, [neurons]);
 
-    const positions = new Map<string, NeuronPosition>();
+  // Calculate positions for VISIBLE neurons only
+  // Key insight: only create positions for neurons we're actually going to display
+  const { positions, visibleNeurons } = useMemo(() => {
+    if (!topology) {
+      return { positions: new Map<string, { x: number; y: number }>(), visibleNeurons: new Map<number, number[]>() };
+    }
+
+    const positions = new Map<string, { x: number; y: number }>();
+    const visibleNeurons = new Map<number, number[]>(); // layer -> visible indices
     const layerCount = topology.layer_sizes.length;
-    const padding = 80;
+    const padding = 60;
     const availableWidth = width - 2 * padding;
     const availableHeight = height - 2 * padding;
 
     topology.layer_sizes.forEach((size, layerIdx) => {
       const x = padding + (layerIdx / Math.max(1, layerCount - 1)) * availableWidth;
-
-      // Show all neurons but space them nicely
       const maxVisible = Math.min(size, 50);
       const spacing = availableHeight / (maxVisible + 1);
 
-      for (let i = 0; i < maxVisible; i++) {
-        const neuronIdx = size <= maxVisible ? i : Math.floor((i / maxVisible) * size);
-        const y = padding + (i + 1) * spacing;
-        positions.set(`${layerIdx}-${neuronIdx}`, { x, y, layer: layerIdx, index: neuronIdx });
+      const indices: number[] = [];
+
+      for (let slot = 0; slot < maxVisible; slot++) {
+        // Map visual slot to neuron index
+        const neuronIdx = size <= maxVisible
+          ? slot
+          : Math.floor((slot / (maxVisible - 1)) * (size - 1));
+
+        const y = padding + (slot + 1) * spacing;
+        const key = `${layerIdx}-${neuronIdx}`;
+
+        positions.set(key, { x, y });
+        indices.push(neuronIdx);
       }
+
+      visibleNeurons.set(layerIdx, indices);
     });
 
-    return positions;
+    return { positions, visibleNeurons };
   }, [topology, width, height]);
 
-  // Create neuron state map
-  const neuronStates = useMemo(() => {
-    const map = new Map<string, NeuronState>();
-    neurons.forEach(n => {
-      map.set(`${n.layer}-${n.index}`, n);
-    });
-    return map;
-  }, [neurons]);
-
-  // Detect new spikes and create pulses
+  // Create pulses for active neurons
   useEffect(() => {
-    if (!topology) return;
+    if (!topology || !visibleNeurons.size) return;
 
     const newPulses: typeof pulsesRef.current = [];
+    const currentSpiking = new Set<string>();
 
-    // Check for neurons that just started spiking
-    neuronStates.forEach((state, key) => {
-      const prevState = prevNeuronsRef.current.get(key);
-      const justSpiked = state.spiking && (!prevState || !prevState.spiking);
+    // Check each visible neuron for activity
+    visibleNeurons.forEach((indices, layerIdx) => {
+      if (layerIdx >= topology.layer_sizes.length - 1) return; // Skip output layer
 
-      if (justSpiked && state.layer < topology.layer_sizes.length - 1) {
+      const nextLayerIndices = visibleNeurons.get(layerIdx + 1) || [];
+
+      indices.forEach(neuronIdx => {
+        const key = `${layerIdx}-${neuronIdx}`;
+        const state = neuronStates.get(key);
+        if (!state) return;
+
         const fromPos = positions.get(key);
         if (!fromPos) return;
 
-        // Create pulses to all connected neurons in next layer
-        const nextLayerSize = topology.layer_sizes[state.layer + 1];
-        const maxConnections = Math.min(nextLayerSize, 20); // Limit for performance
+        // For input layer: emit based on membrane (constant current)
+        // For other layers: emit on spike
+        const isInput = layerIdx === 0;
+        const shouldEmit = isInput
+          ? (state.membrane > 0.2 && Math.random() < state.membrane * 0.4)
+          : state.spiking;
 
-        for (let i = 0; i < maxConnections; i++) {
-          const targetIdx = Math.floor((i / maxConnections) * nextLayerSize);
-          const toPos = positions.get(`${state.layer + 1}-${targetIdx}`);
-          if (!toPos) continue;
+        if (shouldEmit) {
+          currentSpiking.add(key);
 
-          const layerColor = LAYER_COLORS[state.layer] || LAYER_COLORS[0];
-          newPulses.push({
-            fromX: fromPos.x,
-            fromY: fromPos.y,
-            toX: toPos.x,
-            toY: toPos.y,
-            progress: 0,
-            color: layerColor.glow,
-            weight: Math.random() * 0.5 + 0.5,
-          });
+          // Only emit if this is a new spike (for non-input) or randomly (for input)
+          const wasSpikingBefore = prevSpikingRef.current.has(key);
+          if (isInput || !wasSpikingBefore) {
+            // Create pulses to visible neurons in next layer
+            const numPulses = Math.min(nextLayerIndices.length, isInput ? 3 : 8);
+            for (let i = 0; i < numPulses; i++) {
+              const targetIdx = nextLayerIndices[Math.floor(Math.random() * nextLayerIndices.length)];
+              const toPos = positions.get(`${layerIdx + 1}-${targetIdx}`);
+              if (!toPos) continue;
+
+              // Find weight for this connection (approximate)
+              const synapse = topology.synapses.find(
+                s => s.from_layer === layerIdx && s.from_index === neuronIdx &&
+                     s.to_layer === layerIdx + 1 && s.to_index === targetIdx
+              );
+              const weight = synapse?.weight ?? 0.5;
+              const isExcitatory = weight >= 0;
+
+              newPulses.push({
+                fromX: fromPos.x,
+                fromY: fromPos.y,
+                toX: toPos.x,
+                toY: toPos.y,
+                progress: 0,
+                color: isExcitatory ? EXCITATORY_COLOR.glow : INHIBITORY_COLOR.glow,
+                weight: Math.abs(weight),
+              });
+            }
+          }
         }
-      }
+      });
     });
 
-    if (newPulses.length > 0) {
-      pulsesRef.current = [...pulsesRef.current.slice(-100), ...newPulses];
-    }
+    prevSpikingRef.current = currentSpiking;
 
-    // Update previous states
-    prevNeuronsRef.current = new Map(neuronStates);
-  }, [neuronStates, positions, topology]);
+    if (newPulses.length > 0) {
+      pulsesRef.current = [...pulsesRef.current.slice(-150), ...newPulses];
+    }
+  }, [neuronStates, positions, topology, visibleNeurons]);
 
   // Draw function
   const draw = useCallback(() => {
@@ -129,13 +171,14 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    pulseTimeRef.current += 0.016; // ~60fps
+    const dt = 0.016;
+    timeRef.current += dt;
 
-    // Clear with dark background
+    // Clear
     ctx.fillStyle = '#0a0a0f';
     ctx.fillRect(0, 0, width, height);
 
-    // Draw subtle grid
+    // Subtle grid
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
     ctx.lineWidth = 1;
     for (let x = 0; x < width; x += 40) {
@@ -151,61 +194,117 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
       ctx.stroke();
     }
 
-    // Draw connections with bezier curves
-    if (topology.synapses.length < 10000) {
-      topology.synapses.forEach(synapse => {
-        const fromPos = positions.get(`${synapse.from_layer}-${synapse.from_index}`);
-        const toPos = positions.get(`${synapse.to_layer}-${synapse.to_index}`);
-        if (!fromPos || !toPos) return;
+    // Draw synapses - ONLY between visible neurons
+    visibleNeurons.forEach((fromIndices, fromLayer) => {
+      const toLayer = fromLayer + 1;
+      const toIndices = visibleNeurons.get(toLayer);
+      if (!toIndices) return;
 
-        const fromState = neuronStates.get(`${synapse.from_layer}-${synapse.from_index}`);
-        const isActive = fromState?.spiking || (fromState?.membrane ?? 0) > 0.5;
+      fromIndices.forEach(fromIdx => {
+        const fromKey = `${fromLayer}-${fromIdx}`;
+        const fromPos = positions.get(fromKey);
+        if (!fromPos) return;
 
-        // Base connection visibility
-        const baseAlpha = isActive ? 0.15 : 0.03;
-        const layerColor = LAYER_COLORS[synapse.from_layer] || LAYER_COLORS[0];
+        const fromState = neuronStates.get(fromKey);
+        const isActive = fromState?.spiking || (fromState?.membrane ?? 0) > 0.3;
 
-        ctx.strokeStyle = isActive
-          ? `rgba(${hexToRgb(layerColor.glow)}, ${baseAlpha})`
-          : `rgba(100, 100, 120, ${baseAlpha})`;
-        ctx.lineWidth = Math.abs(synapse.weight) * 1.5 + 0.5;
+        toIndices.forEach(toIdx => {
+          const toKey = `${toLayer}-${toIdx}`;
+          const toPos = positions.get(toKey);
+          if (!toPos) return;
 
-        // Draw bezier curve
-        ctx.beginPath();
-        ctx.moveTo(fromPos.x, fromPos.y);
-        const cpX = (fromPos.x + toPos.x) / 2;
-        ctx.bezierCurveTo(cpX, fromPos.y, cpX, toPos.y, toPos.x, toPos.y);
-        ctx.stroke();
+          // Find weight
+          const synapse = topology.synapses.find(
+            s => s.from_layer === fromLayer && s.from_index === fromIdx &&
+                 s.to_layer === toLayer && s.to_index === toIdx
+          );
+
+          if (!synapse) return;
+
+          const isExcitatory = synapse.weight >= 0;
+          const weightMag = Math.abs(synapse.weight);
+          const synapseColor = isExcitatory ? EXCITATORY_COLOR : INHIBITORY_COLOR;
+
+          // Alpha and width based on weight
+          const baseAlpha = 0.05 + weightMag * 0.2;
+          const alpha = isActive ? Math.min(baseAlpha * 2.5, 0.6) : baseAlpha;
+          const lineWidth = 0.3 + weightMag * 2;
+
+          ctx.strokeStyle = `rgba(${hexToRgb(synapseColor.base)}, ${alpha})`;
+          ctx.lineWidth = lineWidth;
+
+          // Bezier curve
+          ctx.beginPath();
+          ctx.moveTo(fromPos.x, fromPos.y);
+          const cpX = (fromPos.x + toPos.x) / 2;
+          ctx.bezierCurveTo(cpX, fromPos.y, cpX, toPos.y, toPos.x, toPos.y);
+          ctx.stroke();
+        });
       });
-    }
+    });
 
     // Draw and update pulses
+    const pulseSpeed = 0.015 + speed * 0.025;
+
     pulsesRef.current = pulsesRef.current.filter(pulse => {
-      pulse.progress += 0.03;
+      pulse.progress += pulseSpeed;
       if (pulse.progress > 1) return false;
 
-      // Calculate pulse position along bezier
       const t = pulse.progress;
       const cpX = (pulse.fromX + pulse.toX) / 2;
-      const x = bezierPoint(pulse.fromX, cpX, cpX, pulse.toX, t);
-      const y = bezierPoint(pulse.fromY, pulse.fromY, pulse.toY, pulse.toY, t);
 
-      // Draw pulse glow
-      const gradient = ctx.createRadialGradient(x, y, 0, x, y, 15);
-      gradient.addColorStop(0, pulse.color);
-      gradient.addColorStop(0.5, `rgba(${hexToRgb(pulse.color)}, 0.5)`);
-      gradient.addColorStop(1, 'transparent');
+      if (pulseStyle === 'ball') {
+        const x = bezierPoint(pulse.fromX, cpX, cpX, pulse.toX, t);
+        const y = bezierPoint(pulse.fromY, pulse.fromY, pulse.toY, pulse.toY, t);
 
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(x, y, 15, 0, Math.PI * 2);
-      ctx.fill();
+        const glowSize = 10 + pulse.weight * 6;
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, glowSize);
+        gradient.addColorStop(0, pulse.color);
+        gradient.addColorStop(0.5, `rgba(${hexToRgb(pulse.color)}, 0.4)`);
+        gradient.addColorStop(1, 'transparent');
 
-      // Draw bright core
-      ctx.fillStyle = 'white';
-      ctx.beginPath();
-      ctx.arc(x, y, 2, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(x, y, glowSize, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // Electricity style
+        const trailLength = 0.12;
+        const startT = Math.max(0, t - trailLength);
+
+        for (let i = 0; i < 8; i++) {
+          const segT = startT + (t - startT) * (i / 8);
+          const nextT = startT + (t - startT) * ((i + 1) / 8);
+
+          const x1 = bezierPoint(pulse.fromX, cpX, cpX, pulse.toX, segT);
+          const y1 = bezierPoint(pulse.fromY, pulse.fromY, pulse.toY, pulse.toY, segT);
+          const x2 = bezierPoint(pulse.fromX, cpX, cpX, pulse.toX, nextT);
+          const y2 = bezierPoint(pulse.fromY, pulse.fromY, pulse.toY, pulse.toY, nextT);
+
+          const segAlpha = (i / 8) * 0.8;
+          ctx.strokeStyle = `rgba(${hexToRgb(pulse.color)}, ${segAlpha})`;
+          ctx.lineWidth = 1 + pulse.weight * 2 * (i / 8);
+          ctx.lineCap = 'round';
+
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+
+        const headX = bezierPoint(pulse.fromX, cpX, cpX, pulse.toX, t);
+        const headY = bezierPoint(pulse.fromY, pulse.fromY, pulse.toY, pulse.toY, t);
+
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(headX, headY, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       return true;
     });
@@ -215,17 +314,32 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
       const state = neuronStates.get(key);
       const membrane = state?.membrane ?? 0;
       const spiking = state?.spiking ?? false;
-      const layerColor = LAYER_COLORS[pos.layer] || LAYER_COLORS[0];
+      const layer = parseInt(key.split('-')[0]);
+      const layerColor = LAYER_COLORS[layer] || LAYER_COLORS[0];
+      const isInput = layer === 0;
 
-      const baseRadius = 6;
-      const radius = spiking ? baseRadius * 1.3 : baseRadius;
+      const baseRadius = 5;
+      const radius = spiking ? baseRadius * 1.4 : baseRadius;
 
-      // Outer glow for active neurons
-      if (membrane > 0.3 || spiking) {
-        const glowRadius = spiking ? 30 : 15 * membrane;
+      // Input current visualization - pulsing rings
+      if (isInput && showInputCurrent && membrane > 0.1) {
+        const pulsePhase = (timeRef.current * 2 + pos.y * 0.01) % 1;
+        const ringRadius = radius + pulsePhase * 20;
+        const ringAlpha = (1 - pulsePhase) * membrane * 0.4;
+
+        ctx.strokeStyle = `rgba(${hexToRgb(layerColor.glow)}, ${ringAlpha})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, ringRadius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Outer glow
+      if (membrane > 0.2 || spiking) {
+        const glowRadius = spiking ? 25 : 12 * membrane;
         const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowRadius);
         gradient.addColorStop(0, `rgba(${hexToRgb(layerColor.glow)}, ${spiking ? 0.8 : 0.4 * membrane})`);
-        gradient.addColorStop(0.5, `rgba(${hexToRgb(layerColor.glow)}, ${spiking ? 0.3 : 0.1 * membrane})`);
+        gradient.addColorStop(0.6, `rgba(${hexToRgb(layerColor.glow)}, ${spiking ? 0.2 : 0.1 * membrane})`);
         gradient.addColorStop(1, 'transparent');
 
         ctx.fillStyle = gradient;
@@ -235,6 +349,7 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
       }
 
       // Neuron body
+      const intensity = membrane;
       const bodyGradient = ctx.createRadialGradient(
         pos.x - radius * 0.3, pos.y - radius * 0.3, 0,
         pos.x, pos.y, radius
@@ -242,10 +357,9 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
 
       if (spiking) {
         bodyGradient.addColorStop(0, '#ffffff');
-        bodyGradient.addColorStop(0.3, layerColor.glow);
+        bodyGradient.addColorStop(0.4, layerColor.glow);
         bodyGradient.addColorStop(1, layerColor.base);
       } else {
-        const intensity = membrane;
         bodyGradient.addColorStop(0, `rgba(${hexToRgb(layerColor.glow)}, ${0.3 + intensity * 0.7})`);
         bodyGradient.addColorStop(1, `rgba(${hexToRgb(layerColor.base)}, ${0.2 + intensity * 0.5})`);
       }
@@ -255,41 +369,62 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
       ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
       ctx.fill();
 
-      // Bright center for spiking
       if (spiking) {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, radius * 0.4, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, radius * 0.35, 0, Math.PI * 2);
         ctx.fill();
       }
     });
 
-    // Draw layer labels
+    // Layer labels
     ctx.font = '11px system-ui, sans-serif';
     ctx.textAlign = 'center';
 
     topology.layer_sizes.forEach((size, idx) => {
-      const x = 80 + (idx / Math.max(1, topology.layer_sizes.length - 1)) * (width - 160);
+      const layerIndices = visibleNeurons.get(idx) || [];
+      if (layerIndices.length === 0) return;
+
+      const firstPos = positions.get(`${idx}-${layerIndices[0]}`);
+      if (!firstPos) return;
+
       const layerColor = LAYER_COLORS[idx] || LAYER_COLORS[0];
 
-      // Count active neurons
       let activeCount = 0;
-      for (let i = 0; i < size; i++) {
-        const state = neuronStates.get(`${idx}-${i}`);
+      layerIndices.forEach(nIdx => {
+        const state = neuronStates.get(`${idx}-${nIdx}`);
         if (state?.spiking || (state?.membrane ?? 0) > 0.5) activeCount++;
-      }
+      });
       const activePercent = Math.round((activeCount / size) * 100);
 
       ctx.fillStyle = layerColor.glow;
-      ctx.fillText(layerColor.name, x, 30);
+      ctx.fillText(layerColor.name, firstPos.x, 25);
       ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-      ctx.fillText(`${activePercent}%`, x, 45);
+      ctx.fillText(`${activePercent}%`, firstPos.x, 40);
     });
 
-    animationRef.current = requestAnimationFrame(draw);
-  }, [neurons, topology, positions, neuronStates, width, height]);
+    // Legend
+    const legendY = height - 25;
+    ctx.font = '10px system-ui, sans-serif';
 
-  // Start animation loop
+    ctx.fillStyle = EXCITATORY_COLOR.glow;
+    ctx.beginPath();
+    ctx.arc(width - 150, legendY, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.textAlign = 'left';
+    ctx.fillText('Excitatory', width - 140, legendY + 3);
+
+    ctx.fillStyle = INHIBITORY_COLOR.glow;
+    ctx.beginPath();
+    ctx.arc(width - 70, legendY, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.fillText('Inhibitory', width - 60, legendY + 3);
+
+    animationRef.current = requestAnimationFrame(draw);
+  }, [neurons, topology, positions, neuronStates, visibleNeurons, width, height, speed, pulseStyle, showInputCurrent]);
+
   useEffect(() => {
     animationRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animationRef.current);
@@ -306,14 +441,12 @@ export function NetworkCanvas({ neurons, topology, width, height }: NetworkCanva
   );
 }
 
-// Helper: convert hex to rgb string
 function hexToRgb(hex: string): string {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (!result) return '255, 255, 255';
   return `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}`;
 }
 
-// Helper: cubic bezier point
 function bezierPoint(p0: number, p1: number, p2: number, p3: number, t: number): number {
   const mt = 1 - t;
   return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;

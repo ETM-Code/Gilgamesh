@@ -5,12 +5,18 @@ import { MnistDisplay } from './components/MnistDisplay';
 import { ControlPanel } from './components/ControlPanel';
 import { OutputSpikes } from './components/OutputSpikes';
 
+type EndOfSampleBehavior = 'auto-advance' | 'stop' | 'loop';
+type PulseStyle = 'ball' | 'electricity';
+
 function App() {
   const wsUrl = `ws://${window.location.hostname}:3000/ws`;
   const { connected, frame, status, topology, send } = useWebSocket(wsUrl);
 
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [speed, setSpeed] = useState(0.5); // Start slower
+  const [pulseStyle, setPulseStyle] = useState<PulseStyle>('ball');
+  const [showInputCurrent, setShowInputCurrent] = useState(true);
+  const [endOfSampleBehavior, setEndOfSampleBehavior] = useState<EndOfSampleBehavior>('auto-advance');
 
   useEffect(() => {
     const updateDimensions = () => {
@@ -31,7 +37,9 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      // Allow keyboard shortcuts even when focused on form elements (except text inputs)
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'text') return;
 
       switch (e.key) {
         case 'ArrowLeft':
@@ -62,15 +70,24 @@ function App() {
     send({ type: 'SetSpeed', speed: newSpeed });
   };
 
+  // Send end-of-sample behavior updates
+  const handleBehaviorChange = (behavior: EndOfSampleBehavior) => {
+    console.log('Setting behavior to:', behavior);
+    setEndOfSampleBehavior(behavior);
+    const msg = { type: 'SetEndOfSampleBehavior', behavior };
+    console.log('Sending message:', JSON.stringify(msg));
+    send(msg as any);
+  };
+
   // Calculate stats
   const neuronCount = topology?.total_neurons ?? 0;
   const synapseCount = topology?.synapses.length ?? 0;
   const activeNeurons = frame?.neurons.filter(n => n.spiking).length ?? 0;
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col">
+    <div className="h-screen bg-[#0a0a0f] text-white flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+      <header className="flex items-center justify-between px-6 py-3 border-b border-white/5 flex-shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-light tracking-wider text-white/90">gilgamesh</h1>
           <span className="text-xs text-white/30 tracking-widest">NEURAL SIMULATION</span>
@@ -100,9 +117,9 @@ function App() {
       </header>
 
       {/* Main content */}
-      <div className="flex-1 flex">
+      <div className="flex-1 flex overflow-hidden">
         {/* Left sidebar */}
-        <div className="w-56 p-4 border-r border-white/5 flex flex-col gap-6">
+        <div className="w-56 p-4 border-r border-white/5 flex flex-col gap-4 overflow-y-auto flex-shrink-0">
           {/* MNIST Display */}
           {frame && (
             <div>
@@ -146,6 +163,75 @@ function App() {
             <div className="text-center text-white/50 text-xs mt-1">{speed.toFixed(1)}x</div>
           </div>
 
+          {/* Visualization Options */}
+          <div>
+            <h3 className="text-[10px] text-white/40 tracking-widest mb-3">VISUALIZATION</h3>
+
+            {/* Pulse Style Toggle */}
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-white/60 text-xs">Pulse Style</span>
+              <div className="flex bg-white/5 rounded overflow-hidden">
+                <button
+                  onClick={() => setPulseStyle('ball')}
+                  className={`px-2 py-1 text-xs transition-colors ${
+                    pulseStyle === 'ball'
+                      ? 'bg-blue-500/50 text-white'
+                      : 'text-white/50 hover:text-white/70'
+                  }`}
+                >
+                  Ball
+                </button>
+                <button
+                  onClick={() => setPulseStyle('electricity')}
+                  className={`px-2 py-1 text-xs transition-colors ${
+                    pulseStyle === 'electricity'
+                      ? 'bg-blue-500/50 text-white'
+                      : 'text-white/50 hover:text-white/70'
+                  }`}
+                >
+                  Electric
+                </button>
+              </div>
+            </div>
+
+            {/* Input Current Toggle */}
+            <label className="flex items-center gap-2 tooling-pointer">
+              <input
+                type="checkbox"
+                checked={showInputCurrent}
+                onChange={(e) => setShowInputCurrent(e.target.checked)}
+                className="w-3.5 h-3.5 rounded bg-white/10 border-white/20 text-blue-500
+                  focus:ring-blue-500/30 focus:ring-offset-0"
+              />
+              <span className="text-white/60 text-xs">Show input current</span>
+            </label>
+          </div>
+
+          {/* End of Sample Behavior */}
+          <div>
+            <h3 className="text-[10px] text-white/40 tracking-widest mb-3">AT END OF SAMPLE</h3>
+            <div className="space-y-1.5">
+              {[
+                { value: 'auto-advance', label: 'Auto advance' },
+                { value: 'stop', label: 'Stop' },
+                { value: 'loop', label: 'Loop current' },
+              ].map(option => (
+                <label key={option.value} className="flex items-center gap-2 tooling-pointer">
+                  <input
+                    type="radio"
+                    name="endBehavior"
+                    value={option.value}
+                    checked={endOfSampleBehavior === option.value}
+                    onChange={() => handleBehaviorChange(option.value as EndOfSampleBehavior)}
+                    className="w-3 h-3 text-blue-500 bg-white/10 border-white/20
+                      focus:ring-blue-500/30 focus:ring-offset-0"
+                  />
+                  <span className="text-white/60 text-xs">{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
           {/* Connection status */}
           <div className="mt-auto">
             <div className={`flex items-center gap-2 text-xs ${connected ? 'text-green-400/70' : 'text-red-400/70'}`}>
@@ -161,21 +247,24 @@ function App() {
         </div>
 
         {/* Main visualization */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           <div
             id="canvas-container"
-            className="flex-1 m-4"
+            className="flex-1 m-4 min-h-0"
           >
             <NetworkCanvas
               neurons={frame?.neurons ?? []}
               topology={topology}
               width={dimensions.width}
               height={dimensions.height}
+              speed={speed}
+              pulseStyle={pulseStyle}
+              showInputCurrent={showInputCurrent}
             />
           </div>
 
           {/* Bottom controls */}
-          <div className="px-4 pb-4">
+          <div className="px-4 pb-3 flex-shrink-0">
             <ControlPanel
               paused={frame?.paused ?? true}
               currentStep={frame?.step ?? 0}
