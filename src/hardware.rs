@@ -55,13 +55,13 @@ pub struct HardwareConfig {
 impl Default for HardwareConfig {
     fn default() -> Self {
         Self {
-            // Membrane: τ = 1.2ms
-            c_mem: 10e-9,      // 10 nF
+            // Membrane: τ = 3.96ms
+            c_mem: 33e-9,      // 33 nF
             r_leak: 120e3,     // 120 kΩ
 
             // Voltages
             vdd: 5.0,
-            vref: 2.5,
+            vref: 0.0,
             v_threshold: 0.8,  // Fixed threshold above Vref
 
             // Timing
@@ -225,8 +225,8 @@ mod tests {
     fn test_default_config() {
         let cfg = HardwareConfig::default();
 
-        // τ = R * C = 120kΩ * 10nF = 1.2ms
-        assert!((cfg.tau_m() - 1.2e-3).abs() < 1e-6);
+        // τ = R * C = 120kΩ * 33nF = 3.96ms
+        assert!((cfg.tau_m() - 3.96e-3).abs() < 1e-6);
 
         // I_threshold = V_th / R = 0.8V / 120kΩ ≈ 6.67µA
         assert!((cfg.i_threshold() - 6.67e-6).abs() < 0.1e-6);
@@ -246,8 +246,8 @@ mod tests {
     fn test_dv_per_step() {
         let cfg = HardwareConfig::default();
 
-        // With 1µA for 1µs into 10nF: dV = (1µA * 1µs) / 10nF = 0.1mV
+        // With 1µA for 1µs into 33nF: dV = (1µA * 1µs) / 33nF ≈ 0.0303mV
         let dv = cfg.dv_per_step(1e-6);
-        assert!((dv - 0.1e-3).abs() < 1e-9);
+        assert!((dv - 0.030303e-3).abs() < 1e-9);
     }
 }

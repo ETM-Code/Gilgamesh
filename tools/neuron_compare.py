@@ -52,13 +52,13 @@ except ImportError:
 class NeuronParams:
     """Parameters for single neuron comparison."""
     # Membrane
-    c_mem: float = 10e-9       # 10 nF
+    c_mem: float = 33e-9       # 33 nF
     r_leak: float = 120e3      # 120 kOhm -> tau = 1.2 ms
 
     # Threshold
     vdd: float = 5.0
-    vref: float = 2.5
-    threshold_over_vref: float = 0.8  # Threshold at Vref + 0.8V = 3.3V
+    vref: float = 0.0
+    threshold_over_vref: float = 0.8  # Threshold at Vref + 0.8V = 0.8V
 
     # Pulse stretching
     # Shorter tau gives faster reset, closer to Gilgamesh instantaneous reset

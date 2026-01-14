@@ -18,7 +18,7 @@ pub(crate) fn run_neuron_test(
     use std::fs::File;
     use std::io::Write;
 
-    let c_mem = 10e-9;
+    let c_mem = 33e-9;
     let r_leak = tau_m / c_mem;
     let v_threshold = threshold - vref;
 
@@ -155,4 +155,3 @@ pub(crate) fn run_neuron_test(
 
     Ok(())
 }
-

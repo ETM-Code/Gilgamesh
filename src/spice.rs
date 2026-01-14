@@ -3,15 +3,12 @@
 //! Generates ngspice-compatible netlists from gilgamesh networks and
 //! compares simulation results for physics accuracy validation.
 //!
-//! This implementation matches the detailed pulse-stretch LIF neuron circuit
-//! from the Python reference implementation, including:
-//! - Vref buffer (OPA604-like follower)
-//! - TIA with finite DC gain and compensation
-//! - Physical hysteresis divider for threshold
-//! - Adaptive threshold injection with diode
+//! This implementation matches the passive-membrane LIF neuron circuit, including:
+//! - Passive membrane (C_mem || R_leak) referenced to Vref/GND
+//! - Threshold divider (R_top/R_bottom) with adaptive injection (R_inject + diode)
 //! - Soft comparator with RC shaping
 //! - Pulse stretching circuit (diode + RC for extended spike duration)
-//! - Reset path with MUX switch model
+//! - Reset path with MUX switch model and C_reset
 //! - Optional analog output stage (inverting amplifier)
 
 use anyhow::{Context, Result};
@@ -34,7 +31,7 @@ impl Default for SupplyConfig {
     fn default() -> Self {
         Self {
             vdd: 5.0,
-            vref: 2.5,
+            vref: 0.0,
         }
     }
 }
@@ -49,8 +46,8 @@ pub struct MembraneConfig {
 impl Default for MembraneConfig {
     fn default() -> Self {
         Self {
-            c_mem: 10e-9,     // 10nF
-            r_leak: 120e3,    // 120kΩ -> tau = 1.2ms
+            c_mem: 33e-9,     // 33nF
+            r_leak: 120e3,    // 120kΩ -> tau = 3.96ms
         }
     }
 }
@@ -61,7 +58,10 @@ pub struct ThresholdConfig {
     pub over_vref: f32,      // Threshold above Vref (V)
     pub hysteresis: f32,     // Hysteresis window (V)
     pub c_adapt: f32,        // Adaptive threshold capacitor (F)
-    pub divider_scale: f32,  // Scale for Rvh/Rvl/Rf
+    pub r_top: f32,          // R_top (Ohms) from Vdd to vth_node
+    pub r_bottom: f32,       // R_bottom (Ohms) from vth_node to vref
+    pub r_feedback: f32,     // R3 (Ohms) from comp_out to vref
+    pub r_inject: f32,       // R_inject (Ohms) from comp_out to vth_node via diode
 }
 
 impl Default for ThresholdConfig {
@@ -69,8 +69,11 @@ impl Default for ThresholdConfig {
         Self {
             over_vref: 0.8,
             hysteresis: 0.05,
-            c_adapt: 22e-9,      // 22nF
-            divider_scale: 5.0,
+            c_adapt: 100e-9,     // 100nF
+            r_top: 8.30e6,       // 8.3M -> ~0.8V threshold with R_bottom=1.58M @ 5V
+            r_bottom: 1.58e6,    // 1.58M
+            r_feedback: 21.5e6, // 21.5M (R3)
+            r_inject: 2.2e6,     // 2.2M
         }
     }
 }
@@ -79,10 +82,10 @@ impl Default for ThresholdConfig {
 #[derive(Clone, Debug)]
 pub struct ResetConfig {
     pub enable: bool,
-    pub series_r: f32,      // Series resistance (Ohms)
+    pub series_r: f32,      // Series resistance (Ohms, unused in passive reset)
     pub mux_ron: f32,       // Switch on resistance
     pub mux_roff: f32,      // Switch off resistance
-    pub mux_coff: f32,      // Switch off capacitance
+    pub mux_coff: f32,      // Reset capacitance (C_reset)
     pub switch_vt: f32,     // Switch threshold voltage
     pub switch_vh: f32,     // Switch hysteresis
 }
@@ -91,7 +94,7 @@ impl Default for ResetConfig {
     fn default() -> Self {
         Self {
             enable: true,
-            series_r: 200.0,
+            series_r: 0.0,
             mux_ron: 10.0,
             mux_roff: 1e9,
             mux_coff: 7e-12,
@@ -178,7 +181,7 @@ pub struct BiasCurrents {
 impl Default for BiasCurrents {
     fn default() -> Self {
         Self {
-            tia: 20e-6,
+            tia: 0.0,
             comparator: 2e-6,
             analog_out: 10e-6,
         }
@@ -221,15 +224,7 @@ impl SpiceParams {
     pub fn from_network(net: &Network) -> Self {
         let mut params = Self::default();
 
-        // Membrane time constant: always derive from the network.
-        //
-        // In Simple mode the network is trained with a discrete decay `beta`, which implies
-        // an effective tau assuming a 1ms step (see `Leaky::get_tau_m()`).
-        // If we keep the default SPICE tau (~1.2ms) while the network beta implies a much
-        // larger tau (often ~10–30ms), the leak is ~10–25× too strong and the membrane never
-        // reaches threshold for the same synaptic currents.
-        let tau_m = net.lif1.mode.tau_m().unwrap_or_else(|| net.lif1.get_tau_m());
-        params.membrane.r_leak = tau_m / params.membrane.c_mem;
+        // Keep fixed hardware membrane values (do not override with network tau_m).
 
         // Use network threshold (normalized to voltage)
         // The network threshold is typically 1.0, which maps to over_vref
@@ -270,7 +265,7 @@ pub struct SpiceNetlist {
 impl SpiceNetlist {
     /// Generate netlist from network and input
     ///
-    /// The subcircuit uses nodes: mem vref vdd comp_pulse analog_out sum
+    /// The subcircuit uses nodes: mem vref vdd comp_pulse [analog_out] sum
     /// - Input currents flow into the `sum` node
     /// - `comp_pulse` provides the stretched spike output for downstream neurons
     /// - `analog_out` provides membrane voltage (if enabled)
@@ -326,13 +321,20 @@ impl SpiceNetlist {
         content.push_str("\n");
 
         // ========== Hidden layer neurons ==========
-        // Subcircuit: mem vref vdd comp_pulse analog_out sum
+        // Subcircuit: mem vref vdd comp_pulse [analog_out] sum
         content.push_str("* ========== Hidden Layer Neurons ==========\n");
         for h in 0..hidden_size {
-            content.push_str(&format!(
-                "Xh_{} mem_h_{} vref vdd pulse_h_{} ana_h_{} sum_h_{} lif_neuron\n",
-                h, h, h, h, h
-            ));
+            if params.analog_out.enable {
+                content.push_str(&format!(
+                    "Xh_{} mem_h_{} vref vdd pulse_h_{} ana_h_{} sum_h_{} lif_neuron\n",
+                    h, h, h, h, h
+                ));
+            } else {
+                content.push_str(&format!(
+                    "Xh_{} mem_h_{} vref vdd pulse_h_{} sum_h_{} lif_neuron\n",
+                    h, h, h, h
+                ));
+            }
         }
         content.push_str("\n");
 
@@ -373,10 +375,17 @@ impl SpiceNetlist {
         // ========== Output layer neurons ==========
         content.push_str("* ========== Output Layer Neurons ==========\n");
         for o in 0..output_size {
-            content.push_str(&format!(
-                "Xo_{} mem_o_{} vref vdd pulse_o_{} ana_o_{} sum_o_{} lif_neuron\n",
-                o, o, o, o, o
-            ));
+            if params.analog_out.enable {
+                content.push_str(&format!(
+                    "Xo_{} mem_o_{} vref vdd pulse_o_{} ana_o_{} sum_o_{} lif_neuron\n",
+                    o, o, o, o, o
+                ));
+            } else {
+                content.push_str(&format!(
+                    "Xo_{} mem_o_{} vref vdd pulse_o_{} sum_o_{} lif_neuron\n",
+                    o, o, o, o
+                ));
+            }
         }
         content.push_str("\n");
 
@@ -452,67 +461,44 @@ impl SpiceNetlist {
     /// - vdd: supply voltage
     /// - comp_pulse: stretched spike output (for downstream neurons)
     /// - analog_out: analog membrane output (optional)
-    /// - sum: summing node for input currents
+    /// - sum: summing node for input currents (tied to mem for passive integration)
     fn lif_subcircuit(params: &SpiceParams) -> String {
         let mut s = String::new();
+        let has_analog = params.analog_out.enable;
+        let pins = if has_analog {
+            "mem vref vdd comp_pulse analog_out sum"
+        } else {
+            "mem vref vdd comp_pulse sum"
+        };
 
         s.push_str("* ========== LIF Neuron Detailed Subcircuit (Pulse Stretching) ==========\n");
-        s.push_str("* Matches Python reference: lif_neuron_generator_pulse_stretch.py\n");
-        s.push_str("* Nodes: mem vref vdd comp_pulse analog_out sum\n");
-        s.push_str(".subckt lif_neuron mem vref vdd comp_pulse analog_out sum\n");
+        s.push_str("* Passive membrane with comparator, reset, and pulse stretching\n");
+        s.push_str(&format!("* Nodes: {}\n", pins));
+        s.push_str(&format!(".subckt lif_neuron {}\n", pins));
         s.push_str("\n");
 
-        // ========== Vref Buffer (OPA604-like follower) ==========
-        s.push_str("* ---------- Vref buffer (OPA604-like) ----------\n");
-        s.push_str("Ebuf vref_buf 0 vref 0 1e5\n");
-        s.push_str("Rbuf vref_buf vref 1k\n");
-        s.push_str("Cbuf vref 0 80p\n");
-        s.push_str("Rvr vref vref_buf 1m\n");
+        // ========== Passive membrane ==========
+        s.push_str("* ---------- Passive membrane ----------\n");
+        s.push_str("Rsum mem sum 1m\n");
+        s.push_str(&format!("Cmem mem vref {:.3e}\n", params.membrane.c_mem));
+        s.push_str(&format!("Rleak mem vref {:.3e}\n", params.membrane.r_leak));
         s.push_str("\n");
 
-        // ========== TIA with finite DC gain and compensation ==========
-        // Inverting integrator: Vmem = gain * (Vref - Vsum) for negative feedback
-        // When current flows INTO sum, sum rises slightly, mem drops (negative feedback)
-        s.push_str("* ---------- TIA op-amp with finite gain and compensation ----------\n");
-        s.push_str("* Inverting integrator: Vmem = gain * (Vref - Vsum)\n");
-        s.push_str("Eint mem 0 vref sum 2e5\n");
-        s.push_str("Rout_int mem 0 20\n");
-        s.push_str("Cint mem 0 5p\n");
-        s.push_str(&format!("Cmem mem sum {:.3e}\n", params.membrane.c_mem));
-        s.push_str(&format!("Rleak mem sum {:.3e}\n", params.membrane.r_leak));
-        s.push_str(&format!("Iint_bias vdd 0 {:.3e}\n", params.bias.tia));
-        s.push_str("\n");
-
-        // ========== Physical hysteresis divider ==========
+        // ========== Threshold divider + adaptation ==========
         let vhi = params.comparator.vhigh;
         let vlo = params.comparator.vlow;
-        let dv_out = (vhi - vlo).max(1e-6);
-        let beta = params.threshold.hysteresis / dv_out;
-
-        s.push_str("* ---------- Threshold divider (places threshold near Vref + over_vref) ----------\n");
-        let scale = params.threshold.divider_scale.max(1e-3);
-        let rvh = 681e3 * scale;
-        let rvl = 316e3 * scale;
-        s.push_str(&format!("Rvh vdd vth_node {:.3e}\n", rvh));
-        s.push_str(&format!("Rvl vth_node vref {:.3e}\n", rvl));
-
-        // Hysteresis feedback resistor
-        let g_div = (1.0 / rvh) + (1.0 / rvl);
-        let rf = 1.0 / (beta * g_div / (1.0 - beta).max(1e-6));
-        let rf_ohm = rf.max(100e3);
-        s.push_str(&format!("Rf comp_out vth_node {:.3e}\n", rf_ohm));
-        s.push_str("\n");
-
-        // ========== Adaptive threshold injection ==========
-        s.push_str("* ---------- Adaptive threshold injection ----------\n");
+        s.push_str("* ---------- Threshold divider (GND referenced) ----------\n");
+        s.push_str(&format!("Rtop vdd vth_node {:.3e}\n", params.threshold.r_top));
+        s.push_str(&format!("Rbottom vth_node vref {:.3e}\n", params.threshold.r_bottom));
         s.push_str(&format!("Cadapt vth_node vref {:.3e}\n", params.threshold.c_adapt));
         s.push_str(".model DADAPT D(Is=1e-6 N=1.05 Rs=2 Cjo=1p Eg=0.69)\n");
-        s.push_str("Rinj comp_out ninj 2.2Meg\n");
+        s.push_str(&format!("Rinj comp_out ninj {:.3e}\n", params.threshold.r_inject));
         s.push_str("Dinj ninj vth_node DADAPT\n");
+        s.push_str(&format!("R3 comp_out vref {:.3e}\n", params.threshold.r_feedback));
         s.push_str("\n");
 
         // ========== Soft comparator with RC shaping ==========
-        s.push_str("* ---------- Soft comparator (deflection space) ----------\n");
+        s.push_str("* ---------- Soft comparator (membrane space) ----------\n");
         s.push_str(&format!(".param VLO={}\n", vlo));
         s.push_str(&format!(".param VHI={}\n", vhi));
         s.push_str(".param VSW=0.01\n");
@@ -521,10 +507,9 @@ impl SpiceNetlist {
         let rc = (params.comparator.prop_delay / 10.0).max(1e-9);
         let rout = (params.comparator.prop_delay / rc).max(10.0);
 
-        s.push_str("Bdef vdef 0 V = V(vref) - V(mem)\n");
+        s.push_str("Bdef vdef 0 V = V(mem) - V(vref)\n");
         s.push_str("Btheta_rel vtheta_rel 0 V = V(vth_node) - V(vref)\n");
-        // Compare deflection against the *physical* threshold above Vref (with hysteresis/adaptation).
-        // `vdef` and `vtheta_rel` are both in volts above Vref.
+        // Compare membrane against the physical threshold above Vref.
         s.push_str(&format!(
             "Bcomp comp_raw 0 V = VLO + (VHI - VLO)*(0.5*(1 + tanh( ( V(vdef) - ( V(vtheta_rel) + {} ) ) / VSW )))\n",
             params.comparator.offset
@@ -556,9 +541,8 @@ impl SpiceNetlist {
         // ========== Reset path ==========
         if params.reset.enable {
             s.push_str("* ---------- Reset path ----------\n");
-            s.push_str(&format!("Rreset mem reset_node {:.3e}\n", params.reset.series_r));
-            s.push_str(&format!("Coff_reset reset_node vref {:.3e}\n", params.reset.mux_coff));
-            s.push_str("Sreset reset_node vref comp_out 0 SWMUX\n");
+            s.push_str(&format!("Creset mem vref {:.3e}\n", params.reset.mux_coff));
+            s.push_str("Sreset mem vref comp_out 0 SWMUX\n");
             s.push_str(&format!(
                 ".model SWMUX SW(Ron={} Roff={:.3e} Vt={} Vh={})\n",
                 params.reset.mux_ron, params.reset.mux_roff,
@@ -568,7 +552,7 @@ impl SpiceNetlist {
         s.push_str("\n");
 
         // ========== Analog output stage (optional) ==========
-        if params.analog_out.enable {
+        if has_analog {
             s.push_str("* ---------- Analog output stage (inverting amplifier) ----------\n");
 
             if params.analog_out.inverting {
@@ -623,10 +607,6 @@ impl SpiceNetlist {
             }
 
             s.push_str(&format!("Iana_bias vdd 0 {:.3e}\n", params.bias.analog_out));
-        } else {
-            // Analog output disabled - tie to vref
-            s.push_str("* ---------- Analog output disabled ----------\n");
-            s.push_str("Rana_tie analog_out vref 1Meg\n");
         }
         s.push_str("\n");
 
@@ -995,9 +975,9 @@ mod tests {
     #[test]
     fn test_spice_params_default() {
         let params = SpiceParams::default();
-        // Default membrane: 10nF, 120kΩ -> tau = 1.2ms
+        // Default membrane: 33nF, 120kΩ -> tau = 3.96ms
         let tau_m = params.tau_m();
-        assert!((tau_m - 1.2e-3).abs() < 1e-4, "tau_m should be ~1.2ms, got {}", tau_m);
+        assert!((tau_m - 3.96e-3).abs() < 1e-4, "tau_m should be ~3.96ms, got {}", tau_m);
 
         // Default pulse stretch: 100kΩ, 100nF -> tau = 10ms
         let tau_pulse = params.tau_pulse();
@@ -1012,7 +992,7 @@ mod tests {
     fn test_supply_config() {
         let params = SpiceParams::default();
         assert!((params.supply.vdd - 5.0).abs() < 0.01);
-        assert!((params.supply.vref - 2.5).abs() < 0.01);
+        assert!((params.supply.vref - 0.0).abs() < 0.01);
     }
 
     #[test]
@@ -1043,15 +1023,11 @@ mod tests {
         assert!(subckt.contains(".ends lif_neuron"));
 
         // Check key components are present
-        assert!(subckt.contains("Vref buffer"));
-        assert!(subckt.contains("TIA op-amp"));
+        assert!(subckt.contains("Passive membrane"));
         assert!(subckt.contains("Threshold divider"));
         assert!(subckt.contains("Soft comparator"));
         assert!(subckt.contains("Pulse stretching"));
         assert!(subckt.contains("Reset path"));
-
-        // Check analog output is disabled by default
-        assert!(subckt.contains("Analog output disabled"));
     }
 
     #[test]

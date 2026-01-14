@@ -13,7 +13,7 @@
   },
   "physics": {
     "enabled": true,
-    "tau_m": 0.00949,
+    "tau_m": 0.00396,
     "tau_pulse": 0.00167,
     "tau_theta": 0.001,
     "dt": 0.001

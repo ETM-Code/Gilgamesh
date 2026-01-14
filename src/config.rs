@@ -204,7 +204,7 @@ pub struct PhysicsConfig {
     pub theta_high: f32,
 }
 
-fn default_tau_m() -> f32 { 0.0026 }      // ~2.6ms (gilgamesh default)
+fn default_tau_m() -> f32 { 0.00396 }     // ~3.96ms (33nF * 120kΩ)
 fn default_tau_pulse() -> f32 { 0.00167 } // ~1.67ms (R_eff * C_pw)
 fn default_tau_theta() -> f32 { 0.001 }   // ~1ms
 fn default_dt() -> f32 { 0.001 }          // 1ms timestep

@@ -117,7 +117,7 @@ impl Default for NeuronMode {
         // Default to Physics mode for hardware-accurate simulation
         // Use sensible defaults matching typical passive RC neuron circuits
         NeuronMode::Physics {
-            tau_m: 0.0012,       // 1.2ms (matches SPICE: 120kΩ * 10nF)
+            tau_m: 0.00396,      // 3.96ms (matches SPICE: 120kΩ * 33nF)
             dt: 1e-6,            // 1µs timestep
             tau_pulse: 0.5e-3,   // 0.5ms pulse stretch
             v_peak: 2.6,         // Peak with diode drop

@@ -203,7 +203,7 @@ pub(crate) enum Commands {
     /// Run single-neuron test for SPICE comparison
     NeuronTest {
         /// Membrane time constant (seconds)
-        #[arg(long, default_value = "0.0012")]
+        #[arg(long, default_value = "0.00396")]
         tau_m: f32,
 
         /// Integration timestep (seconds)
@@ -211,15 +211,15 @@ pub(crate) enum Commands {
         dt: f32,
 
         /// Spike threshold voltage (V)
-        #[arg(long, default_value = "3.3")]
+        #[arg(long, default_value = "0.8")]
         threshold: f32,
 
         /// Reference voltage (V)
-        #[arg(long, default_value = "2.5")]
+        #[arg(long, default_value = "0.0")]
         vref: f32,
 
         /// Input current (A)
-        #[arg(long, default_value = "0.000001")]
+        #[arg(long, default_value = "0.000010")]
         input_current: f32,
 
         /// Simulation duration (seconds)
@@ -400,4 +400,3 @@ impl Cli {
         }
     }
 }
-
