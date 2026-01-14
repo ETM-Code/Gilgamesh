@@ -101,6 +101,19 @@ pub enum SimulationMode {
     Training,
 }
 
+/// Behavior when a sample finishes playing
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum EndOfSampleBehavior {
+    /// Automatically advance to the next sample
+    #[default]
+    AutoAdvance,
+    /// Stop and stay paused
+    Stop,
+    /// Loop the current sample
+    Loop,
+}
+
 /// Messages sent from client to server
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
@@ -118,6 +131,7 @@ pub enum ClientMessage {
     Pause,
     Resume,
     SetSpeed { speed: f32 },
+    SetEndOfSampleBehavior { behavior: EndOfSampleBehavior },
     RestartSample,
 
     /// Training control

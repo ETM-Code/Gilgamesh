@@ -161,8 +161,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
-                if let Ok(cmd) = serde_json::from_str::<ClientMessage>(&text) {
-                    handle_command(cmd, &state_clone).await;
+                match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(cmd) => {
+                        handle_command(cmd, &state_clone).await;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to parse client message: {} - Input: {}", e, text);
+                    }
                 }
             }
         }
@@ -241,6 +246,15 @@ async fn handle_command(cmd: ClientMessage, state: &Arc<AppState>) {
             sim.speed = speed.clamp(0.1, 10.0);
             state.broadcast(ServerMessage::Ack {
                 command: format!("set_speed:{}", speed),
+            });
+        }
+
+        ClientMessage::SetEndOfSampleBehavior { behavior } => {
+            println!("Setting end-of-sample behavior to: {:?}", behavior);
+            let mut sim = state.simulation.write().await;
+            sim.set_end_of_sample_behavior(behavior);
+            state.broadcast(ServerMessage::Ack {
+                command: format!("set_end_of_sample_behavior:{:?}", behavior),
             });
         }
 

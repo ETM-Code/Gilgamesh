@@ -9,7 +9,7 @@ use std::time::Duration;
 use ndarray::{Array2, Axis};
 use tokio::time::sleep;
 
-use super::protocol::{NetworkTopology, NeuronState, ServerMessage, SimulationMode, SynapseInfo};
+use super::protocol::{EndOfSampleBehavior, NetworkTopology, NeuronState, ServerMessage, SimulationMode, SynapseInfo};
 use super::server::AppState;
 use crate::checkpoint::Checkpoint;
 use crate::config::Config;
@@ -41,6 +41,8 @@ pub struct SimulationState {
     pub speed: f32,
     /// Is simulation paused
     pub paused: bool,
+    /// Behavior when sample ends
+    pub end_of_sample_behavior: EndOfSampleBehavior,
     /// Request to change sample
     pub sample_request: Option<SampleRequest>,
     /// Layer sizes [input, hidden, output]
@@ -82,6 +84,7 @@ impl SimulationState {
             total_steps: 25,
             speed: 1.0,
             paused: false,
+            end_of_sample_behavior: EndOfSampleBehavior::default(),
             sample_request: None,
             layer_sizes: vec![],
             checkpoint_path: None,
@@ -214,6 +217,11 @@ impl SimulationState {
     /// Restart current sample
     pub fn restart_sample(&mut self) {
         self.sample_request = Some(SampleRequest::Restart);
+    }
+
+    /// Set end-of-sample behavior
+    pub fn set_end_of_sample_behavior(&mut self, behavior: EndOfSampleBehavior) {
+        self.end_of_sample_behavior = behavior;
     }
 
     /// Reset for a new sample
@@ -381,10 +389,24 @@ async fn run_inference_step(state: &Arc<AppState>) {
         let pause_time = (2000.0 / speed.max(0.1)) as u64;
         sleep(Duration::from_millis(pause_time)).await;
 
-        // Advance to next sample
+        // Handle based on end-of-sample behavior (read fresh value after sleep)
         let mut sim = state.simulation.write().await;
-        let next = (current_sample + 1) % total_samples.max(1);
-        sim.reset_for_sample(next);
+        println!("End of sample reached. Behavior: {:?}", sim.end_of_sample_behavior);
+        match sim.end_of_sample_behavior {
+            EndOfSampleBehavior::AutoAdvance => {
+                let next = (current_sample + 1) % total_samples.max(1);
+                sim.reset_for_sample(next);
+            }
+            EndOfSampleBehavior::Stop => {
+                println!("Stopping - setting paused=true");
+                sim.paused = true;
+                sim.reset_for_sample(current_sample);
+            }
+            EndOfSampleBehavior::Loop => {
+                println!("Looping current sample");
+                sim.reset_for_sample(current_sample);
+            }
+        }
     }
 }
 
