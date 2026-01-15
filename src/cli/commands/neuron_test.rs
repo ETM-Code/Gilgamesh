@@ -11,6 +11,7 @@ pub(crate) fn run_neuron_test(
     v_peak: f32,
     comparator_delay: f32,
     reset_hold: f32,
+    c_mem: f32,
     output_path: &str,
 ) -> Result<()> {
     use gilgamesh::hardware::HardwareConfig;
@@ -18,7 +19,6 @@ pub(crate) fn run_neuron_test(
     use std::fs::File;
     use std::io::Write;
 
-    let c_mem = 33e-9;
     let r_leak = tau_m / c_mem;
     let v_threshold = threshold - vref;
 

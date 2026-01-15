@@ -19,6 +19,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::network::{Network, SimulationTrace};
+use crate::neurons::NeuronMode;
 
 /// Supply voltage configuration
 #[derive(Clone, Debug)]
@@ -46,7 +47,7 @@ pub struct MembraneConfig {
 impl Default for MembraneConfig {
     fn default() -> Self {
         Self {
-            c_mem: 33e-9,     // 33nF
+            c_mem: 10e-9,     // 10nF
             r_leak: 120e3,    // 120kΩ -> tau = 3.96ms
         }
     }
@@ -69,7 +70,7 @@ impl Default for ThresholdConfig {
         Self {
             over_vref: 0.8,
             hysteresis: 0.05,
-            c_adapt: 100e-9,     // 100nF
+            c_adapt: 4.7e-9,     // 4.7nF
             r_top: 8.30e6,       // 8.3M -> ~0.8V threshold with R_bottom=1.58M @ 5V
             r_bottom: 1.58e6,    // 1.58M
             r_feedback: 21.5e6, // 21.5M (R3)
@@ -116,7 +117,7 @@ pub struct ComparatorConfig {
 impl Default for ComparatorConfig {
     fn default() -> Self {
         Self {
-            offset: 0.003,
+            offset: 0.0,
             prop_delay: 40e-9,   // 40ns
             vlow: 0.0,
             vhigh: 5.0,
@@ -137,7 +138,7 @@ impl Default for PulseStretchConfig {
         Self {
             enable: true,
             r_pw: 100e3,     // 100kΩ
-            c_pw: 100e-9,    // 100nF -> tau = 10ms
+            c_pw: 5e-9,      // 5nF -> tau = 0.5ms
         }
     }
 }
@@ -221,14 +222,12 @@ impl Default for SpiceParams {
 
 impl SpiceParams {
     /// Create from network (extracts physics parameters where available)
-    pub fn from_network(net: &Network) -> Self {
-        let mut params = Self::default();
+    pub fn from_network(_net: &Network) -> Self {
+        let params = Self::default();
 
         // Keep fixed hardware membrane values (do not override with network tau_m).
 
-        // Use network threshold (normalized to voltage)
-        // The network threshold is typically 1.0, which maps to over_vref
-        params.threshold.over_vref = net.lif1.threshold * 0.8; // Scale to reasonable voltage
+        // Keep hardware threshold pinned to the physical divider target (0.8V).
 
         params
     }
@@ -279,9 +278,13 @@ impl SpiceNetlist {
         let hidden_size = net.fc1.out_features;
         let output_size = net.fc2.out_features;
 
-        // Simulation time in seconds
-        let sim_time = num_steps as f32 * params.dt * 1000.0; // Convert to ms-scale
-        let sim_step = params.dt * 100.0; // Finer resolution
+        // Simulation time in seconds (align with network dt if in Physics mode).
+        let model_dt = match &net.lif1.mode {
+            NeuronMode::Physics { dt, .. } => *dt,
+            NeuronMode::Simple => params.dt,
+        };
+        let sim_time = num_steps as f32 * model_dt;
+        let sim_step = params.dt;
 
         let mut content = String::new();
 
@@ -291,6 +294,8 @@ impl SpiceNetlist {
         content.push_str("* ================================================================\n");
         content.push_str(&format!("* Architecture: {} -> {} -> {}\n", input_size, hidden_size, output_size));
         content.push_str(&format!("* Simulation time: {:.2}ms\n", sim_time * 1000.0));
+        content.push_str(&format!("* Model dt: {:.3}ms, SPICE step: {:.3}us\n",
+            model_dt * 1000.0, sim_step * 1e6));
         content.push_str(&format!("* Membrane: C={:.3e}F, R={:.3e}Ω, tau={:.2}ms\n",
             params.membrane.c_mem, params.membrane.r_leak, params.tau_m() * 1000.0));
         content.push_str(&format!("* Pulse stretch: tau={:.2}ms (enabled={})\n",
@@ -313,9 +318,8 @@ impl SpiceNetlist {
         content.push_str("* ========== Input Voltage Sources ==========\n");
         content.push_str("* Inputs scaled to voltage around Vref\n");
         for (i, &val) in input.iter().enumerate() {
-            // Scale input to reasonable voltage swing around Vref
-            // Input values are typically normalized, scale to ~0.5V swing
-            let voltage = params.supply.vref + val.clamp(-1.0, 1.0) * 0.5;
+            // Preserve normalized input range for SPICE comparison (avoid clamping)
+            let voltage = params.supply.vref + val;
             content.push_str(&format!("Vin_{} in_{} 0 DC {:.6}\n", i, i, voltage));
         }
         content.push_str("\n");
@@ -342,12 +346,15 @@ impl SpiceNetlist {
         content.push_str("* ========== Input -> Hidden Synapses (VCCS) ==========\n");
         content.push_str("* G<name> n+ n- nc+ nc- transconductance\n");
         content.push_str("* Current from n+ to n- = transconductance * (V(nc+) - V(nc-))\n");
+        let input_scale_v = 1.0_f32;
+        let current_gain = 4.0 * params.threshold.over_vref / params.membrane.r_leak;
+        let input_transconductance = current_gain / input_scale_v.max(1e-6);
         for h in 0..hidden_size {
             for i in 0..input_size {
                 let weight = net.fc1.weight[[i, h]];
                 if weight.abs() > 1e-6 {
-                    // Scale weight to appropriate current (nA to uA range)
-                    let scaled_weight = weight * 1e-6; // Convert to microamps/volt
+                    // Scale to physical current based on passive membrane target.
+                    let scaled_weight = weight * input_transconductance;
                     content.push_str(&format!(
                         // Inject current INTO the summing node for positive (weight * input).
                         // In SPICE, a VCCS delivers current from n+ to n-.
@@ -364,7 +371,7 @@ impl SpiceNetlist {
             for h in 0..hidden_size {
                 let b = bias[h];
                 if b.abs() > 1e-6 {
-                    let scaled_bias = b * 1e-6;
+                    let scaled_bias = b * current_gain;
                     // Positive bias should depolarize (inject into sum).
                     content.push_str(&format!("Ib1_{} 0 sum_h_{} DC {:.6e}\n", h, h, scaled_bias));
                 }
@@ -392,11 +399,13 @@ impl SpiceNetlist {
         // ========== Hidden to output synapses ==========
         content.push_str("* ========== Hidden -> Output Synapses (VCCS) ==========\n");
         content.push_str("* Uses stretched pulse output (pulse_h_*) for better charge transfer\n");
+        let pulse_scale_v = params.comparator.vhigh.max(1e-6);
+        let pulse_transconductance = current_gain / pulse_scale_v;
         for o in 0..output_size {
             for h in 0..hidden_size {
                 let weight = net.fc2.weight[[h, o]];
                 if weight.abs() > 1e-6 {
-                    let scaled_weight = weight * 1e-6;
+                    let scaled_weight = weight * pulse_transconductance;
                     content.push_str(&format!(
                         // Inject current INTO the summing node for positive weights.
                         "Gw2_{}_{} 0 sum_o_{} pulse_h_{} 0 {:.6e}\n",
@@ -412,7 +421,7 @@ impl SpiceNetlist {
             for o in 0..output_size {
                 let b = bias[o];
                 if b.abs() > 1e-6 {
-                    let scaled_bias = b * 1e-6;
+                    let scaled_bias = b * current_gain;
                     content.push_str(&format!("Ib2_{} 0 sum_o_{} DC {:.6e}\n", o, o, scaled_bias));
                 }
             }
@@ -421,6 +430,7 @@ impl SpiceNetlist {
 
         // ========== Simulation commands ==========
         content.push_str("* ========== Simulation ==========\n");
+        content.push_str(".options reltol=1e-2 abstol=1e-9 vntol=1e-4\n");
         content.push_str(&format!(".tran {:.6e} {:.6e}\n", sim_step, sim_time));
         content.push_str("\n");
 
@@ -439,16 +449,130 @@ impl SpiceNetlist {
             content.push_str(&format!(" v(mem_o_{})", o));
         }
         // Save some hidden layer data for debugging
-        let sample_hidden = hidden_size.min(5);
+        let sample_hidden = hidden_size.min(10);
         for h in 0..sample_hidden {
             content.push_str(&format!(" v(pulse_h_{}) v(mem_h_{})", h, h));
         }
+        // Extra internal nodes for debugging
+        content.push_str(" v(xh_0.comp_out) v(xh_0.vth_node)");
+        content.push_str(" v(xh_3.comp_raw) v(xh_3.comp_ctrl) v(xh_3.comp_out) v(xh_3.vth_node)");
+        content.push_str(" v(xo_0.comp_out) v(xo_0.vth_node)");
         content.push_str("\n");
         content.push_str("quit\n");
         content.push_str(".endc\n");
         content.push_str("\n");
 
         content.push_str(".end\n");
+
+        Self { content }
+    }
+
+    /// Generate netlist for a single passive neuron with constant input current.
+    pub fn single_neuron(
+        params: &SpiceParams,
+        input_current: f32,
+        duration: f32,
+        output_file: &str,
+    ) -> Self {
+        let sim_time = duration.max(params.dt);
+        let sim_step = params.dt;
+
+        let mut content = String::new();
+        content.push_str("* ================================================================\n");
+        content.push_str("* gilgamesh SPICE Mini - Single Neuron\n");
+        content.push_str("* ================================================================\n");
+        content.push_str(&format!("* Simulation time: {:.2}ms\n", sim_time * 1000.0));
+        content.push_str(&format!("* Membrane: C={:.3e}F, R={:.3e}Ω, tau={:.2}ms\n",
+            params.membrane.c_mem, params.membrane.r_leak, params.tau_m() * 1000.0));
+        content.push_str(&format!("* Input current: {:.3}uA\n", input_current * 1e6));
+        content.push_str("\n");
+
+        content.push_str(&Self::lif_subcircuit(params));
+
+        content.push_str("* ========== Power Supplies ==========\n");
+        content.push_str(&format!("Vdd vdd 0 DC {}\n", params.supply.vdd));
+        content.push_str(&format!("Vref vref 0 DC {}\n", params.supply.vref));
+        content.push_str("\n");
+
+        content.push_str("* ========== Single Neuron ==========\n");
+        content.push_str("Xn mem vref vdd pulse sum lif_neuron\n");
+        content.push_str(&format!("Iin 0 sum DC {:.6e}\n", input_current));
+        content.push_str("\n");
+
+        content.push_str("* ========== Simulation ==========\n");
+        content.push_str(".options reltol=1e-2 abstol=1e-9 vntol=1e-4\n");
+        content.push_str(&format!(".tran {:.6e} {:.6e}\n", sim_step, sim_time));
+        content.push_str("\n");
+
+        content.push_str(".control\n");
+        content.push_str("run\n");
+        content.push_str("set filetype=ascii\n");
+        content.push_str(&format!(
+            "wrdata {} v(mem) v(pulse) v(xn.comp_out) v(xn.vth_node) v(xn.comp_raw) v(xn.comp_ctrl)\n",
+            output_file
+        ));
+        content.push_str("quit\n");
+        content.push_str(".endc\n\n.end\n");
+
+        Self { content }
+    }
+
+    /// Generate netlist for two passive neurons with a single synapse (pulse -> current).
+    pub fn two_neuron(
+        params: &SpiceParams,
+        input_current: f32,
+        synapse_gain: f32,
+        duration: f32,
+        output_file: &str,
+    ) -> Self {
+        let sim_time = duration.max(params.dt);
+        let sim_step = params.dt;
+
+        let mut content = String::new();
+        content.push_str("* ================================================================\n");
+        content.push_str("* gilgamesh SPICE Mini - Two Neurons\n");
+        content.push_str("* ================================================================\n");
+        content.push_str(&format!("* Simulation time: {:.2}ms\n", sim_time * 1000.0));
+        content.push_str(&format!("* Membrane: C={:.3e}F, R={:.3e}Ω, tau={:.2}ms\n",
+            params.membrane.c_mem, params.membrane.r_leak, params.tau_m() * 1000.0));
+        content.push_str(&format!("* Input current: {:.3}uA\n", input_current * 1e6));
+        content.push_str(&format!("* Synapse gain: {:.3e} A/V\n", synapse_gain));
+        content.push_str("\n");
+
+        content.push_str(&Self::lif_subcircuit(params));
+
+        content.push_str("* ========== Power Supplies ==========\n");
+        content.push_str(&format!("Vdd vdd 0 DC {}\n", params.supply.vdd));
+        content.push_str(&format!("Vref vref 0 DC {}\n", params.supply.vref));
+        content.push_str("\n");
+
+        content.push_str("* ========== Neuron A ==========\n");
+        content.push_str("Xa mem_a vref vdd pulse_a sum_a lif_neuron\n");
+        content.push_str(&format!("Iin 0 sum_a DC {:.6e}\n", input_current));
+        content.push_str("\n");
+
+        content.push_str("* ========== Neuron B ==========\n");
+        content.push_str("Xb mem_b vref vdd pulse_b sum_b lif_neuron\n");
+        content.push_str(&format!(
+            "Gsyn 0 sum_b pulse_a 0 {:.6e}\n",
+            synapse_gain
+        ));
+        content.push_str("\n");
+
+        content.push_str("* ========== Simulation ==========\n");
+        content.push_str(".options reltol=1e-2 abstol=1e-9 vntol=1e-4\n");
+        content.push_str(&format!(".tran {:.6e} {:.6e}\n", sim_step, sim_time));
+        content.push_str("\n");
+
+        content.push_str(".control\n");
+        content.push_str("run\n");
+        content.push_str("set filetype=ascii\n");
+        content.push_str(&format!(
+            "wrdata {} v(mem_a) v(pulse_a) v(mem_b) v(pulse_b) v(xa.comp_out) v(xb.comp_out)\n",
+            output_file
+        ));
+        content.push_str("quit\n");
+        content.push_str(".endc\n\n.end\n");
 
         Self { content }
     }
@@ -480,7 +604,11 @@ impl SpiceNetlist {
         // ========== Passive membrane ==========
         s.push_str("* ---------- Passive membrane ----------\n");
         s.push_str("Rsum mem sum 1m\n");
-        s.push_str(&format!("Cmem mem vref {:.3e}\n", params.membrane.c_mem));
+        s.push_str(&format!(
+            "Cmem mem vref {:.3e} IC={:.6}\n",
+            params.membrane.c_mem,
+            params.supply.vref
+        ));
         s.push_str(&format!("Rleak mem vref {:.3e}\n", params.membrane.r_leak));
         s.push_str("\n");
 
@@ -490,32 +618,50 @@ impl SpiceNetlist {
         s.push_str("* ---------- Threshold divider (GND referenced) ----------\n");
         s.push_str(&format!("Rtop vdd vth_node {:.3e}\n", params.threshold.r_top));
         s.push_str(&format!("Rbottom vth_node vref {:.3e}\n", params.threshold.r_bottom));
-        s.push_str(&format!("Cadapt vth_node vref {:.3e}\n", params.threshold.c_adapt));
-        s.push_str(".model DADAPT D(Is=1e-6 N=1.05 Rs=2 Cjo=1p Eg=0.69)\n");
-        s.push_str(&format!("Rinj comp_out ninj {:.3e}\n", params.threshold.r_inject));
-        s.push_str("Dinj ninj vth_node DADAPT\n");
+        let vth_dc = params.supply.vref
+            + (params.supply.vdd - params.supply.vref)
+                * (params.threshold.r_bottom / (params.threshold.r_top + params.threshold.r_bottom));
+        s.push_str(&format!(
+            "Cadapt vth_node vref {:.3e} IC={:.6}\n",
+            params.threshold.c_adapt,
+            vth_dc
+        ));
+        s.push_str(&format!("Rinj comp_out vth_node {:.3e}\n", params.threshold.r_inject));
         s.push_str(&format!("R3 comp_out vref {:.3e}\n", params.threshold.r_feedback));
         s.push_str("\n");
 
-        // ========== Soft comparator with RC shaping ==========
-        s.push_str("* ---------- Soft comparator (membrane space) ----------\n");
+        // ========== Comparator model (high gain + finite delay + rail output) ==========
+        s.push_str("* ---------- Comparator model (finite delay, rail output) ----------\n");
         s.push_str(&format!(".param VLO={}\n", vlo));
         s.push_str(&format!(".param VHI={}\n", vhi));
-        s.push_str(".param VSW=0.01\n");
-
         // RC shaping from propagation delay
         let rc = (params.comparator.prop_delay / 10.0).max(1e-9);
         let rout = (params.comparator.prop_delay / rc).max(10.0);
+        let vh = params.threshold.hysteresis;
+        let vth_sw = (vhi + vlo) / 2.0;
+        let vsw = (params.threshold.hysteresis / 5000.0).max(1e-6);
+        s.push_str(&format!(".param VSW={:.6e}\n", vsw));
 
         s.push_str("Bdef vdef 0 V = V(mem) - V(vref)\n");
         s.push_str("Btheta_rel vtheta_rel 0 V = V(vth_node) - V(vref)\n");
-        // Compare membrane against the physical threshold above Vref.
+        // Compare membrane against the physical threshold above Vref (steep nonlinearity).
         s.push_str(&format!(
             "Bcomp comp_raw 0 V = VLO + (VHI - VLO)*(0.5*(1 + tanh( ( V(vdef) - ( V(vtheta_rel) + {} ) ) / VSW )))\n",
             params.comparator.offset
         ));
-        s.push_str(&format!("Rcout comp_raw comp_out {:.3e}\n", rout));
-        s.push_str(&format!("Ccout comp_out 0 {:.3e}\n", rc));
+        s.push_str(&format!("Rcout comp_raw comp_ctrl {:.3e}\n", rout));
+        s.push_str(&format!("Ccout comp_ctrl 0 {:.3e} IC=0\n", rc));
+        s.push_str("Bcomp_inv comp_inv 0 V = V(vdd) - V(comp_ctrl)\n");
+        s.push_str("Scomp_hi comp_out vdd comp_ctrl 0 SWCOMP_HI\n");
+        s.push_str("Scomp_lo comp_out vref comp_inv 0 SWCOMP_LO\n");
+        s.push_str(&format!(
+            ".model SWCOMP_HI SW(Ron=50 Roff=1.000e9 Vt={:.3} Vh={:.3})\n",
+            vth_sw, vh
+        ));
+        s.push_str(&format!(
+            ".model SWCOMP_LO SW(Ron=50 Roff=1.000e9 Vt={:.3} Vh={:.3})\n",
+            vth_sw, vh
+        ));
         s.push_str(&format!("Icomp_bias vdd 0 {:.3e}\n", params.bias.comparator));
         s.push_str("\n");
 
@@ -527,11 +673,10 @@ impl SpiceNetlist {
                 "* tau_pulse = {:.3e}Ω × {:.3e}F = {:.2}ms\n",
                 params.pulse_stretch.r_pw, params.pulse_stretch.c_pw, tau_pulse * 1e3
             ));
-            s.push_str("* Diode allows fast charging, slow discharge through Rpw\n");
-            s.push_str(".model DPW D(Is=1e-12 N=1.05 Rs=10 Cjo=1p)\n");
-            s.push_str("Dpw comp_out comp_pulse DPW\n");
+            s.push_str("* Linear RC pulse stretcher (stable for ngspice)\n");
+            s.push_str("Rpw_charge comp_out comp_pulse 10\n");
             s.push_str(&format!("Rpw comp_pulse 0 {:.3e}\n", params.pulse_stretch.r_pw));
-            s.push_str(&format!("Cpw comp_pulse 0 {:.3e}\n", params.pulse_stretch.c_pw));
+            s.push_str(&format!("Cpw comp_pulse 0 {:.3e} IC=0\n", params.pulse_stretch.c_pw));
         } else {
             s.push_str("* ---------- Pulse stretching disabled - direct connection ----------\n");
             s.push_str("Rpw_bypass comp_out comp_pulse 1\n");
@@ -541,7 +686,7 @@ impl SpiceNetlist {
         // ========== Reset path ==========
         if params.reset.enable {
             s.push_str("* ---------- Reset path ----------\n");
-            s.push_str(&format!("Creset mem vref {:.3e}\n", params.reset.mux_coff));
+            s.push_str(&format!("Creset mem vref {:.3e} IC=0\n", params.reset.mux_coff));
             s.push_str("Sreset mem vref comp_out 0 SWMUX\n");
             s.push_str(&format!(
                 ".model SWMUX SW(Ron={} Roff={:.3e} Vt={} Vh={})\n",
@@ -975,13 +1120,13 @@ mod tests {
     #[test]
     fn test_spice_params_default() {
         let params = SpiceParams::default();
-        // Default membrane: 33nF, 120kΩ -> tau = 3.96ms
+        // Default membrane: 10nF, 120kΩ -> tau = 1.2ms
         let tau_m = params.tau_m();
-        assert!((tau_m - 3.96e-3).abs() < 1e-4, "tau_m should be ~3.96ms, got {}", tau_m);
+        assert!((tau_m - 1.2e-3).abs() < 1e-4, "tau_m should be ~1.2ms, got {}", tau_m);
 
-        // Default pulse stretch: 100kΩ, 100nF -> tau = 10ms
+        // Default pulse stretch: 100kΩ, 5nF -> tau = 0.5ms
         let tau_pulse = params.tau_pulse();
-        assert!((tau_pulse - 10e-3).abs() < 1e-4, "tau_pulse should be ~10ms, got {}", tau_pulse);
+        assert!((tau_pulse - 0.5e-3).abs() < 1e-4, "tau_pulse should be ~0.5ms, got {}", tau_pulse);
 
         // Threshold
         assert!((params.threshold.over_vref - 0.8).abs() < 0.01);

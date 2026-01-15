@@ -200,6 +200,41 @@ pub(crate) enum Commands {
         no_pulse_stretch: bool,
     },
 
+    /// Minimal SPICE harness (1-2 neurons) with Rust comparison
+    SpiceMini {
+        /// Output directory for netlist and results
+        #[arg(long, default_value = "./spice_output_mini")]
+        output_dir: String,
+
+        /// Run ngspice automatically (requires ngspice in PATH)
+        #[arg(long)]
+        run_ngspice: bool,
+
+        /// Use two neurons (pulse -> synapse -> neuron)
+        #[arg(long)]
+        two_neurons: bool,
+
+        /// Input current into neuron A (Amps)
+        #[arg(long, default_value = "0.000010")]
+        input_current: f32,
+
+        /// Synapse gain (A/V) for neuron B (optional)
+        #[arg(long)]
+        synapse_gain: Option<f32>,
+
+        /// Simulation duration (seconds)
+        #[arg(long, default_value = "0.005")]
+        duration: f32,
+
+        /// SPICE timestep (seconds)
+        #[arg(long, default_value = "0.000001")]
+        dt: f32,
+
+        /// Peak pulse voltage for Rust comparison (V)
+        #[arg(long, default_value = "4.6")]
+        v_peak: f32,
+    },
+
     /// Run single-neuron test for SPICE comparison
     NeuronTest {
         /// Membrane time constant (seconds)
@@ -244,6 +279,10 @@ pub(crate) enum Commands {
         /// Time membrane is held at reset after spike (models pulse stretcher)
         #[arg(long, default_value = "0")]
         reset_hold: f32,
+
+        /// Membrane capacitance (Farads)
+        #[arg(long, default_value = "33e-9")]
+        c_mem: f32,
 
         /// Output CSV file
         #[arg(long, default_value = "neuron_output.csv")]
@@ -366,6 +405,25 @@ impl Cli {
                 analog_output,
                 !no_pulse_stretch,
             ),
+            Commands::SpiceMini {
+                output_dir,
+                run_ngspice,
+                two_neurons,
+                input_current,
+                synapse_gain,
+                duration,
+                dt,
+                v_peak,
+            } => commands::run_spice_mini(
+                &output_dir,
+                run_ngspice,
+                two_neurons,
+                input_current,
+                synapse_gain,
+                duration,
+                dt,
+                v_peak,
+            ),
             Commands::NeuronTest {
                 tau_m,
                 dt,
@@ -377,6 +435,7 @@ impl Cli {
                 v_peak,
                 comparator_delay,
                 reset_hold,
+                c_mem,
                 output,
             } => commands::run_neuron_test(
                 tau_m,
@@ -389,6 +448,7 @@ impl Cli {
                 v_peak,
                 comparator_delay,
                 reset_hold,
+                c_mem,
                 &output,
             ),
             Commands::Web {

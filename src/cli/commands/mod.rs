@@ -3,6 +3,7 @@ pub(crate) mod dashboard;
 pub(crate) mod evaluate;
 pub(crate) mod inspect;
 pub(crate) mod neuron_test;
+pub(crate) mod spice_mini;
 pub(crate) mod spice;
 pub(crate) mod test;
 pub(crate) mod train;
@@ -13,8 +14,8 @@ pub(crate) use dashboard::run_dashboard;
 pub(crate) use evaluate::evaluate;
 pub(crate) use inspect::run_inspector;
 pub(crate) use neuron_test::run_neuron_test;
+pub(crate) use spice_mini::run_spice_mini;
 pub(crate) use spice::run_spice;
 pub(crate) use test::test_implementation;
 pub(crate) use train::{train_from_config, train_with_config};
 pub(crate) use web::run_web_server;
-
