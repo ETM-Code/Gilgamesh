@@ -1,5 +1,5 @@
 # gilgamesh
-
+[logo.png]
 A Rust implementation of hardware-accurate spiking neural networks (SNNs). Features dual-mode operation: a simple beta-decay model (snnTorch-compatible) for fast prototyping and a physics-accurate RC membrane model for chip deployment.
 
 ## Features
