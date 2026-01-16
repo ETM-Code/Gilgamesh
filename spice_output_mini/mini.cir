@@ -1,0 +1,87 @@
+* ================================================================
+* gilgamesh SPICE Mini - Two Neurons
+* ================================================================
+* Simulation time: 5.00ms
+* Membrane: C=1.000e-8F, R=1.200e5Ω, tau=1.20ms
+* Input current: 10.000uA
+* Synapse gain: 2.252e-6 A/V
+
+* ========== LIF Neuron Detailed Subcircuit (Pulse Stretching) ==========
+* Passive membrane with comparator, reset, and pulse stretching
+* Nodes: mem vref vdd comp_pulse sum
+.subckt lif_neuron mem vref vdd comp_pulse sum
+
+* ---------- Passive membrane ----------
+Rsum mem sum 1m
+Cmem mem vref 1.000e-8 IC=0.000000
+Rleak mem vref 1.200e5
+
+* ---------- Threshold divider (GND referenced) ----------
+Rtop vdd vth_node 8.300e6
+Rbottom vth_node vref 1.580e6
+Cadapt vth_node vref 4.700e-9 IC=0.799595
+* Inject current into vth_node when comp_out is high (avoids loading divider)
+Ginj vref vth_node comp_out 0 1.000000e-12
+R3 comp_out vref 2.150e7
+
+* ---------- Comparator model (finite delay, rail output) ----------
+.param VLO=0
+.param VHI=5
+.param VSW=1.000000e-5
+Bdef vdef 0 V = V(mem) - V(vref)
+Btheta_rel vtheta_rel 0 V = V(vth_node) - V(vref)
+Bcomp comp_raw 0 V = VLO + (VHI - VLO)*(0.5*(1 + tanh( ( V(vdef) - ( V(vtheta_rel) + 0 ) ) / VSW )))
+Rcout comp_raw comp_ctrl 1.000e1
+Ccout comp_ctrl 0 4.000e-9 IC=0
+Bcomp_inv comp_inv 0 V = V(vdd) - V(comp_ctrl)
+Scomp_hi comp_out vdd comp_ctrl 0 SWCOMP_HI
+Scomp_lo comp_out vref comp_inv 0 SWCOMP_LO
+.model SWCOMP_HI SW(Ron=50 Roff=1.000e9 Vt=2.500 Vh=0.050)
+.model SWCOMP_LO SW(Ron=50 Roff=1.000e9 Vt=2.500 Vh=0.050)
+Icomp_bias vdd 0 2.000e-6
+
+* ---------- Pulse stretching circuit ----------
+* tau_pulse = 1.500e5Ω × 1.000e-11F = 1.50us
+* Diode + RC pulse stretcher (fast charge, slow discharge)
+Rpw_charge comp_out comp_pulse_charge 1.000e3
+Dpw comp_pulse_charge comp_pulse DPW
+Rpw_charge_bleed comp_pulse_charge 0 1e6
+Rpw_bleed comp_pulse 0 100e6
+Rpw comp_pulse 0 1.500e5
+Cpw comp_pulse 0 1.000e-11 IC=0
+.model DPW D(Is=1e-9 N=1 Rs=2 Cjo=0)
+
+* ---------- Reset path ----------
+Creset mem vref 7.000e-12 IC=0
+Sreset mem vref comp_pulse 0 SWMUX
+.model SWMUX SW(Ron=10 Roff=1.000e9 Vt=3.5 Vh=0.1)
+
+
+.ends lif_neuron
+
+* ========== Power Supplies ==========
+Vdd vdd 0 DC 5
+Vref vref 0 DC 0
+
+* ========== Neuron A ==========
+Xa mem_a vref vdd pulse_a sum_a lif_neuron
+Iin 0 sum_a DC 1.000000e-5
+.ic V(mem_a)=0 V(sum_a)=0 V(pulse_a)=0
+
+* ========== Neuron B ==========
+Xb mem_b vref vdd pulse_b sum_b lif_neuron
+Gsyn 0 sum_b pulse_a 0 2.252252e-6
+.ic V(mem_b)=0 V(sum_b)=0 V(pulse_b)=0
+
+* ========== Simulation ==========
+.options reltol=1e-2 abstol=1e-9 vntol=1e-4
+.tran 2.500000e-7 5.000000e-3 uic
+
+.control
+run
+set filetype=ascii
+wrdata mini_two_output.txt v(mem_a) v(pulse_a) v(mem_b) v(pulse_b) v(xa.comp_out) v(xb.comp_out)
+quit
+.endc
+
+.end

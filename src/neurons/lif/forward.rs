@@ -403,6 +403,15 @@ impl Leaky {
         let shape = state.mem.raw_dim();
         let comparator_delay = self.mode.comparator_delay();
         let reset_hold = self.mode.reset_hold();
+        let (tau_theta, theta_low, theta_high) = match &self.mode {
+            NeuronMode::Physics {
+                tau_theta,
+                theta_low,
+                theta_high,
+                ..
+            } => (*tau_theta, *theta_low, *theta_high),
+            NeuronMode::Simple => (default_tau_theta(), 1.0, 1.0),
+        };
 
         let delay_steps = if comparator_delay > 0.0 {
             (comparator_delay / dt).ceil() as u16
@@ -440,8 +449,7 @@ impl Leaky {
         let mut mem_new = state.mem.clone();
         let mem_integrated = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
 
-        let tau_reset = 2e-6_f32;
-        let reset_decay = (-dt / tau_reset).exp();
+        let v_min = self.mode.v_min();
 
         Zip::from(&mut mem_new)
             .and(&mem_integrated)
@@ -450,11 +458,15 @@ impl Leaky {
                 if h == 0 {
                     *m = integrated;
                 } else {
-                    *m *= reset_decay;
+                    *m = v_min;
                 }
             });
 
-        let mem_shifted = &mem_new - self.threshold;
+        let current_threshold = state
+            .adaptive_threshold
+            .clone()
+            .unwrap_or_else(|| Array2::from_elem(shape, self.threshold));
+        let mem_shifted = &mem_new - &current_threshold;
         let mut new_crossings = Array2::zeros(shape);
         Zip::from(&mut new_crossings)
             .and(&mem_shifted)
@@ -506,15 +518,29 @@ impl Leaky {
             emitted_spikes.clone()
         };
 
+        let new_threshold = if state.adaptive_threshold.is_some() {
+            let pulse_scale = if comparator_delay > 0.0 {
+                (comparator_delay / dt).min(1.0)
+            } else {
+                1.0
+            };
+            let target = Array2::from_elem(shape, theta_low)
+                + (&emitted_spikes * pulse_scale) * (theta_high - theta_low);
+            let decay = (-dt / tau_theta).exp();
+            Some(&target * (1.0 - decay) + &current_threshold * decay)
+        } else {
+            None
+        };
+
         let cache = LeakyCache {
-            mem_shifted: mem_shifted.clone(),
+            mem_shifted: &mem_new + &current_threshold - self.threshold,
             spikes: emitted_spikes.clone(),
         };
 
         let new_state = LeakyState {
             mem: mem_new,
             time_since_spike: new_time_since_spike,
-            adaptive_threshold: state.adaptive_threshold.clone(),
+            adaptive_threshold: new_threshold,
             pending_spike_steps: Some(pending),
             reset_hold_steps: Some(hold),
         };
@@ -522,4 +548,3 @@ impl Leaky {
         (pulse_output, new_state, cache)
     }
 }
-

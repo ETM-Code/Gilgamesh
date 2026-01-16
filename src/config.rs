@@ -205,7 +205,7 @@ pub struct PhysicsConfig {
 }
 
 fn default_tau_m() -> f32 { 0.00396 }     // ~3.96ms (33nF * 120kΩ)
-fn default_tau_pulse() -> f32 { 0.00167 } // ~1.67ms (R_eff * C_pw)
+fn default_tau_pulse() -> f32 { 1.5e-6 } // ~1.5us (R_pw * C_pw)
 fn default_tau_theta() -> f32 { 0.001 }   // ~1ms
 fn default_dt() -> f32 { 0.001 }          // 1ms timestep
 fn default_theta_low() -> f32 { 1.0 }     // Resting threshold

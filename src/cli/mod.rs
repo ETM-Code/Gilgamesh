@@ -227,12 +227,16 @@ pub(crate) enum Commands {
         duration: f32,
 
         /// SPICE timestep (seconds)
-        #[arg(long, default_value = "0.000001")]
+        #[arg(long, default_value = "2.5e-7")]
         dt: f32,
 
         /// Peak pulse voltage for Rust comparison (V)
-        #[arg(long, default_value = "4.6")]
+        #[arg(long, default_value = "4.44")]
         v_peak: f32,
+
+        /// Enable adaptive injection (uses R_inject instead of disabling it)
+        #[arg(long)]
+        enable_inject: bool,
     },
 
     /// Run single-neuron test for SPICE comparison
@@ -242,7 +246,7 @@ pub(crate) enum Commands {
         tau_m: f32,
 
         /// Integration timestep (seconds)
-        #[arg(long, default_value = "0.000001")]
+        #[arg(long, default_value = "2.5e-7")]
         dt: f32,
 
         /// Spike threshold voltage (V)
@@ -262,12 +266,12 @@ pub(crate) enum Commands {
         duration: f32,
 
         /// Pulse stretch time constant (seconds, 0 to disable)
-        #[arg(long, default_value = "0.00167")]
+        #[arg(long, default_value = "1.5e-6")]
         tau_pulse: f32,
 
         /// Peak pulse voltage (V). Default 5.0 = VDD.
-        /// Use ~2.6 to match SPICE with diode drop.
-        #[arg(long, default_value = "5.0")]
+        /// Use ~4.44 to match SPICE with diode drop.
+        #[arg(long, default_value = "4.44")]
         v_peak: f32,
 
         /// Comparator propagation delay (seconds, 0 to disable)
@@ -277,7 +281,7 @@ pub(crate) enum Commands {
 
         /// Reset hold period (seconds, 0 to disable)
         /// Time membrane is held at reset after spike (models pulse stretcher)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "3.6e-7")]
         reset_hold: f32,
 
         /// Membrane capacitance (Farads)
@@ -414,6 +418,7 @@ impl Cli {
                 duration,
                 dt,
                 v_peak,
+                enable_inject,
             } => commands::run_spice_mini(
                 &output_dir,
                 run_ngspice,
@@ -423,6 +428,7 @@ impl Cli {
                 duration,
                 dt,
                 v_peak,
+                enable_inject,
             ),
             Commands::NeuronTest {
                 tau_m,

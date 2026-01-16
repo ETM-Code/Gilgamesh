@@ -68,12 +68,12 @@ pub struct ThresholdConfig {
 impl Default for ThresholdConfig {
     fn default() -> Self {
         Self {
-            over_vref: 0.8,
+            over_vref: 0.7732,
             hysteresis: 0.05,
             c_adapt: 4.7e-9,     // 4.7nF
-            r_top: 8.30e6,       // 8.3M -> ~0.8V threshold with R_bottom=1.58M @ 5V
-            r_bottom: 1.58e6,    // 1.58M
-            r_feedback: 21.5e6, // 21.5M (R3)
+            r_top: 8.20e6,       // 8.2M -> ~0.773V threshold with R_bottom=1.5M @ 5V
+            r_bottom: 1.50e6,    // 1.5M
+            r_feedback: 20.0e6, // 20M (R3 + R4)
             r_inject: 2.2e6,     // 2.2M
         }
     }
@@ -99,7 +99,7 @@ impl Default for ResetConfig {
             mux_ron: 10.0,
             mux_roff: 1e9,
             mux_coff: 7e-12,
-            switch_vt: 2.5,
+            switch_vt: 3.5,
             switch_vh: 0.1,
         }
     }
@@ -131,14 +131,16 @@ pub struct PulseStretchConfig {
     pub enable: bool,
     pub r_pw: f32,    // Pulse width resistor (Ohms)
     pub c_pw: f32,    // Pulse width capacitor (F)
+    pub r_charge: f32, // Charge resistor (Ohms)
 }
 
 impl Default for PulseStretchConfig {
     fn default() -> Self {
         Self {
             enable: true,
-            r_pw: 100e3,     // 100kΩ
-            c_pw: 5e-9,      // 5nF -> tau = 0.5ms
+            r_pw: 150e3,     // 150kΩ
+            c_pw: 10e-12,    // 10pF -> tau = 1.5us (~0.86us above 2.5V with diode drop)
+            r_charge: 1e3,   // 1kΩ for fast charge
         }
     }
 }
@@ -215,7 +217,7 @@ impl Default for SpiceParams {
             pulse_stretch: PulseStretchConfig::default(),
             analog_out: AnalogOutConfig::default(),
             bias: BiasCurrents::default(),
-            dt: 1e-6,  // 1μs timestep
+            dt: 2.5e-7,  // 0.25μs timestep
         }
     }
 }
@@ -431,7 +433,7 @@ impl SpiceNetlist {
         // ========== Simulation commands ==========
         content.push_str("* ========== Simulation ==========\n");
         content.push_str(".options reltol=1e-2 abstol=1e-9 vntol=1e-4\n");
-        content.push_str(&format!(".tran {:.6e} {:.6e}\n", sim_step, sim_time));
+        content.push_str(&format!(".tran {:.6e} {:.6e} uic\n", sim_step, sim_time));
         content.push_str("\n");
 
         // ========== Control section ==========
@@ -497,11 +499,12 @@ impl SpiceNetlist {
         content.push_str("* ========== Single Neuron ==========\n");
         content.push_str("Xn mem vref vdd pulse sum lif_neuron\n");
         content.push_str(&format!("Iin 0 sum DC {:.6e}\n", input_current));
+        content.push_str(".ic V(mem)=0 V(sum)=0 V(pulse)=0\n");
         content.push_str("\n");
 
         content.push_str("* ========== Simulation ==========\n");
         content.push_str(".options reltol=1e-2 abstol=1e-9 vntol=1e-4\n");
-        content.push_str(&format!(".tran {:.6e} {:.6e}\n", sim_step, sim_time));
+        content.push_str(&format!(".tran {:.6e} {:.6e} uic\n", sim_step, sim_time));
         content.push_str("\n");
 
         content.push_str(".control\n");
@@ -549,6 +552,7 @@ impl SpiceNetlist {
         content.push_str("* ========== Neuron A ==========\n");
         content.push_str("Xa mem_a vref vdd pulse_a sum_a lif_neuron\n");
         content.push_str(&format!("Iin 0 sum_a DC {:.6e}\n", input_current));
+        content.push_str(".ic V(mem_a)=0 V(sum_a)=0 V(pulse_a)=0\n");
         content.push_str("\n");
 
         content.push_str("* ========== Neuron B ==========\n");
@@ -557,11 +561,12 @@ impl SpiceNetlist {
             "Gsyn 0 sum_b pulse_a 0 {:.6e}\n",
             synapse_gain
         ));
+        content.push_str(".ic V(mem_b)=0 V(sum_b)=0 V(pulse_b)=0\n");
         content.push_str("\n");
 
         content.push_str("* ========== Simulation ==========\n");
         content.push_str(".options reltol=1e-2 abstol=1e-9 vntol=1e-4\n");
-        content.push_str(&format!(".tran {:.6e} {:.6e}\n", sim_step, sim_time));
+        content.push_str(&format!(".tran {:.6e} {:.6e} uic\n", sim_step, sim_time));
         content.push_str("\n");
 
         content.push_str(".control\n");
@@ -626,7 +631,11 @@ impl SpiceNetlist {
             params.threshold.c_adapt,
             vth_dc
         ));
-        s.push_str(&format!("Rinj comp_out vth_node {:.3e}\n", params.threshold.r_inject));
+        s.push_str("* Inject current into vth_node when comp_out is high (avoids loading divider)\n");
+        s.push_str(&format!(
+            "Ginj vref vth_node comp_out 0 {:.6e}\n",
+            1.0 / params.threshold.r_inject
+        ));
         s.push_str(&format!("R3 comp_out vref {:.3e}\n", params.threshold.r_feedback));
         s.push_str("\n");
 
@@ -670,13 +679,20 @@ impl SpiceNetlist {
             let tau_pulse = params.pulse_stretch.r_pw * params.pulse_stretch.c_pw;
             s.push_str("* ---------- Pulse stretching circuit ----------\n");
             s.push_str(&format!(
-                "* tau_pulse = {:.3e}Ω × {:.3e}F = {:.2}ms\n",
-                params.pulse_stretch.r_pw, params.pulse_stretch.c_pw, tau_pulse * 1e3
+                "* tau_pulse = {:.3e}Ω × {:.3e}F = {:.2}us\n",
+                params.pulse_stretch.r_pw, params.pulse_stretch.c_pw, tau_pulse * 1e6
             ));
-            s.push_str("* Linear RC pulse stretcher (stable for ngspice)\n");
-            s.push_str("Rpw_charge comp_out comp_pulse 10\n");
+            s.push_str("* Diode + RC pulse stretcher (fast charge, slow discharge)\n");
+            s.push_str(&format!(
+                "Rpw_charge comp_out comp_pulse_charge {:.3e}\n",
+                params.pulse_stretch.r_charge
+            ));
+            s.push_str("Dpw comp_pulse_charge comp_pulse DPW\n");
+            s.push_str("Rpw_charge_bleed comp_pulse_charge 0 1e6\n");
+            s.push_str("Rpw_bleed comp_pulse 0 100e6\n");
             s.push_str(&format!("Rpw comp_pulse 0 {:.3e}\n", params.pulse_stretch.r_pw));
             s.push_str(&format!("Cpw comp_pulse 0 {:.3e} IC=0\n", params.pulse_stretch.c_pw));
+            s.push_str(".model DPW D(Is=1e-9 N=1 Rs=2 Cjo=0)\n");
         } else {
             s.push_str("* ---------- Pulse stretching disabled - direct connection ----------\n");
             s.push_str("Rpw_bypass comp_out comp_pulse 1\n");
@@ -687,7 +703,7 @@ impl SpiceNetlist {
         if params.reset.enable {
             s.push_str("* ---------- Reset path ----------\n");
             s.push_str(&format!("Creset mem vref {:.3e} IC=0\n", params.reset.mux_coff));
-            s.push_str("Sreset mem vref comp_out 0 SWMUX\n");
+            s.push_str("Sreset mem vref comp_pulse 0 SWMUX\n");
             s.push_str(&format!(
                 ".model SWMUX SW(Ron={} Roff={:.3e} Vt={} Vh={})\n",
                 params.reset.mux_ron, params.reset.mux_roff,
@@ -1124,12 +1140,16 @@ mod tests {
         let tau_m = params.tau_m();
         assert!((tau_m - 1.2e-3).abs() < 1e-4, "tau_m should be ~1.2ms, got {}", tau_m);
 
-        // Default pulse stretch: 100kΩ, 5nF -> tau = 0.5ms
+        // Default pulse stretch: 150kΩ, 10pF -> tau = 1.5us
         let tau_pulse = params.tau_pulse();
-        assert!((tau_pulse - 0.5e-3).abs() < 1e-4, "tau_pulse should be ~0.5ms, got {}", tau_pulse);
+        assert!(
+            (tau_pulse - 1.5e-6).abs() < 1e-7,
+            "tau_pulse should be ~1.5us, got {}",
+            tau_pulse
+        );
 
         // Threshold
-        assert!((params.threshold.over_vref - 0.8).abs() < 0.01);
+        assert!((params.threshold.over_vref - 0.7732).abs() < 0.01);
         assert!((params.threshold.hysteresis - 0.05).abs() < 0.01);
     }
 

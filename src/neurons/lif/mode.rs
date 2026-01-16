@@ -75,11 +75,11 @@ pub enum NeuronMode {
 }
 
 pub fn default_tau_pulse() -> f32 {
-    0.00167 // 1.67ms from hardware
+    1.5e-6 // 1.5us pulse stretch (~0.8us above 2.5V with diode drop)
 }
 
 pub fn default_v_peak() -> f32 {
-    4.42 // 5.0 - 0.21 - 0.37 from hardware
+    4.44 // ~5.0 - 0.56 diode drop on pulse stretcher
 }
 
 pub fn default_tau_theta() -> f32 {
@@ -108,8 +108,7 @@ pub fn default_comparator_delay() -> f32 {
 }
 
 pub fn default_reset_hold() -> f32 {
-    0.0 // Default: no hold (instant reset, for backwards compatibility)
-    // Set to 0.35e-3 (0.35ms) for realistic pulse-stretcher controlled reset
+    0.24 * default_tau_pulse() // Hold until comp_pulse falls below ~3.5V (0.7 * VDD)
 }
 
 impl Default for NeuronMode {
@@ -119,7 +118,7 @@ impl Default for NeuronMode {
         NeuronMode::Physics {
             tau_m: 0.00396,      // 3.96ms (matches SPICE: 120kΩ * 33nF)
             dt: 1e-6,            // 1µs timestep
-            tau_pulse: 0.5e-3,   // 0.5ms pulse stretch
+            tau_pulse: default_tau_pulse(),
             v_peak: 2.6,         // Peak with diode drop
             tau_theta: default_tau_theta(),
             theta_low: default_theta_low(),
@@ -127,7 +126,7 @@ impl Default for NeuronMode {
             v_min: default_v_min(),
             v_max: default_v_max(),
             comparator_delay_s: 50e-9,  // 50ns comparator delay
-            reset_hold_s: 0.15e-3,      // 0.15ms reset hold
+            reset_hold_s: default_reset_hold(),
         }
     }
 }
