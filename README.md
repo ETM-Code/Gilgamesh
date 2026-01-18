@@ -113,6 +113,25 @@ cargo build --release --features dashboard
 ./target/release/gilgamesh inspect --checkpoint model.json
 ```
 
+### Web UI
+
+Interactive browser-based interface for exploring network activity:
+
+```bash
+# Build with web support
+cargo build --release --features web
+
+# Launch web server (auto-opens browser)
+./target/release/gilgamesh web
+
+# Or specify options
+./target/release/gilgamesh web --port 8080 --checkpoint model.json
+```
+
+The web UI connects to the Rust backend via WebSocket for real-time simulation.
+
+Requires: `--features web`
+
 ### SPICE Hardware Validation
 
 ```bash
@@ -326,6 +345,22 @@ The inspector shows:
 - Click "Next Sample" to cycle through random test samples
 
 Requires: `--features dashboard`
+
+### Web UI
+
+Browser-based interactive network explorer with real-time WebSocket connection.
+
+```
+gilgamesh web [OPTIONS]
+
+Options:
+  -p, --port <PORT>     Server port [default: 3000]
+  -c, --checkpoint <PATH>   Path to checkpoint file (auto-detects most recent if omitted)
+  --data-dir <PATH>     MNIST data directory [default: ./data]
+  --open <BOOL>         Open browser automatically [default: true]
+```
+
+Requires: `--features web`
 
 ### SPICE Comparison
 
