@@ -43,18 +43,19 @@ pub(crate) fn train_with_config(
     }
     println!();
 
+    let image_size = cfg.network.image_size;
     println!("Loading MNIST dataset...");
-    let dataset = MnistDataset::load(data_dir).context("Failed to load MNIST dataset")?;
+    let dataset = MnistDataset::load_with_size(data_dir, image_size)
+        .context("Failed to load MNIST dataset")?;
     println!(
         "Loaded {} training samples, {} test samples",
         dataset.train_len(),
         dataset.test_len()
     );
-    println!("Image size: {}x{} = {} features", 7, 7, dataset.feature_dim());
+    println!("Image size: {}x{} = {} features", image_size, image_size, dataset.feature_dim());
     println!();
 
     use gilgamesh::data::InputEncoder;
-    let image_size = 7;
     let input_encoder = if cfg.input_encoding.encoding_type == "temporal" {
         Some(InputEncoder::temporal(
             image_size,

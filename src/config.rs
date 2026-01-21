@@ -116,11 +116,17 @@ pub struct NetworkConfig {
     /// Output layer size (default: 10 for MNIST digits)
     #[serde(default = "default_output_size")]
     pub output_size: usize,
+
+    /// Image size for MNIST downsampling (n×n, produces n² input features)
+    /// Default: 7 (produces 49 input features)
+    #[serde(default = "default_image_size")]
+    pub image_size: usize,
 }
 
 fn default_input_size() -> usize { 49 }
 fn default_hidden_size() -> usize { 9 }
 fn default_output_size() -> usize { 10 }
+fn default_image_size() -> usize { 7 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
@@ -128,6 +134,7 @@ impl Default for NetworkConfig {
             input_size: default_input_size(),
             hidden_size: default_hidden_size(),
             output_size: default_output_size(),
+            image_size: default_image_size(),
         }
     }
 }

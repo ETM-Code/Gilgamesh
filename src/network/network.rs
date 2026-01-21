@@ -28,9 +28,9 @@ impl Network {
         let spike_grad = SurrogateGradient::fast_sigmoid(25.0);
 
         Self {
-            fc1: Linear::with_seed(input_size, hidden_size, true, seed),
+            fc1: Linear::with_seed(input_size, hidden_size, false, seed),
             lif1: Leaky::new(hidden_size, beta).with_spike_grad(spike_grad),
-            fc2: Linear::with_seed(hidden_size, output_size, true, seed.wrapping_add(1)),
+            fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new(output_size, beta).with_spike_grad(spike_grad),
         }
     }
@@ -47,9 +47,9 @@ impl Network {
         let spike_grad = SurrogateGradient::fast_sigmoid(25.0);
 
         Self {
-            fc1: Linear::with_seed(input_size, hidden_size, true, seed),
+            fc1: Linear::with_seed(input_size, hidden_size, false, seed),
             lif1: Leaky::new_physics(hidden_size, tau_m, dt).with_spike_grad(spike_grad),
-            fc2: Linear::with_seed(hidden_size, output_size, true, seed.wrapping_add(1)),
+            fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new_physics(output_size, tau_m, dt).with_spike_grad(spike_grad),
         }
     }
@@ -68,10 +68,10 @@ impl Network {
         let spike_grad = SurrogateGradient::fast_sigmoid(25.0);
 
         Self {
-            fc1: Linear::with_seed(input_size, hidden_size, true, seed),
+            fc1: Linear::with_seed(input_size, hidden_size, false, seed),
             lif1: Leaky::new_physics_with_pulse(hidden_size, tau_m, dt, tau_pulse, v_peak)
                 .with_spike_grad(spike_grad),
-            fc2: Linear::with_seed(hidden_size, output_size, true, seed.wrapping_add(1)),
+            fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new_physics_with_pulse(output_size, tau_m, dt, tau_pulse, v_peak)
                 .with_spike_grad(spike_grad),
         }
@@ -92,11 +92,11 @@ impl Network {
         let spike_grad = SurrogateGradient::fast_sigmoid(25.0);
 
         Self {
-            fc1: Linear::with_seed(input_size, hidden_size, true, seed),
+            fc1: Linear::with_seed(input_size, hidden_size, false, seed),
             lif1: Leaky::new_physics_with_threshold_adaptation(
                 hidden_size, tau_m, dt, tau_theta, theta_low, theta_high,
             ).with_spike_grad(spike_grad),
-            fc2: Linear::with_seed(hidden_size, output_size, true, seed.wrapping_add(1)),
+            fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new_physics_with_threshold_adaptation(
                 output_size, tau_m, dt, tau_theta, theta_low, theta_high,
             ).with_spike_grad(spike_grad),

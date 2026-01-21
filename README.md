@@ -14,6 +14,7 @@ A Rust implementation of hardware-accurate spiking neural networks (SNNs). Featu
 - **Interactive visualizer**: Real-time network activity with sample navigation (nannou)
 - **Training visualization**: Loss curves, accuracy, weight heatmaps in Rerun.io
 - **Checkpoint system**: Save/load trained networks for inference and visualization
+- **Synapse search**: Binary search tool to find minimum synapses for target accuracies
 
 ## Building
 
@@ -269,6 +270,53 @@ The large train-test gap with temporal encoding suggests:
 - Row-by-row presentation requires different architecture (e.g., recurrent connections, more hidden neurons)
 - May need regularization tuned for temporal dynamics
 
+## PyTorch/snntorch Comparison
+
+A Python comparison script is included to benchmark gilgamesh against standard PyTorch implementations.
+
+### Setup
+
+```bash
+# Create virtual environment with Python 3.11
+python3.11 -m venv --system-site-packages comparison/venv
+
+# Install dependencies (if not using system packages)
+source comparison/venv/bin/activate
+pip install torch torchvision snntorch matplotlib numpy
+```
+
+### Running
+
+```bash
+# Run all models (SNNs + ANNs)
+./comparison/run_comparison.sh
+
+# Or run specific models
+comparison/venv/bin/python comparison/snntorch_comparison.py --models baseline ann
+
+# Custom training
+comparison/venv/bin/python comparison/snntorch_comparison.py --epochs 20 --lr 0.0005
+```
+
+### Models Compared
+
+| Model | Type | Architecture |
+|-------|------|--------------|
+| `GilgameshSNN` | SNN | 49 → LIF(9) → LIF(10) — matches gilgamesh exactly |
+| `GilgameshSNN_Synaptic` | SNN | Dual-exponential synaptic dynamics |
+| `GilgameshSNN_Recurrent` | SNN | Recurrent connections in hidden layer |
+| `GilgameshSNN_3Layer` | SNN | 49 → LIF(9) → LIF(4) → LIF(10) |
+| `StandardANN` | ANN | 49 → ReLU(9) → 10 — non-spiking baseline |
+| `StandardANN_3Layer` | ANN | 49 → ReLU(9) → ReLU(4) → 10 |
+
+### Output
+
+Results saved to `comparison/results/`:
+- `comparison_report.md` — Accuracy comparison table
+- `training_curves.png` — Training/test accuracy plots
+- `*_weights.pt` — PyTorch state dicts
+- `*_weights.json` — JSON weights (gilgamesh-compatible format)
+
 ## Training Details
 
 - **Optimizer**: Adam with AdamW-style weight decay (0.01)
@@ -384,6 +432,43 @@ Features:
 - Compares gilgamesh spike counts against ngspice simulation
 - Outputs comparison table with predictions from both simulators
 
+### Synapse Search
+
+Find the minimum number of synapses required to achieve target accuracy levels using binary search.
+
+```bash
+# Full search (all targets: 95%, 90%, 85%, 80%, 70%)
+python3 tools/synapse_search.py
+
+# Quick test mode (5 epochs, limited image sizes)
+python3 tools/synapse_search.py --quick
+
+# Custom search
+python3 tools/synapse_search.py --targets 95 90 85 --image-sizes 5 6 7 8 --epochs 15
+
+# Specify output file
+python3 tools/synapse_search.py --output results.json
+```
+
+Options:
+- `--targets`: Target accuracies to search for (default: 95 90 85 80 70)
+- `--image-sizes`: MNIST downsampling sizes to try (default: 3-14)
+- `--epochs`: Training epochs per run (default: 15)
+- `--quick`: Quick mode with 5 epochs and limited search space
+- `--output`: Output JSON file for results
+
+The search varies:
+- **Image size**: Controls input layer size (n×n → n² features)
+- **Hidden size**: Binary search to find minimum achieving target
+
+**Synapse formula (weights only, no biases):**
+```
+Total = hidden × (input + 10)
+      = hidden × (image_size² + 10)
+```
+
+Example: 49-9-10 architecture = 9 × (49 + 10) = **531 synapses**
+
 ### Checkpoint Auto-Detection
 
 Both `inspect` and `spice` commands automatically find and use the most recently modified checkpoint file when `--checkpoint` is not specified. It searches:
@@ -415,6 +500,15 @@ src/
 ├── dashboard.rs     # Training dashboard (egui)
 ├── animation.rs     # Network animation (nannou)
 └── visualization.rs # Rerun.io visualization
+
+tools/
+└── synapse_search.py  # Binary search for minimum synapses
+
+comparison/
+├── snntorch_comparison.py  # PyTorch/snntorch training script
+├── requirements.txt        # Python dependencies
+├── run_comparison.sh       # Run script (uses venv)
+└── results/                # Output directory (generated)
 ```
 
 ## License
