@@ -9,7 +9,7 @@ type EndOfSampleBehavior = 'auto-advance' | 'stop' | 'loop';
 type PulseStyle = 'ball' | 'electricity';
 
 function App() {
-  const wsUrl = `ws://${window.location.hostname}:3000/ws`;
+  const wsUrl = `ws://${window.location.host}/ws`;
   const { connected, frame, status, topology, send } = useWebSocket(wsUrl);
 
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
