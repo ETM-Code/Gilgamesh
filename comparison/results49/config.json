@@ -1,7 +1,7 @@
 {
   "network": {
-    "input_size": 36,
-    "hidden_size": 12,
+    "input_size": 49,
+    "hidden_size": 9,
     "output_size": 10
   },
   "neuron": {

@@ -5,7 +5,7 @@ SNNTorch Comparison Networks for Gilgamesh
 This script trains spiking neural networks using PyTorch and snntorch
 with the same configuration as the gilgamesh Rust implementation:
 - 2-layer feedforward LIF SNN
-- 49 input (7x7 MNIST) -> 100 hidden -> 10 output
+- 36 input (6x6 MNIST) -> 12 hidden -> 10 output
 - Rate-coded input encoding
 - Cross-entropy loss on spike counts
 - Adam optimizer with cosine annealing
@@ -37,8 +37,8 @@ import numpy as np
 @dataclass
 class NetworkConfig:
     """Network architecture configuration."""
-    input_size: int = 49       # 7x7 downsampled MNIST
-    hidden_size: int = 9       # Hidden layer neurons (matching gilgamesh)
+    input_size: int = 36       # 6x6 downsampled MNIST
+    hidden_size: int = 12      # Hidden layer neurons (matching gilgamesh)
     output_size: int = 10      # Output classes (digits 0-9)
 
 
@@ -87,18 +87,18 @@ class Config:
 # =============================================================================
 
 class DownsampledMNIST:
-    """MNIST dataset downsampled to 7x7 pixels (matching gilgamesh)."""
+    """MNIST dataset downsampled to 6x6 pixels (matching gilgamesh)."""
 
-    def __init__(self, data_dir: str, target_size: int = 7):
+    def __init__(self, data_dir: str, target_size: int = 6):
         self.data_dir = data_dir
         self.target_size = target_size
 
-        # Transform: resize to 7x7, normalize with MNIST stats
+        # Transform: resize to 6x6, normalize with MNIST stats
         self.transform = transforms.Compose([
             transforms.Resize((target_size, target_size)),
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,)),
-            transforms.Lambda(lambda x: x.view(-1))  # Flatten to 49
+            transforms.Lambda(lambda x: x.view(-1))  # Flatten to 36
         ])
 
     def get_loaders(self, batch_size: int):
@@ -144,7 +144,7 @@ class GilgameshSNN(nn.Module):
     """
     2-layer feedforward LIF SNN matching gilgamesh architecture.
 
-    Architecture: Input(49) -> FC1 -> LIF(100) -> FC2 -> LIF(10)
+    Architecture: Input(36) -> FC1 -> LIF(12) -> FC2 -> LIF(10)
     Uses spike count output for classification.
     """
 
@@ -402,7 +402,7 @@ class StandardANN(nn.Module):
     Standard PyTorch ANN (non-spiking) for comparison.
 
     Same architecture as GilgameshSNN but with ReLU activations instead of LIF neurons.
-    Architecture: Input(49) -> FC -> ReLU(100) -> FC -> Output(10)
+    Architecture: Input(36) -> FC -> ReLU(12) -> FC -> Output(10)
     """
 
     def __init__(self, config: Config):
@@ -431,7 +431,7 @@ class StandardANN_3Layer(nn.Module):
     """
     Deeper ANN variant with 3 layers for comparison with GilgameshSNN_3Layer.
 
-    Architecture: Input(49) -> FC -> ReLU(100) -> FC -> ReLU(50) -> FC -> Output(10)
+    Architecture: Input(36) -> FC -> ReLU(12) -> FC -> ReLU(6) -> FC -> Output(10)
     """
 
     def __init__(self, config: Config):
@@ -657,8 +657,8 @@ def generate_report(results: dict, output_dir: Path):
     report.append("")
     report.append("| Parameter | Value |")
     report.append("|-----------|-------|")
-    report.append("| Input Size | 49 (7×7 MNIST) |")
-    report.append("| Hidden Size | 100 |")
+    report.append("| Input Size | 36 (6×6 MNIST) |")
+    report.append("| Hidden Size | 12 |")
     report.append("| Output Size | 10 |")
     report.append("| Beta (decay) | 0.9 |")
     report.append("| Threshold | 1.0 |")
@@ -690,7 +690,7 @@ def generate_report(results: dict, output_dir: Path):
     report.append("")
     report.append("#### GilgameshSNN (Baseline)")
     report.append("Standard 2-layer feedforward LIF SNN matching gilgamesh architecture exactly.")
-    report.append("Architecture: Input(49) → FC → LIF(100) → FC → LIF(10)")
+    report.append("Architecture: Input(36) → FC → LIF(12) → FC → LIF(10)")
     report.append("")
     report.append("#### GilgameshSNN_Synaptic")
     report.append("Uses dual exponential synaptic dynamics with separate synaptic and membrane time constants.")
@@ -699,16 +699,16 @@ def generate_report(results: dict, output_dir: Path):
     report.append("Adds recurrent connections within the hidden layer for temporal processing.")
     report.append("")
     report.append("#### GilgameshSNN_3Layer")
-    report.append("Deeper SNN with 3 layers: Input(49) → LIF(100) → LIF(50) → LIF(10)")
+    report.append("Deeper SNN with 3 layers: Input(36) → LIF(12) → LIF(6) → LIF(10)")
     report.append("")
     report.append("### Artificial Neural Networks (ANNs)")
     report.append("")
     report.append("#### StandardANN")
     report.append("Standard 2-layer feedforward ANN with ReLU activations (non-spiking baseline).")
-    report.append("Architecture: Input(49) → FC → ReLU(100) → FC → Output(10)")
+    report.append("Architecture: Input(36) → FC → ReLU(12) → FC → Output(10)")
     report.append("")
     report.append("#### StandardANN_3Layer")
-    report.append("Deeper ANN with 3 layers: Input(49) → ReLU(100) → ReLU(50) → Output(10)")
+    report.append("Deeper ANN with 3 layers: Input(36) → ReLU(12) → ReLU(6) → Output(10)")
     report.append("")
 
     report.append("## Training Curves")
@@ -856,7 +856,7 @@ def main():
     parser.add_argument('--device', type=str, default='auto',
                        help='Device (cuda, mps, cpu, or auto)')
     parser.add_argument('--models', type=str, nargs='+',
-                       default=['baseline', 'synaptic', 'recurrent', '3layer', 'ann', 'ann_3layer'],
+                       default=['ann', 'baseline'],
                        help='Models to train (baseline, synaptic, recurrent, 3layer, ann, ann_3layer)')
 
     args = parser.parse_args()
@@ -904,8 +904,8 @@ def main():
     print(f"\nConfiguration saved to {config_path}")
 
     # Load data
-    print("\nLoading MNIST dataset (7x7 downsampled)...")
-    dataset = DownsampledMNIST(args.data_dir, target_size=7)
+    print("\nLoading MNIST dataset (6x6 downsampled)...")
+    dataset = DownsampledMNIST(args.data_dir, target_size=6)
     train_loader, test_loader = dataset.get_loaders(args.batch_size)
     print(f"Train samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")

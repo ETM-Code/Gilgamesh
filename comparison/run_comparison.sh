@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run SNNTorch comparison training
-# Uses gilgamesh configuration: 49→100→10 LIF SNN, 15 epochs, batch 128
+# Uses gilgamesh configuration: 36→12→10 LIF SNN, 15 epochs, batch 128
 
 set -e
 
