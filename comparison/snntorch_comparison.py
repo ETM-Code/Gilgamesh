@@ -89,17 +89,28 @@ class Config:
 class DownsampledMNIST:
     """MNIST dataset downsampled to 6x6 pixels (matching gilgamesh)."""
 
-    def __init__(self, data_dir: str, target_size: int = 6):
+    def __init__(self, data_dir: str, target_size: int = 6, use_int8_range: bool = False):
         self.data_dir = data_dir
         self.target_size = target_size
+        self.use_int8_range = use_int8_range
 
-        # Transform: resize to 6x6, normalize with MNIST stats
-        self.transform = transforms.Compose([
-            transforms.Resize((target_size, target_size)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,)),
-            transforms.Lambda(lambda x: x.view(-1))  # Flatten to 36
-        ])
+        if use_int8_range:
+            # Transform for int8 range: pixel values in [-128, 127]
+            # ToTensor gives [0, 1], multiply by 255 to get [0, 255], subtract 128 to get [-128, 127]
+            self.transform = transforms.Compose([
+                transforms.Resize((target_size, target_size)),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x * 255.0 - 128.0),  # [0,1] -> [-128, 127]
+                transforms.Lambda(lambda x: x.view(-1))  # Flatten to 36
+            ])
+        else:
+            # Transform: resize to 6x6, normalize with MNIST stats (original behavior)
+            self.transform = transforms.Compose([
+                transforms.Resize((target_size, target_size)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.1307,), (0.3081,)),
+                transforms.Lambda(lambda x: x.view(-1))  # Flatten to 36
+            ])
 
     def get_loaders(self, batch_size: int):
         """Get train and test data loaders."""
@@ -650,6 +661,230 @@ class FixedScaleLinear(nn.Module):
         out_q = fixed_scale_quantize(acc, self.output_scale, self.bits)
 
         return out_q, self.output_scale.clone()
+
+
+# =============================================================================
+# Power-of-2 Scale Quantization (Shift-based for embedded deployment)
+# =============================================================================
+
+class PowerOf2Quantize(torch.autograd.Function):
+    """
+    Power-of-2 scale quantization with straight-through estimator.
+
+    Scale is constrained to 2^shift where shift is an integer.
+    This allows efficient implementation using bit shifts on embedded devices.
+    """
+
+    @staticmethod
+    def forward(ctx, x, shift, bits):
+        qmin = -(1 << (bits - 1))
+        qmax = (1 << (bits - 1)) - 1
+
+        # Scale = 2^shift
+        scale = (2.0 ** shift)
+
+        # Quantize: x_int = round(x / scale), clamped to [qmin, qmax]
+        x_scaled = x / scale
+        x_rounded = x_scaled.round()
+        x_clamped = x_rounded.clamp(qmin, qmax)
+
+        # Dequantize for training: x_dequant = x_int * scale
+        x_dequant = x_clamped * scale
+
+        return x_dequant
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # Straight-through estimator
+        return grad_output, None, None
+
+
+def power_of_2_quantize(x, shift, bits):
+    """Convenience function for power-of-2 quantization."""
+    return PowerOf2Quantize.apply(x, shift, bits)
+
+
+def compute_shift_for_range(abs_max: torch.Tensor, bits: int) -> int:
+    """
+    Compute the shift amount needed to represent a value range in n bits.
+
+    For a value with |x| <= abs_max, we want:
+        x_int = round(x / 2^shift)  where  |x_int| <= qmax
+
+    So: shift = ceil(log2(abs_max / qmax))
+    """
+    qmax = (1 << (bits - 1)) - 1
+
+    if abs_max < 1e-10:
+        return 0
+
+    # shift = ceil(log2(abs_max / qmax))
+    # Using log2(a/b) = log2(a) - log2(b)
+    log2_ratio = torch.log2(abs_max / qmax)
+    shift = int(torch.ceil(log2_ratio).item())
+
+    return shift
+
+
+class ShiftScaleLinear(nn.Module):
+    """
+    Linear layer with power-of-2 scale factors for efficient embedded inference.
+
+    Instead of float scales, uses integer shift amounts:
+        real_value = int_value * 2^shift  (or int_value << shift)
+
+    This allows the embedded device to use bit shifts instead of multiplies.
+    """
+
+    def __init__(self, in_features, out_features, bits=8, bias=True, ema_decay=0.999):
+        super().__init__()
+        self.bits = bits
+        self.qmax = (1 << (bits - 1)) - 1
+        self.qmin = -(1 << (bits - 1))
+        self.ema_decay = ema_decay
+        self.in_features = in_features
+        self.out_features = out_features
+
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+
+        # Register shift amounts as buffers (integers stored as float for gradient flow)
+        # Initialize conservatively
+        self.register_buffer('weight_shift', torch.tensor(-7.0))  # scale ≈ 0.0078
+        self.register_buffer('bias_shift', torch.tensor(-7.0))
+        self.register_buffer('output_shift', torch.tensor(-4.0))  # scale ≈ 0.0625
+
+        # Track observed ranges for shift computation (EMA)
+        self.register_buffer('weight_abs_max', torch.tensor(0.1))
+        self.register_buffer('bias_abs_max', torch.tensor(0.1))
+        self.register_buffer('output_abs_max', torch.tensor(1.0))
+
+    def update_shifts(self):
+        """Update shift amounts based on observed weight/activation ranges."""
+        with torch.no_grad():
+            # Update weight shift
+            w_abs_max = self.linear.weight.abs().max().clamp(min=1e-8)
+            self.weight_abs_max.copy_(
+                self.ema_decay * self.weight_abs_max + (1 - self.ema_decay) * w_abs_max
+            )
+            self.weight_shift.copy_(torch.tensor(
+                float(compute_shift_for_range(self.weight_abs_max, self.bits))
+            ))
+
+            # Update bias shift
+            if self.linear.bias is not None:
+                b_abs_max = self.linear.bias.abs().max().clamp(min=1e-8)
+                self.bias_abs_max.copy_(
+                    self.ema_decay * self.bias_abs_max + (1 - self.ema_decay) * b_abs_max
+                )
+                self.bias_shift.copy_(torch.tensor(
+                    float(compute_shift_for_range(self.bias_abs_max, self.bits))
+                ))
+
+    def forward(self, x, x_shift):
+        """
+        Forward pass simulating shift-based integer arithmetic.
+
+        Args:
+            x: Input tensor (dequantized float representation)
+            x_shift: Shift amount of input (integer as float tensor)
+
+        Returns:
+            output: Quantized output (dequantized float representation)
+            output_shift: Shift amount of output
+        """
+        # Update shifts during training
+        if self.training:
+            self.update_shifts()
+
+        # Quantize weights with power-of-2 scale
+        w_q = power_of_2_quantize(self.linear.weight, self.weight_shift, self.bits)
+
+        # Quantize bias
+        if self.linear.bias is not None:
+            b_q = power_of_2_quantize(self.linear.bias, self.bias_shift, self.bits)
+        else:
+            b_q = None
+
+        # Matmul in dequantized domain
+        # Note: In true integer arithmetic, acc = x_int @ w_int (int32)
+        # The combined scale would be 2^(x_shift + weight_shift)
+        acc = F.linear(x, w_q, b_q)
+
+        # Update output shift based on accumulator range
+        with torch.no_grad():
+            acc_abs_max = acc.abs().max().clamp(min=1e-8)
+            self.output_abs_max.copy_(
+                self.ema_decay * self.output_abs_max + (1 - self.ema_decay) * acc_abs_max
+            )
+            self.output_shift.copy_(torch.tensor(
+                float(compute_shift_for_range(self.output_abs_max, self.bits))
+            ))
+
+        # Requantize output
+        out_q = power_of_2_quantize(acc, self.output_shift, self.bits)
+
+        return out_q, self.output_shift.clone()
+
+    def get_requant_shift(self, input_shift):
+        """
+        Compute the combined shift needed for requantization after matmul.
+
+        After matmul: acc_scale = 2^(input_shift + weight_shift)
+        To requantize to output_shift: right_shift = input_shift + weight_shift - output_shift
+        """
+        return int(input_shift.item()) + int(self.weight_shift.item()) - int(self.output_shift.item())
+
+    def get_bias_align_shift(self, input_shift):
+        """
+        Compute shift to align bias to accumulator scale.
+
+        Accumulator scale: 2^(input_shift + weight_shift)
+        Bias scale: 2^(bias_shift)
+        To align: left_shift = input_shift + weight_shift - bias_shift (if positive, shift left)
+        """
+        return int(input_shift.item()) + int(self.weight_shift.item()) - int(self.bias_shift.item())
+
+
+class StandardANN_Int8_Shift(nn.Module):
+    """
+    8-bit quantized ANN using power-of-2 scales (shift-based).
+
+    All scales are 2^shift, enabling pure bit-shift operations on embedded devices.
+    No floating point needed during inference.
+
+    IMPORTANT: This model expects inputs in the range [-128, 127] (int8 range).
+    Use DownsampledMNIST with use_int8_range=True for training.
+    """
+
+    def __init__(self, config: Config):
+        super().__init__()
+
+        net = config.network
+        self.bits = 8
+        self.qmax = 127
+
+        self.fc1 = ShiftScaleLinear(net.input_size, net.hidden_size, bits=8)
+        self.fc2 = ShiftScaleLinear(net.hidden_size, net.output_size, bits=8)
+
+        # Input shift = 0 because inputs are already int8 values [-128, 127]
+        # scale = 2^0 = 1, meaning int_value = real_value
+        self.register_buffer('input_shift', torch.tensor(0.0))
+
+    def forward(self, x):
+        # Input is already in int8 range [-128, 127], no quantization needed
+        # Just clamp to ensure we're in valid range (defensive)
+        x_q = x.clamp(-128, 127).round()
+
+        # Layer 1: FC + ReLU
+        h, h_shift = self.fc1(x_q, self.input_shift)
+        h = F.relu(h)
+        # ReLU doesn't change scale, but we requantize
+        h_q = power_of_2_quantize(h, h_shift, self.bits)
+
+        # Layer 2: FC (no ReLU on output)
+        out, out_shift = self.fc2(h_q, h_shift)
+
+        return out, [], []
 
 
 class StandardANN_Int8_Fixed(nn.Module):
@@ -1699,23 +1934,62 @@ def quantize_with_fixed_scale(tensor: torch.Tensor, scale: float, bits: int) -> 
     return int_weights, scale, 0
 
 
+def quantize_with_shift(tensor: torch.Tensor, shift: int, bits: int) -> tuple:
+    """
+    Quantize a tensor using a power-of-2 scale (shift amount).
+
+    Returns:
+        int_weights: numpy array of integers
+        shift: the shift amount used (scale = 2^shift)
+        zero_point: always 0 for symmetric quantization
+    """
+    qmin = -(1 << (bits - 1))
+    qmax = (1 << (bits - 1)) - 1
+
+    if bits <= 8:
+        dtype = np.int8
+    else:
+        dtype = np.int16
+
+    scale = 2.0 ** shift
+    tensor_np = tensor.detach().cpu().numpy()
+    int_weights = np.clip(np.round(tensor_np / scale), qmin, qmax).astype(dtype)
+
+    return int_weights, shift, 0
+
+
 def export_embedded_weights(model: nn.Module, name: str, bits: int, output_dir: Path, config: Config):
     """
     Export model weights for embedded deployment.
 
     Generates:
-    - C header file with integer weights and scale factors
+    - C header file with integer weights and scale factors (or shift amounts)
     - Binary file with packed weights
     - JSON metadata file
 
+    For shift-based models (*_shift), uses integer shift amounts instead of float scales.
     For fixed-scale models (*_fixed), uses the stored scales from training.
     For dynamic-scale models, computes scales from weight values.
     """
     output_dir = Path(output_dir)
     state_dict = model.state_dict()
 
+    # Check if this is a shift-based model by looking for weight_shift buffers
+    is_shift_based = any('weight_shift' in key for key in state_dict.keys())
+
     # Check if this is a fixed-scale model by looking for weight_scale buffers
     is_fixed_scale = any('weight_scale' in key for key in state_dict.keys())
+
+    # Build a map of layer -> stored shifts for shift-based models
+    stored_shifts = {}
+    if is_shift_based:
+        for key, tensor in state_dict.items():
+            if 'weight_shift' in key or 'bias_shift' in key or 'output_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_type = key.split('.')[-1]
+                if layer_name not in stored_shifts:
+                    stored_shifts[layer_name] = {}
+                stored_shifts[layer_name][shift_type] = int(tensor.item())
 
     # Build a map of layer -> stored scales for fixed-scale models
     stored_scales = {}
@@ -1732,6 +2006,22 @@ def export_embedded_weights(model: nn.Module, name: str, bits: int, output_dir: 
     # Collect quantized weights
     quantized_layers = {}
 
+    # Collect shift amounts for shift-based models
+    shift_amounts = {}
+    if is_shift_based:
+        for key, tensor in state_dict.items():
+            if key == 'input_shift':
+                shift_amounts['input_shift'] = int(tensor.item())
+            elif 'output_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_amounts[f'{layer_name}_output_shift'] = int(tensor.item())
+            elif 'weight_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_amounts[f'{layer_name}_weight_shift'] = int(tensor.item())
+            elif 'bias_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_amounts[f'{layer_name}_bias_shift'] = int(tensor.item())
+
     # Also collect input_scale and output_scales for fixed-scale models
     inference_scales = {}
     if is_fixed_scale:
@@ -1745,16 +2035,38 @@ def export_embedded_weights(model: nn.Module, name: str, bits: int, output_dir: 
                 inference_scales['mem_scale'] = tensor.item()
 
     for key, tensor in state_dict.items():
-        # Skip scale buffers and other non-weight tensors
-        if 'scale' in key or 'calibrated' in key:
+        # Skip scale/shift buffers and other non-weight tensors
+        if 'scale' in key or 'shift' in key or 'calibrated' in key or 'abs_max' in key:
             continue
 
         # Handle nested QuantizedLinear layers
         clean_key = key.replace('.linear.', '_').replace('.', '_')
 
         if 'weight' in key or 'bias' in key:
-            # Determine which scale to use
-            if is_fixed_scale:
+            # Determine which quantization method to use
+            if is_shift_based:
+                # Use shift-based quantization
+                layer_name = key.split('.')[0]
+                if 'weight' in key and layer_name in stored_shifts:
+                    shift = stored_shifts[layer_name].get('weight_shift', -7)
+                elif 'bias' in key and layer_name in stored_shifts:
+                    shift = stored_shifts[layer_name].get('bias_shift', -7)
+                else:
+                    shift = -7  # Default
+
+                int_vals, shift_val, zp = quantize_with_shift(tensor, shift, bits)
+                # Store shift instead of scale
+                quantized_layers[clean_key] = {
+                    'values': int_vals,
+                    'scale': 2.0 ** shift_val,  # For compatibility
+                    'shift': shift_val,
+                    'zero_point': zp,
+                    'shape': list(tensor.shape),
+                    'bits': bits
+                }
+                continue
+
+            elif is_fixed_scale:
                 # Extract layer name (e.g., 'fc1' from 'fc1.linear.weight')
                 layer_name = key.split('.')[0]
                 if 'weight' in key and layer_name in stored_scales:
@@ -1781,6 +2093,10 @@ def export_embedded_weights(model: nn.Module, name: str, bits: int, output_dir: 
 
     # Add inference scales to quantized_layers metadata
     quantized_layers['_inference_scales'] = inference_scales
+
+    # Add shift amounts for shift-based models
+    if is_shift_based:
+        quantized_layers['_shift_amounts'] = shift_amounts
 
     # Generate C header file
     header_path = output_dir / f"{name}_weights_{bits}bit.h"
@@ -1845,6 +2161,46 @@ def _generate_c_header(name: str, bits: int, layers: dict, config: Config, path:
         lines.append(f"#define {name.upper()}_THRESHOLD   {int(config.neuron.threshold * (1 << (bits-1)))}")
         lines.append(f"")
 
+    # Check if this is a shift-based model
+    shift_amounts = layers.get('_shift_amounts', {})
+    if shift_amounts:
+        # Output shift amounts for shift-based inference (THIS IS WHAT ARDUINO USES)
+        lines.append(f"/* Shift amounts for integer-only inference (scale = 2^shift) */")
+        lines.append(f"/* Use these for requantization: out = (acc + (1 << (shift-1))) >> shift */")
+        for shift_name, shift_val in shift_amounts.items():
+            define_name = f"{name.upper()}_{shift_name.upper()}"
+            lines.append(f"#define {define_name} ({shift_val})")
+        lines.append(f"")
+
+        # Compute and output the combined requantization shifts
+        lines.append(f"/* Pre-computed shift amounts for integer-only inference */")
+        lines.append(f"/* Convention: positive = left shift, negative = right shift */")
+        lines.append(f"/* Use shift_round() helper: if shift >= 0: x << shift, else: (x + (1 << (-shift-1))) >> (-shift) */")
+        input_shift = shift_amounts.get('input_shift', -7)
+        fc1_w_shift = shift_amounts.get('fc1_weight_shift', -7)
+        fc1_b_shift = shift_amounts.get('fc1_bias_shift', -7)
+        fc1_out_shift = shift_amounts.get('fc1_output_shift', -4)
+        fc2_w_shift = shift_amounts.get('fc2_weight_shift', -7)
+        fc2_b_shift = shift_amounts.get('fc2_bias_shift', -7)
+        fc2_out_shift = shift_amounts.get('fc2_output_shift', -4)
+
+        # Layer 1 accumulator shift
+        fc1_acc_shift = input_shift + fc1_w_shift
+        # Requant: out = acc * 2^(acc_shift - out_shift), positive=left, negative=right
+        fc1_requant = fc1_acc_shift - fc1_out_shift
+        # Bias align: b_aligned = b * 2^(b_shift - acc_shift), positive=left, negative=right
+        fc1_bias_align = fc1_b_shift - fc1_acc_shift
+        lines.append(f"#define {name.upper()}_FC1_REQUANT_SHIFT ({fc1_requant})  /* acc_shift - out_shift */")
+        lines.append(f"#define {name.upper()}_FC1_BIAS_ALIGN_SHIFT ({fc1_bias_align})  /* bias_shift - acc_shift */")
+
+        # Layer 2 accumulator shift (input to FC2 has fc1_out_shift)
+        fc2_acc_shift = fc1_out_shift + fc2_w_shift
+        fc2_requant = fc2_acc_shift - fc2_out_shift
+        fc2_bias_align = fc2_b_shift - fc2_acc_shift
+        lines.append(f"#define {name.upper()}_FC2_REQUANT_SHIFT ({fc2_requant})  /* acc_shift - out_shift */")
+        lines.append(f"#define {name.upper()}_FC2_BIAS_ALIGN_SHIFT ({fc2_bias_align})  /* bias_shift - acc_shift */")
+        lines.append(f"")
+
     # Optional scale factors (for debugging/verification only - not needed for inference)
     lines.append(f"/*")
     lines.append(f" * OPTIONAL: Scale factors for debugging/verification.")
@@ -1865,7 +2221,7 @@ def _generate_c_header(name: str, bits: int, layers: dict, config: Config, path:
     # Weight scale factors
     lines.append(f"/* Weight Scale Factors (real_value = int_value * scale) */")
     for layer_name, layer_data in layers.items():
-        if layer_name == '_inference_scales':
+        if layer_name.startswith('_'):
             continue
         scale_name = f"{name.upper()}_{layer_name.upper()}_SCALE"
         lines.append(f"#define {scale_name} {layer_data['scale']:.10f}f")
@@ -1875,7 +2231,7 @@ def _generate_c_header(name: str, bits: int, layers: dict, config: Config, path:
 
     # Weight arrays (integer values - this is all you need for inference)
     for layer_name, layer_data in layers.items():
-        if layer_name == '_inference_scales':
+        if layer_name.startswith('_'):  # Skip metadata entries
             continue
         shape = layer_data['shape']
         values = layer_data['values'].flatten()
@@ -1925,7 +2281,7 @@ def _generate_binary_weights(layers: dict, bits: int, path: Path):
     """Generate binary file with packed weights."""
     with open(path, 'wb') as f:
         for layer_name, layer_data in layers.items():
-            if layer_name == '_inference_scales':
+            if layer_name.startswith('_'):  # Skip metadata entries
                 continue
             values = layer_data['values'].flatten()
 
@@ -1963,11 +2319,12 @@ def _generate_metadata(name: str, bits: int, layers: dict, config: Config, path:
             'num_steps': config.training.num_steps
         },
         'layers': {},
-        'inference_scales': layers.get('_inference_scales', {})
+        'inference_scales': layers.get('_inference_scales', {}),
+        'shift_amounts': layers.get('_shift_amounts', {})
     }
 
     for layer_name, layer_data in layers.items():
-        if layer_name == '_inference_scales':
+        if layer_name.startswith('_'):  # Skip metadata entries
             continue
         meta['layers'][layer_name] = {
             'shape': layer_data['shape'],
@@ -1975,6 +2332,9 @@ def _generate_metadata(name: str, bits: int, layers: dict, config: Config, path:
             'zero_point': int(layer_data['zero_point']),
             'bits': int(layer_data['bits'])
         }
+        # Include shift if present (for shift-based models)
+        if 'shift' in layer_data:
+            meta['layers'][layer_name]['shift'] = int(layer_data['shift'])
 
     with open(path, 'w') as f:
         json.dump(meta, f, indent=2)
@@ -2091,6 +2451,145 @@ class IntegerInferenceANN:
             h_int, h_scale,
             self.fc2_w, self.fc2_w_scale,
             self.fc2_b, self.fc2_b_scale
+        )
+
+        return out_int  # Return integer logits for argmax
+
+
+class IntegerInferenceANN_Shift:
+    """
+    Pure integer inference for ANN using ONLY bit shifts - no floating point.
+
+    This is what the embedded Arduino code should implement.
+    All requantization uses bit shifts instead of float multiplies.
+    """
+
+    def __init__(self, weights: dict, bits: int):
+        """
+        Args:
+            weights: dict containing int weights and shift amounts
+            bits: 8, 4, or 16
+        """
+        self.bits = bits
+        self.qmax = (1 << (bits - 1)) - 1
+        self.qmin = -(1 << (bits - 1))
+
+        # Extract weights (int8 arrays)
+        self.fc1_w = weights['fc1_weight']['values']
+        self.fc1_b = weights['fc1_bias']['values']
+        self.fc2_w = weights['fc2_weight']['values']
+        self.fc2_b = weights['fc2_bias']['values']
+
+        # Extract shift amounts (integers)
+        shifts = weights.get('_shift_amounts', {})
+        self.input_shift = shifts.get('input_shift', -7)
+        self.fc1_weight_shift = shifts.get('fc1_weight_shift', -7)
+        self.fc1_bias_shift = shifts.get('fc1_bias_shift', -7)
+        self.fc1_output_shift = shifts.get('fc1_output_shift', -4)
+        self.fc2_weight_shift = shifts.get('fc2_weight_shift', -7)
+        self.fc2_bias_shift = shifts.get('fc2_bias_shift', -7)
+        self.fc2_output_shift = shifts.get('fc2_output_shift', -4)
+
+    def quantize_input(self, x: np.ndarray) -> np.ndarray:
+        """Quantize float input to integer using input_shift."""
+        scale = 2.0 ** self.input_shift
+        x_int = np.clip(np.round(x / scale), self.qmin, self.qmax).astype(np.int32)
+        return x_int
+
+    def shift_right_round(self, x: np.ndarray, shift: int) -> np.ndarray:
+        """
+        Arithmetic right shift with rounding.
+        Equivalent to: round(x / 2^shift) but using only integer operations.
+        """
+        if shift <= 0:
+            return x << (-shift)
+
+        # Add rounding bias (half of divisor)
+        rounding = 1 << (shift - 1)
+        return (x + rounding) >> shift
+
+    def integer_matmul_shift(self, x_int: np.ndarray, x_shift: int,
+                              w_int: np.ndarray, w_shift: int,
+                              b_int: np.ndarray, b_shift: int,
+                              out_shift: int) -> np.ndarray:
+        """
+        True integer matrix multiplication with shift-based requantization.
+
+        Computes: y = (x @ w.T + b) >> combined_shift
+
+        The math:
+        - acc = x_int @ w_int.T  (in int32)
+        - acc_scale = 2^(x_shift + w_shift)
+        - We need output with scale 2^out_shift
+        - So: out_int = acc >> (x_shift + w_shift - out_shift)
+        - Bias needs alignment: b_aligned = b_int << (x_shift + w_shift - b_shift)
+        """
+        # int32 accumulator for matmul
+        acc = np.dot(x_int.astype(np.int32), w_int.T.astype(np.int32))
+
+        # Accumulator scale exponent
+        acc_shift = x_shift + w_shift
+
+        # Align bias to accumulator scale
+        # If acc has scale 2^acc_shift and bias has scale 2^b_shift,
+        # to add bias to acc (both in integer units at scale 2^acc_shift),
+        # we need: b_aligned = b_int * 2^(b_shift - acc_shift)
+        # Because: b_float = b_int * 2^b_shift = (b_int * 2^(b_shift - acc_shift)) * 2^acc_shift
+        bias_align_shift = b_shift - acc_shift
+        if bias_align_shift >= 0:
+            b_aligned = b_int.astype(np.int32) << bias_align_shift
+        else:
+            b_aligned = self.shift_right_round(b_int.astype(np.int32), -bias_align_shift)
+
+        acc = acc + b_aligned
+
+        # Requantize to output scale
+        # out_int = acc_int * 2^(acc_shift - out_shift)
+        # If acc_shift - out_shift > 0: multiply (left shift)
+        # If acc_shift - out_shift < 0: divide (right shift)
+        requant_shift = acc_shift - out_shift
+        if requant_shift >= 0:
+            out_int = acc << requant_shift  # Left shift = multiply by 2^requant_shift
+        else:
+            out_int = self.shift_right_round(acc, -requant_shift)  # Right shift = divide
+
+        # Clamp to output range
+        out_int = np.clip(out_int, self.qmin, self.qmax).astype(np.int32)
+
+        return out_int
+
+    def integer_relu(self, x_int: np.ndarray) -> np.ndarray:
+        """Integer ReLU - just clamp negatives to zero."""
+        return np.maximum(x_int, 0)
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """
+        Forward pass using only integer arithmetic and bit shifts.
+
+        Args:
+            x: Float input [batch, 36]
+
+        Returns:
+            logits: Integer logits [batch, 10] (for argmax classification)
+        """
+        # Quantize input
+        x_int = self.quantize_input(x)
+
+        # Layer 1: FC + ReLU
+        h_int = self.integer_matmul_shift(
+            x_int, self.input_shift,
+            self.fc1_w, self.fc1_weight_shift,
+            self.fc1_b, self.fc1_bias_shift,
+            self.fc1_output_shift
+        )
+        h_int = self.integer_relu(h_int)
+
+        # Layer 2: FC (no activation for output)
+        out_int = self.integer_matmul_shift(
+            h_int, self.fc1_output_shift,
+            self.fc2_w, self.fc2_weight_shift,
+            self.fc2_b, self.fc2_bias_shift,
+            self.fc2_output_shift
         )
 
         return out_int  # Return integer logits for argmax
@@ -2268,19 +2767,72 @@ def verify_integer_inference(model: nn.Module, model_key: str, bits: int,
     state_dict = model.state_dict()
     weights = {}
 
-    for key, tensor in state_dict.items():
-        clean_key = key.replace('.linear.', '_').replace('.', '_')
-        if 'weight' in key or 'bias' in key:
-            int_vals, scale, zp = quantize_for_embedded(tensor, bits)
-            weights[clean_key] = {
-                'values': int_vals,
-                'scale': scale,
-                'zero_point': zp
-            }
+    # Check if this is a shift-based model
+    is_shift_based = 'shift' in model_key or any('weight_shift' in key for key in state_dict.keys())
+
+    # Extract shift amounts for shift-based models
+    if is_shift_based:
+        shift_amounts = {}
+        stored_shifts = {}
+
+        for key, tensor in state_dict.items():
+            if 'weight_shift' in key or 'bias_shift' in key or 'output_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_type = key.split('.')[-1]
+                if layer_name not in stored_shifts:
+                    stored_shifts[layer_name] = {}
+                stored_shifts[layer_name][shift_type] = int(tensor.item())
+
+            if key == 'input_shift':
+                shift_amounts['input_shift'] = int(tensor.item())
+            elif 'output_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_amounts[f'{layer_name}_output_shift'] = int(tensor.item())
+            elif 'weight_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_amounts[f'{layer_name}_weight_shift'] = int(tensor.item())
+            elif 'bias_shift' in key:
+                layer_name = key.split('.')[0]
+                shift_amounts[f'{layer_name}_bias_shift'] = int(tensor.item())
+
+        # Quantize weights using shifts
+        for key, tensor in state_dict.items():
+            if 'scale' in key or 'shift' in key or 'calibrated' in key or 'abs_max' in key:
+                continue
+            clean_key = key.replace('.linear.', '_').replace('.', '_')
+            if 'weight' in key or 'bias' in key:
+                layer_name = key.split('.')[0]
+                if 'weight' in key and layer_name in stored_shifts:
+                    shift = stored_shifts[layer_name].get('weight_shift', -7)
+                elif 'bias' in key and layer_name in stored_shifts:
+                    shift = stored_shifts[layer_name].get('bias_shift', -7)
+                else:
+                    shift = -7
+                int_vals, shift_val, zp = quantize_with_shift(tensor, shift, bits)
+                weights[clean_key] = {
+                    'values': int_vals,
+                    'scale': 2.0 ** shift_val,
+                    'shift': shift_val,
+                    'zero_point': zp
+                }
+
+        weights['_shift_amounts'] = shift_amounts
+    else:
+        for key, tensor in state_dict.items():
+            clean_key = key.replace('.linear.', '_').replace('.', '_')
+            if 'weight' in key or 'bias' in key:
+                int_vals, scale, zp = quantize_for_embedded(tensor, bits)
+                weights[clean_key] = {
+                    'values': int_vals,
+                    'scale': scale,
+                    'zero_point': zp
+                }
 
     # Create integer inference engine
     is_snn = 'baseline' in model_key or 'snn' in model_key.lower()
-    if is_snn:
+    if is_shift_based:
+        int_engine = IntegerInferenceANN_Shift(weights, bits)
+    elif is_snn:
         int_engine = IntegerInferenceSNN(weights, bits, config)
     else:
         int_engine = IntegerInferenceANN(weights, bits)
@@ -2397,12 +2949,22 @@ def main():
 
     print(f"\nConfiguration saved to {config_path}")
 
-    # Load data
+    # Check if any shift-based models are requested (they need int8 input range)
+    shift_models = [m for m in args.models if 'shift' in m]
+    other_models = [m for m in args.models if 'shift' not in m]
+
+    # Load datasets
     print("\nLoading MNIST dataset (6x6 downsampled)...")
-    dataset = DownsampledMNIST(args.data_dir, target_size=6)
-    train_loader, test_loader = dataset.get_loaders(args.batch_size)
-    print(f"Train samples: {len(train_loader.dataset)}")
-    print(f"Test samples: {len(test_loader.dataset)}")
+    if other_models:
+        dataset_normalized = DownsampledMNIST(args.data_dir, target_size=6, use_int8_range=False)
+        train_loader_norm, test_loader_norm = dataset_normalized.get_loaders(args.batch_size)
+        print(f"  Normalized dataset: {len(train_loader_norm.dataset)} train, {len(test_loader_norm.dataset)} test")
+
+    if shift_models:
+        dataset_int8 = DownsampledMNIST(args.data_dir, target_size=6, use_int8_range=True)
+        train_loader_int8, test_loader_int8 = dataset_int8.get_loaders(args.batch_size)
+        print(f"  Int8 range dataset: {len(train_loader_int8.dataset)} train, {len(test_loader_int8.dataset)} test")
+        print("  (Int8 range: inputs in [-128, 127] for shift-based models)")
 
     # Model configurations
     model_classes = {
@@ -2425,6 +2987,8 @@ def main():
         'baseline_int8_fixed': ('GilgameshSNN_Int8_Fixed', GilgameshSNN_Int8_Fixed),
         'baseline_int4_fixed': ('GilgameshSNN_Int4_Fixed', GilgameshSNN_Int4_Fixed),
         'baseline_int16_fixed': ('GilgameshSNN_Int16_Fixed', GilgameshSNN_Int16_Fixed),
+        # Shift-based models (power-of-2 scales for pure integer inference with bit shifts)
+        'ann_int8_shift': ('StandardANN_Int8_Shift', StandardANN_Int8_Shift),
     }
 
     # Train selected models
@@ -2437,8 +3001,17 @@ def main():
 
         name, ModelClass = model_classes[model_key]
 
-        print(f"\n{'='*60}")
-        print(f"Training {name}")
+        # Select appropriate data loaders based on model type
+        if 'shift' in model_key:
+            train_loader = train_loader_int8
+            test_loader = test_loader_int8
+            print(f"\n{'='*60}")
+            print(f"Training {name} (using int8 input range [-128, 127])")
+        else:
+            train_loader = train_loader_norm
+            test_loader = test_loader_norm
+            print(f"\n{'='*60}")
+            print(f"Training {name}")
         print('='*60)
 
         model = ModelClass(config)
