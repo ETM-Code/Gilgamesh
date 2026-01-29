@@ -148,15 +148,32 @@ gilgamesh spice --run-ngspice
 Default architecture for MNIST classification:
 
 ```
-Input (49) → Linear → LIF (100) → Linear → LIF (10) → Spike Count → Prediction
+Input (36) → Linear → LIF (12) → Linear → LIF (10) → Spike Count → Prediction
      │              └─ hidden layer ─┘           └─ output layer ─┘
-     └─ 7x7 downsampled MNIST images
+     └─ 6x6 downsampled MNIST images
 ```
 
-- **Input**: 49 features (7x7 pixels)
-- **Hidden**: 100 LIF neurons with surrogate gradient
+- **Input**: 36 features (6x6 pixels)
+- **Hidden**: 12 LIF neurons with surrogate gradient
 - **Output**: 10 LIF neurons (one per digit class)
-- **Parameters**: 6,010 total (49×100 + 100 + 100×10 + 10)
+- **Parameters**: 552 total (36×12 + 12×10)
+
+### Architecture Comparison
+
+| Architecture | Image | Params | Test Accuracy |
+|--------------|-------|--------|---------------|
+| 36-3-10 | 6x6 | 138 | 49.73% |
+| 36-4-10 | 6x6 | 184 | 49.41% |
+| 36-5-10 | 6x6 | 230 | 74.97% |
+| 36-6-10 | 6x6 | 276 | 85.05% |
+| 36-9-10 | 6x6 | 414 | 89.34% |
+| 36-11-10 | 6x6 | 506 | 89.46% |
+| **36-12-10** | **6x6** | **552** | **91.38%** |
+| 49-9-10 | 7x7 | 531 | 90.14% |
+
+**Minimum for 85% accuracy:** 36-6-10 with 276 synapses.
+
+The default 6x6 with 12 hidden neurons achieves the best accuracy while keeping parameters minimal for embedded deployment.
 
 ## Modes of Operation
 
@@ -187,11 +204,11 @@ The equivalence: `beta = exp(-dt / tau_m)`, so `tau_m = -dt / ln(beta)`
 ## Input Encoding Modes
 
 ### Rate-Coded (default)
-All 49 pixels presented simultaneously at every timestep. The pixel intensity determines spike probability or input current.
+All 36 pixels presented simultaneously at every timestep. The pixel intensity determines spike probability or input current.
 
 ### Temporal Encoding
 Rows presented sequentially, mimicking hardware scanning:
-- 7 rows presented over time with configurable spacing
+- 6 rows presented over time with configurable spacing
 - `row_spacing`: Time between rows (default: 1.5ms)
 - `pulse_width`: Fraction of row spacing for pulse (default: 90%)
 
@@ -212,9 +229,10 @@ All parameters are configurable via JSON:
 {
   "mode": "physics",
   "network": {
-    "input_size": 49,
-    "hidden_size": 100,
-    "output_size": 10
+    "input_size": 36,
+    "hidden_size": 12,
+    "output_size": 10,
+    "image_size": 6
   },
   "neuron": {
     "beta": 0.9,
@@ -247,7 +265,7 @@ All parameters are configurable via JSON:
 
 ## Benchmark Results
 
-All tests on MNIST (60k train, 10k test, 7x7 downsampled), 15 epochs:
+All tests on MNIST (60k train, 10k test, 6x6 downsampled), 15 epochs:
 
 | Test | Mode | Input Encoding | Analog | Best Test Acc | Notes |
 |------|------|----------------|--------|---------------|-------|
@@ -302,12 +320,12 @@ comparison/venv/bin/python comparison/snntorch_comparison.py --epochs 20 --lr 0.
 
 | Model | Type | Architecture |
 |-------|------|--------------|
-| `GilgameshSNN` | SNN | 49 → LIF(9) → LIF(10) — matches gilgamesh exactly |
+| `GilgameshSNN` | SNN | 36 → LIF(12) → LIF(10) — matches gilgamesh exactly |
 | `GilgameshSNN_Synaptic` | SNN | Dual-exponential synaptic dynamics |
 | `GilgameshSNN_Recurrent` | SNN | Recurrent connections in hidden layer |
-| `GilgameshSNN_3Layer` | SNN | 49 → LIF(9) → LIF(4) → LIF(10) |
-| `StandardANN` | ANN | 49 → ReLU(9) → 10 — non-spiking baseline |
-| `StandardANN_3Layer` | ANN | 49 → ReLU(9) → ReLU(4) → 10 |
+| `GilgameshSNN_3Layer` | SNN | 36 → LIF(12) → LIF(6) → LIF(10) |
+| `StandardANN` | ANN | 36 → ReLU(12) → 10 — non-spiking baseline |
+| `StandardANN_3Layer` | ANN | 36 → ReLU(12) → ReLU(6) → 10 |
 
 ### Output
 
@@ -337,7 +355,7 @@ Options:
   --epochs <N>              Number of epochs [default: 15]
   --batch-size <N>          Batch size [default: 128]
   --num-steps <N>           Timesteps per sample [default: 25]
-  --hidden-size <N>         Hidden layer neurons [default: 100]
+  --hidden-size <N>         Hidden layer neurons [default: 12]
   --beta <VALUE>            Membrane decay factor [default: 0.9]
   --seed <N>                Random seed [default: 42]
   --data-dir <PATH>         MNIST data directory [default: ./data]
@@ -387,7 +405,7 @@ Options:
 ```
 
 The inspector shows:
-- 7x7 input image (scaled up for visibility)
+- 6x6 input image (scaled up for visibility)
 - Bar chart of output neuron spike counts
 - Color-coded predictions: green=correct, red=wrong, blue=true label
 - Click "Next Sample" to cycle through random test samples
@@ -428,7 +446,7 @@ Options:
 
 Features:
 - LIF neuron subcircuit with RC membrane, comparator, reset switch, and pulse shaping
-- Full 49→100→10 network with VCCS (voltage-controlled current sources) for weights
+- Full 36→12→10 network with VCCS (voltage-controlled current sources) for weights
 - Compares gilgamesh spike counts against ngspice simulation
 - Outputs comparison table with predictions from both simulators
 
@@ -467,7 +485,7 @@ Total = hidden × (input + 10)
       = hidden × (image_size² + 10)
 ```
 
-Example: 49-9-10 architecture = 9 × (49 + 10) = **531 synapses**
+Example: 36-12-10 architecture = 12 × (36 + 10) = **552 synapses**
 
 ### Checkpoint Auto-Detection
 

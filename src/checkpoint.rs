@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn test_checkpoint_roundtrip() {
         // Create a network
-        let net = Network::new(49, 100, 10, 0.9, 42);
+        let net = Network::new(36, 100, 10, 0.9, 42);
 
         // Create checkpoint
         let metadata = TrainingMetadata {
@@ -309,7 +309,7 @@ mod tests {
         let checkpoint = Checkpoint::from_network(&net, Some(metadata));
 
         // Verify architecture
-        assert_eq!(checkpoint.architecture.input_size, 49);
+        assert_eq!(checkpoint.architecture.input_size, 36);
         assert_eq!(checkpoint.architecture.hidden_size, 100);
         assert_eq!(checkpoint.architecture.output_size, 10);
         assert_eq!(checkpoint.architecture.mode, "physics"); // Now defaults to Physics mode
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_checkpoint_physics_mode() {
-        let net = Network::new_physics(49, 100, 10, 0.0026, 0.001, 42);
+        let net = Network::new_physics(36, 100, 10, 0.0026, 0.001, 42);
         let checkpoint = Checkpoint::from_network(&net, None);
 
         assert_eq!(checkpoint.architecture.mode, "physics");

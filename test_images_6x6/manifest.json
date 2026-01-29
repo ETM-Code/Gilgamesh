@@ -1,0 +1,132 @@
+{
+  "description": "6x6 downsampled MNIST test images for gilgamesh",
+  "image_size": 6,
+  "total_pixels": 36,
+  "normalization": {
+    "mean": 0.1307,
+    "std": 0.3081,
+    "formula": "(pixel - mean) / std"
+  },
+  "samples": [
+    {
+      "id": "digit_7_0",
+      "label": 7,
+      "json_path": "raw/digit_7_0.json",
+      "png_path": "png/digit_7_0.png"
+    },
+    {
+      "id": "digit_2_0",
+      "label": 2,
+      "json_path": "raw/digit_2_0.json",
+      "png_path": "png/digit_2_0.png"
+    },
+    {
+      "id": "digit_1_0",
+      "label": 1,
+      "json_path": "raw/digit_1_0.json",
+      "png_path": "png/digit_1_0.png"
+    },
+    {
+      "id": "digit_0_0",
+      "label": 0,
+      "json_path": "raw/digit_0_0.json",
+      "png_path": "png/digit_0_0.png"
+    },
+    {
+      "id": "digit_4_0",
+      "label": 4,
+      "json_path": "raw/digit_4_0.json",
+      "png_path": "png/digit_4_0.png"
+    },
+    {
+      "id": "digit_1_1",
+      "label": 1,
+      "json_path": "raw/digit_1_1.json",
+      "png_path": "png/digit_1_1.png"
+    },
+    {
+      "id": "digit_4_1",
+      "label": 4,
+      "json_path": "raw/digit_4_1.json",
+      "png_path": "png/digit_4_1.png"
+    },
+    {
+      "id": "digit_9_0",
+      "label": 9,
+      "json_path": "raw/digit_9_0.json",
+      "png_path": "png/digit_9_0.png"
+    },
+    {
+      "id": "digit_5_0",
+      "label": 5,
+      "json_path": "raw/digit_5_0.json",
+      "png_path": "png/digit_5_0.png"
+    },
+    {
+      "id": "digit_9_1",
+      "label": 9,
+      "json_path": "raw/digit_9_1.json",
+      "png_path": "png/digit_9_1.png"
+    },
+    {
+      "id": "digit_0_1",
+      "label": 0,
+      "json_path": "raw/digit_0_1.json",
+      "png_path": "png/digit_0_1.png"
+    },
+    {
+      "id": "digit_6_0",
+      "label": 6,
+      "json_path": "raw/digit_6_0.json",
+      "png_path": "png/digit_6_0.png"
+    },
+    {
+      "id": "digit_5_1",
+      "label": 5,
+      "json_path": "raw/digit_5_1.json",
+      "png_path": "png/digit_5_1.png"
+    },
+    {
+      "id": "digit_7_1",
+      "label": 7,
+      "json_path": "raw/digit_7_1.json",
+      "png_path": "png/digit_7_1.png"
+    },
+    {
+      "id": "digit_3_0",
+      "label": 3,
+      "json_path": "raw/digit_3_0.json",
+      "png_path": "png/digit_3_0.png"
+    },
+    {
+      "id": "digit_6_1",
+      "label": 6,
+      "json_path": "raw/digit_6_1.json",
+      "png_path": "png/digit_6_1.png"
+    },
+    {
+      "id": "digit_3_1",
+      "label": 3,
+      "json_path": "raw/digit_3_1.json",
+      "png_path": "png/digit_3_1.png"
+    },
+    {
+      "id": "digit_2_1",
+      "label": 2,
+      "json_path": "raw/digit_2_1.json",
+      "png_path": "png/digit_2_1.png"
+    },
+    {
+      "id": "digit_8_0",
+      "label": 8,
+      "json_path": "raw/digit_8_0.json",
+      "png_path": "png/digit_8_0.png"
+    },
+    {
+      "id": "digit_8_1",
+      "label": 8,
+      "json_path": "raw/digit_8_1.json",
+      "png_path": "png/digit_8_1.png"
+    }
+  ]
+}

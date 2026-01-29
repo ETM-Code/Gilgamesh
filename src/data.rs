@@ -7,7 +7,7 @@ use anyhow::Result;
 use mnist::MnistBuilder;
 use ndarray::Array2;
 
-/// MNIST dataset with 7x7 downsampling (matching snnTorch comparison)
+/// MNIST dataset with 6x6 downsampling (matching snnTorch comparison)
 pub struct MnistDataset {
     pub train_images: Array2<f32>,
     pub train_labels: Vec<usize>,
@@ -19,9 +19,9 @@ pub struct MnistDataset {
 impl MnistDataset {
     /// Load MNIST dataset from the specified directory
     ///
-    /// Downloads if not present. Downsamples to 7x7 by default.
+    /// Downloads if not present. Downsamples to 6x6 by default.
     pub fn load(data_dir: &str) -> Result<Self> {
-        Self::load_with_size(data_dir, 7)
+        Self::load_with_size(data_dir, 6)
     }
 
     /// Load with custom image size
@@ -295,7 +295,7 @@ impl InputEncoder {
     ///
     /// Returns:
     ///   For rate-coded: [batch, image_size^2] - full image
-    ///   For temporal: [batch, image_size] - just the active row (7 pixels)
+    ///   For temporal: [batch, image_size] - just the active row (6 pixels)
     pub fn encode_timestep(&self, input: &Array2<f32>, timestep: usize) -> Array2<f32> {
         match &self.encoding_type {
             InputEncodingType::RateCoded => {
@@ -313,11 +313,11 @@ impl InputEncoder {
                 let is_active = time_in_row < pulse_duration;
 
                 let batch_size = input.shape()[0];
-                // Output is just image_size (7 pixels for one row)
+                // Output is just image_size (6 pixels for one row)
                 let mut encoded = Array2::zeros((batch_size, self.image_size));
 
                 if row_idx < self.image_size && is_active {
-                    // Extract the active row (7 pixels)
+                    // Extract the active row (6 pixels)
                     let row_start = row_idx * self.image_size;
 
                     for b in 0..batch_size {
@@ -356,7 +356,7 @@ mod tests {
 
         assert_eq!(dataset.train_len(), 60_000);
         assert_eq!(dataset.test_len(), 10_000);
-        assert_eq!(dataset.feature_dim(), 49); // 7x7
+        assert_eq!(dataset.feature_dim(), 36); // 6x6
     }
 
     #[test]
@@ -368,7 +368,7 @@ mod tests {
         let (batch, labels) = iter.next().expect("Should have at least one batch");
 
         assert_eq!(batch.shape()[0], 128);
-        assert_eq!(batch.shape()[1], 49);
+        assert_eq!(batch.shape()[1], 36);
         assert_eq!(labels.len(), 128);
     }
 

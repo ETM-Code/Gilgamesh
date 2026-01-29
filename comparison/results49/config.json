@@ -2,7 +2,8 @@
   "network": {
     "input_size": 49,
     "hidden_size": 9,
-    "output_size": 10
+    "output_size": 10,
+    "image_size": 7
   },
   "neuron": {
     "beta": 0.9,

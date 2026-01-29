@@ -105,7 +105,7 @@ impl Config {
 /// Network architecture configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetworkConfig {
-    /// Input layer size (default: 49 for 7x7 MNIST)
+    /// Input layer size (default: 36 for 6x6 MNIST)
     #[serde(default = "default_input_size")]
     pub input_size: usize,
 
@@ -118,15 +118,15 @@ pub struct NetworkConfig {
     pub output_size: usize,
 
     /// Image size for MNIST downsampling (n×n, produces n² input features)
-    /// Default: 7 (produces 49 input features)
+    /// Default: 6 (produces 36 input features)
     #[serde(default = "default_image_size")]
     pub image_size: usize,
 }
 
-fn default_input_size() -> usize { 49 }
-fn default_hidden_size() -> usize { 9 }
+fn default_input_size() -> usize { 36 }
+fn default_hidden_size() -> usize { 12 }
 fn default_output_size() -> usize { 10 }
-fn default_image_size() -> usize { 7 }
+fn default_image_size() -> usize { 6 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
@@ -544,7 +544,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.mode, "simple");
-        assert_eq!(config.network.input_size, 49);
+        assert_eq!(config.network.input_size, 36);
         assert_eq!(config.neuron.beta, 0.9);
         assert!(!config.quantization.enabled);
         assert!(!config.noise.enabled);

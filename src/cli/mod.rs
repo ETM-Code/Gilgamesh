@@ -37,9 +37,9 @@ pub(crate) enum Commands {
         #[arg(long, default_value = "25")]
         num_steps: usize,
 
-        /// Hidden layer size
-        #[arg(long, default_value = "9")]
-        hidden_size: usize,
+        /// Hidden layer size (uses config default if not specified)
+        #[arg(long)]
+        hidden_size: Option<usize>,
 
         /// Membrane decay (beta)
         #[arg(long, default_value = "0.9")]
@@ -350,7 +350,9 @@ impl Cli {
                     cfg.training.batch_size = batch_size;
                     cfg.training.num_steps = num_steps;
                     cfg.training.seed = seed;
-                    cfg.network.hidden_size = hidden_size;
+                    if let Some(h) = hidden_size {
+                        cfg.network.hidden_size = h;
+                    }
                     cfg.neuron.beta = beta;
                     cfg.neuron.slope = slope;
                     cfg.quantization.enabled = quantize;

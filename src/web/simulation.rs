@@ -471,8 +471,8 @@ fn broadcast_frame(sim: &SimulationState, state: &AppState) {
     let label = sim.get_label();
     let correct = prediction == label;
 
-    // Determine image size (7x7 = 49 or 28x28 = 784)
-    let image_size = if image_pixels.len() == 49 { 7 } else { 28 };
+    // Determine image size from pixel count (6x6=36, 7x7=49, 28x28=784)
+    let image_size = (image_pixels.len() as f32).sqrt() as usize;
 
     let msg = ServerMessage::AnimationFrame {
         neurons,
