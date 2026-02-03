@@ -118,78 +118,46 @@ impl Linear {
         self
     }
 
-    /// Forward pass: y = x @ W + b
-    ///
-    /// If current_gain is set, output is scaled: y = (x @ W + b) * gain
-    /// This converts normalized weights to physical synaptic currents.
-    ///
-    /// Args:
-    ///   input: [batch, in_features]
-    ///
-    /// Returns:
-    ///   output: [batch, out_features]
-    pub fn forward(&self, input: &Array2<f32>) -> Array2<f32> {
-        let mut output = input.dot(&self.weight);
+    /// Apply bias addition and current gain scaling to a raw dot product
+    fn apply_bias_and_gain(&self, mut output: Array2<f32>) -> Array2<f32> {
         if let Some(ref bias) = self.bias {
-            // Broadcast bias across batch dimension
             for mut row in output.rows_mut() {
                 row += bias;
             }
         }
-        // Apply current gain for hardware simulation
         if let Some(gain) = self.current_gain {
             output *= gain;
         }
         output
+    }
+
+    /// Forward pass: y = x @ W + b
+    ///
+    /// If current_gain is set, output is scaled: y = (x @ W + b) * gain
+    /// This converts normalized weights to physical synaptic currents.
+    pub fn forward(&self, input: &Array2<f32>) -> Array2<f32> {
+        self.apply_bias_and_gain(input.dot(&self.weight))
     }
 
     /// Forward pass with weight quantization (for hardware simulation)
     ///
     /// Quantizes weights to n-bit resolution before computing output.
     /// Uses straight-through estimator: quantized forward, full-precision backward.
-    /// Applies current_gain scaling if set.
-    ///
-    /// Args:
-    ///   input: [batch, in_features]
-    ///   bits: Number of quantization bits (e.g., 8 for digipot)
-    ///
-    /// Returns:
-    ///   output: [batch, out_features]
     pub fn forward_quantized(&self, input: &Array2<f32>, bits: u8) -> Array2<f32> {
-        let quantized_weight = quantize_weights(&self.weight, bits);
-        let mut output = input.dot(&quantized_weight);
-        if let Some(ref bias) = self.bias {
-            for mut row in output.rows_mut() {
-                row += bias;
-            }
-        }
-        if let Some(gain) = self.current_gain {
-            output *= gain;
-        }
-        output
+        self.apply_bias_and_gain(input.dot(&quantize_weights(&self.weight, bits)))
     }
 
     /// Forward pass with weight noise injection (for robustness training)
     ///
     /// Adds Gaussian noise to weights before computing output.
     /// Noise is relative to weight magnitude: noisy_w = w + w * N(0, noise_std)
-    /// Applies current_gain scaling if set.
-    ///
-    /// Args:
-    ///   input: [batch, in_features]
-    ///   weight_noise_std: Relative noise std (e.g., 0.05 for 5% mismatch)
-    ///   rng: Random number generator
-    ///
-    /// Returns:
-    ///   output: [batch, out_features]
     pub fn forward_noisy<R: Rng>(
         &self,
         input: &Array2<f32>,
         weight_noise_std: f32,
         rng: &mut R,
     ) -> Array2<f32> {
-        // Add relative noise to weights
-        let noisy_weight = if weight_noise_std > 0.0 {
+        let effective_weight = if weight_noise_std > 0.0 {
             let normal = Normal::new(0.0, weight_noise_std as f64).unwrap();
             self.weight.mapv(|weight| {
                 let noise = normal.sample(rng) as f32;
@@ -198,17 +166,7 @@ impl Linear {
         } else {
             self.weight.clone()
         };
-
-        let mut output = input.dot(&noisy_weight);
-        if let Some(ref bias) = self.bias {
-            for mut row in output.rows_mut() {
-                row += bias;
-            }
-        }
-        if let Some(gain) = self.current_gain {
-            output *= gain;
-        }
-        output
+        self.apply_bias_and_gain(input.dot(&effective_weight))
     }
 
     /// Backward pass
@@ -246,11 +204,6 @@ impl Linear {
         if let (Some(ref mut bias), Some(bias_grad)) = (&mut self.bias, grad_bias) {
             *bias = &*bias - &(bias_grad * lr);
         }
-    }
-
-    /// Zero out accumulated gradients (for batch processing)
-    pub fn zero_grad(&mut self) {
-        // No-op since we don't store gradients in the layer
     }
 
     /// Get total number of parameters

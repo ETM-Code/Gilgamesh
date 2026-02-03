@@ -14,7 +14,7 @@ mod state;
 
 pub use cache::LeakyCache;
 pub use leaky::Leaky;
-pub use mode::{NeuronMode, ResetMechanism};
+pub use mode::{NeuronMode, PhysicsParams, ResetMechanism};
 pub use state::LeakyState;
 
 #[cfg(test)]

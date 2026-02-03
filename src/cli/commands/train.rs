@@ -57,7 +57,8 @@ pub(crate) fn train_with_config(
     println!();
 
     use gilgamesh::data::InputEncoder;
-    let input_encoder = if cfg.input_encoding.encoding_type == "temporal" {
+    use gilgamesh::config::EncodingType;
+    let input_encoder = if cfg.input_encoding.encoding_type == EncodingType::Temporal {
         // Temporal encoding uses image_height for row-by-row presentation
         Some(InputEncoder::temporal(
             image_height,
@@ -128,6 +129,7 @@ pub(crate) fn train_with_config(
         num_steps: cfg.training.num_steps,
         seed: cfg.training.seed,
         num_workers: cfg.training.num_workers,
+        bptt_steps: cfg.training.bptt_steps,
     };
     let mut trainer = Trainer::new(network, train_config);
 
@@ -166,7 +168,6 @@ pub(crate) fn train_with_config(
 
     if let Some(bptt) = cfg.training.bptt_steps {
         if bptt > 0 {
-            trainer.bptt_steps = Some(bptt);
             println!("BPTT truncation: {} steps", bptt);
         }
     }

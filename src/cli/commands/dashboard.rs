@@ -79,6 +79,7 @@ fn run_training_for_dashboard(
         num_steps: cfg.training.num_steps,
         seed: cfg.training.seed,
         num_workers: cfg.training.num_workers,
+        bptt_steps: cfg.training.bptt_steps,
     };
 
     let mut trainer = Trainer::new(network, train_config);

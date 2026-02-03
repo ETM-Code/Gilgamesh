@@ -64,18 +64,20 @@ pub struct ArchitectureInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tau_pulse: Option<f32>,
     /// Spike threshold
-    #[serde(default = "default_threshold")]
+    #[serde(default = "ArchitectureInfo::default_threshold")]
     pub threshold: f32,
     /// Surrogate gradient slope
-    #[serde(default = "default_slope")]
+    #[serde(default = "ArchitectureInfo::default_slope")]
     pub slope: f32,
 }
 
-fn default_threshold() -> f32 {
-    1.0
-}
-fn default_slope() -> f32 {
-    25.0
+impl ArchitectureInfo {
+    fn default_threshold() -> f32 {
+        1.0
+    }
+    fn default_slope() -> f32 {
+        25.0
+    }
 }
 
 /// Serializable network weights (using nested Vec for JSON compatibility)
@@ -274,37 +276,24 @@ impl Checkpoint {
         // Create LIF neurons with correct mode
         let spike_grad = SurrogateGradient::fast_sigmoid(arch.slope);
 
-        let (lif1, lif2) = if arch.mode == "physics" {
-            let tau_m = arch.tau_m.unwrap_or(0.0026);
-            let dt = arch.dt.unwrap_or(0.001);
-
-            let mut lif1 = if let Some(tau_pulse) = arch.tau_pulse {
-                let v_peak = 4.42; // Default hardware peak
-                Leaky::new_physics_with_pulse(arch.hidden_size, tau_m, dt, tau_pulse, v_peak)
+        let make_lif = |size: usize| -> Leaky {
+            let lif = if arch.mode == "physics" {
+                let tau_m = arch.tau_m.unwrap_or(0.0026);
+                let dt = arch.dt.unwrap_or(0.001);
+                if let Some(tau_pulse) = arch.tau_pulse {
+                    let v_peak = 4.42; // Default hardware peak
+                    Leaky::new_physics_with_pulse(size, tau_m, dt, tau_pulse, v_peak)
+                } else {
+                    Leaky::new_physics(size, tau_m, dt)
+                }
             } else {
-                Leaky::new_physics(arch.hidden_size, tau_m, dt)
+                Leaky::new(size, arch.beta.unwrap_or(0.9))
             };
-            lif1 = lif1.with_threshold(arch.threshold).with_spike_grad(spike_grad);
-
-            let mut lif2 = if let Some(tau_pulse) = arch.tau_pulse {
-                let v_peak = 4.42;
-                Leaky::new_physics_with_pulse(arch.output_size, tau_m, dt, tau_pulse, v_peak)
-            } else {
-                Leaky::new_physics(arch.output_size, tau_m, dt)
-            };
-            lif2 = lif2.with_threshold(arch.threshold).with_spike_grad(spike_grad);
-
-            (lif1, lif2)
-        } else {
-            let beta = arch.beta.unwrap_or(0.9);
-            let lif1 = Leaky::new(arch.hidden_size, beta)
-                .with_threshold(arch.threshold)
-                .with_spike_grad(spike_grad);
-            let lif2 = Leaky::new(arch.output_size, beta)
-                .with_threshold(arch.threshold)
-                .with_spike_grad(spike_grad);
-            (lif1, lif2)
+            lif.with_threshold(arch.threshold).with_spike_grad(spike_grad)
         };
+
+        let lif1 = make_lif(arch.hidden_size);
+        let lif2 = make_lif(arch.output_size);
 
         Ok(Network {
             fc1,
@@ -365,57 +354,37 @@ fn quantize_network_weights(
     // For 3-bit magnitude: max = 7
     let max_magnitude = ((1i32 << bits) - 1) as f32;
 
-    // Find max positive and negative weights per layer
-    let (fc1_pos_max, fc1_neg_max) = fc1.iter().fold((0.0f32, 0.0f32), |(pos, neg), &weight| {
-        (pos.max(weight.max(0.0)), neg.max((-weight).max(0.0)))
-    });
-    let (fc2_pos_max, fc2_neg_max) = fc2.iter().fold((0.0f32, 0.0f32), |(pos, neg), &weight| {
-        (pos.max(weight.max(0.0)), neg.max((-weight).max(0.0)))
-    });
+    /// Quantize a single layer's weights, returning (pos_scale, neg_scale, quantized_weights)
+    fn quantize_layer(weights: &Array2<f32>, max_magnitude: f32) -> (f32, f32, Vec<Vec<i8>>) {
+        let (pos_max, neg_max) = weights.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
+            (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
+        });
+        let pos_scale = if pos_max > 1e-8 { pos_max / max_magnitude } else { 1.0 };
+        let neg_scale = if neg_max > 1e-8 { neg_max / max_magnitude } else { 1.0 };
 
-    // Per-layer, per-sign scales
-    let fc1_pos_scale = if fc1_pos_max > 1e-8 { fc1_pos_max / max_magnitude } else { 1.0 };
-    let fc1_neg_scale = if fc1_neg_max > 1e-8 { fc1_neg_max / max_magnitude } else { 1.0 };
-    let fc2_pos_scale = if fc2_pos_max > 1e-8 { fc2_pos_max / max_magnitude } else { 1.0 };
-    let fc2_neg_scale = if fc2_neg_max > 1e-8 { fc2_neg_max / max_magnitude } else { 1.0 };
+        let quantized = weights
+            .rows()
+            .into_iter()
+            .map(|row| {
+                row.iter()
+                    .map(|&w| {
+                        if w >= 0.0 {
+                            let q = (w / pos_scale).round() as i8;
+                            q.clamp(0, max_magnitude as i8)
+                        } else {
+                            let q = ((-w) / neg_scale).round() as i8;
+                            -q.clamp(0, max_magnitude as i8)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
 
-    // Quantize FC1 weights
-    let fc1_weight: Vec<Vec<i8>> = fc1
-        .rows()
-        .into_iter()
-        .map(|row| {
-            row.iter()
-                .map(|&weight| {
-                    if weight >= 0.0 {
-                        let quantized = (weight / fc1_pos_scale).round() as i8;
-                        quantized.clamp(0, max_magnitude as i8)
-                    } else {
-                        let quantized = ((-weight) / fc1_neg_scale).round() as i8;
-                        -quantized.clamp(0, max_magnitude as i8)
-                    }
-                })
-                .collect()
-        })
-        .collect();
+        (pos_scale, neg_scale, quantized)
+    }
 
-    // Quantize FC2 weights
-    let fc2_weight: Vec<Vec<i8>> = fc2
-        .rows()
-        .into_iter()
-        .map(|row| {
-            row.iter()
-                .map(|&weight| {
-                    if weight >= 0.0 {
-                        let quantized = (weight / fc2_pos_scale).round() as i8;
-                        quantized.clamp(0, max_magnitude as i8)
-                    } else {
-                        let quantized = ((-weight) / fc2_neg_scale).round() as i8;
-                        -quantized.clamp(0, max_magnitude as i8)
-                    }
-                })
-                .collect()
-        })
-        .collect();
+    let (fc1_pos_scale, fc1_neg_scale, fc1_weight) = quantize_layer(fc1, max_magnitude);
+    let (fc2_pos_scale, fc2_neg_scale, fc2_weight) = quantize_layer(fc2, max_magnitude);
 
     QuantizedWeights {
         magnitude_bits: bits,

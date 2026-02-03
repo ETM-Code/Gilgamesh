@@ -329,6 +329,35 @@ impl Network {
         (spike_count, final_mem, caches)
     }
 
+    /// Run a forward loop over multiple timesteps using a per-step function.
+    ///
+    /// Common loop structure shared by forward_with_dt, forward_with_adaptation, etc.
+    fn run_forward_loop<F>(
+        &self,
+        input: &Array2<f32>,
+        num_steps: usize,
+        mut state: NetworkState,
+        step_fn: F,
+    ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>)
+    where
+        F: Fn(&Self, &Array2<f32>, &NetworkState) -> (Array2<f32>, Array2<f32>, NetworkState, NetworkCache),
+    {
+        let batch_size = input.shape()[0];
+        let mut caches = Vec::with_capacity(num_steps);
+        let mut spike_count = Array2::zeros((batch_size, self.lif2.size));
+        let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
+
+        for _ in 0..num_steps {
+            let (output_spikes, output_membrane, new_state, cache) = step_fn(self, input, &state);
+            spike_count += &output_spikes;
+            final_mem = output_membrane;
+            state = new_state;
+            caches.push(cache);
+        }
+
+        (spike_count, final_mem, caches)
+    }
+
     /// Full forward pass with variable dt (for physics mode fine-grained simulation)
     ///
     /// Args:
@@ -345,21 +374,10 @@ impl Network {
         dt: f32,
     ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>) {
         let batch_size = input.shape()[0];
-        let mut state = self.init_state(batch_size);
-        let mut caches = Vec::with_capacity(num_steps);
-
-        let mut spike_count = Array2::zeros((batch_size, self.lif2.size));
-        let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
-
-        for _ in 0..num_steps {
-            let (output_spikes, output_membrane, new_state, cache) = self.forward_step_with_dt(input, &state, dt);
-            spike_count += &output_spikes;
-            final_mem = output_membrane;
-            state = new_state;
-            caches.push(cache);
-        }
-
-        (spike_count, final_mem, caches)
+        let state = self.init_state(batch_size);
+        self.run_forward_loop(input, num_steps, state, |net, inp, st| {
+            net.forward_step_with_dt(inp, st, dt)
+        })
     }
 
     /// Forward pass for a single timestep with pulse stretching
@@ -500,21 +518,10 @@ impl Network {
         dt: f32,
     ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>) {
         let batch_size = input.shape()[0];
-        let mut state = self.init_state_with_adaptation(batch_size);
-        let mut caches = Vec::with_capacity(num_steps);
-
-        let mut spike_count = Array2::zeros((batch_size, self.lif2.size));
-        let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
-
-        for _ in 0..num_steps {
-            let (output_spikes, output_membrane, new_state, cache) = self.forward_step_with_adaptation(input, &state, dt);
-            spike_count += &output_spikes;
-            final_mem = output_membrane;
-            state = new_state;
-            caches.push(cache);
-        }
-
-        (spike_count, final_mem, caches)
+        let state = self.init_state_with_adaptation(batch_size);
+        self.run_forward_loop(input, num_steps, state, |net, inp, st| {
+            net.forward_step_with_adaptation(inp, st, dt)
+        })
     }
 
     /// Full forward pass with noise injection (for robustness training)

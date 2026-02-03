@@ -9,34 +9,48 @@ use ndarray::{Array1, Array2};
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-/// Training configuration
-#[derive(Clone, Debug)]
-pub struct TrainingConfig {
-    /// Learning rate
-    pub lr: f32,
-    /// Number of epochs
-    pub epochs: usize,
-    /// Batch size
-    pub batch_size: usize,
-    /// Number of timesteps per sample
-    pub num_steps: usize,
-    /// Random seed for reproducibility
-    pub seed: u64,
-    /// Number of parallel workers (0 = auto-detect)
-    pub num_workers: usize,
+pub use crate::config::TrainingConfig;
+
+/// AdamW weight update: updates moments and applies weight decay + bias-corrected gradient step
+fn adam_update_weight(
+    weight: &mut Array2<f32>,
+    grad: &Array2<f32>,
+    first_moment: &mut Array2<f32>,
+    second_moment: &mut Array2<f32>,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    beta1_correction: f32,
+    beta2_correction: f32,
+) {
+    *first_moment = &*first_moment * beta1 + grad * (1.0 - beta1);
+    *second_moment = &*second_moment * beta2 + &grad.mapv(|x| x * x) * (1.0 - beta2);
+    let corrected_first = &*first_moment / beta1_correction;
+    let corrected_second = &*second_moment / beta2_correction;
+    *weight = &*weight * (1.0 - lr * weight_decay)
+        - &(&corrected_first / &(corrected_second.mapv(|x| x.sqrt()) + eps) * lr);
 }
 
-impl Default for TrainingConfig {
-    fn default() -> Self {
-        Self {
-            lr: 1e-3,       // snnTorch default
-            epochs: 15,
-            batch_size: 128,
-            num_steps: 25,
-            seed: 42,
-            num_workers: 0, // auto-detect
-        }
-    }
+/// Adam bias update: updates moments and applies bias-corrected gradient step (no weight decay)
+fn adam_update_bias(
+    bias: &mut Array1<f32>,
+    grad: &Array1<f32>,
+    first_moment: &mut Array1<f32>,
+    second_moment: &mut Array1<f32>,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    beta1_correction: f32,
+    beta2_correction: f32,
+) {
+    *first_moment = &*first_moment * beta1 + grad * (1.0 - beta1);
+    *second_moment = &*second_moment * beta2 + &grad.mapv(|x| x * x) * (1.0 - beta2);
+    let corrected_first = &*first_moment / beta1_correction;
+    let corrected_second = &*second_moment / beta2_correction;
+    *bias = &*bias - &(&corrected_first / &(corrected_second.mapv(|x| x.sqrt()) + eps) * lr);
 }
 
 /// Adam optimizer state with optional weight decay (AdamW)
@@ -96,55 +110,39 @@ impl AdamOptimizer {
 
     pub fn step(&mut self, net: &mut Network, grads: &NetworkGradients) {
         self.timestep += 1;
-
-        // Bias correction factors
         let beta1_correction = 1.0 - self.beta1.powi(self.timestep as i32);
         let beta2_correction = 1.0 - self.beta2.powi(self.timestep as i32);
 
-        // Update FC1 weight (with AdamW weight decay)
-        self.first_moment_fc1_weight = &self.first_moment_fc1_weight * self.beta1 + &grads.fc1_weight * (1.0 - self.beta1);
-        self.second_moment_fc1_weight = &self.second_moment_fc1_weight * self.beta2 + &grads.fc1_weight.mapv(|x| x * x) * (1.0 - self.beta2);
-        let corrected_first_moment = &self.first_moment_fc1_weight / beta1_correction;
-        let corrected_second_moment = &self.second_moment_fc1_weight / beta2_correction;
-        // AdamW: weight decay applied separately from gradient
-        net.fc1.weight = &net.fc1.weight * (1.0 - self.lr * self.weight_decay)
-            - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+        // Update FC1 weight
+        adam_update_weight(
+            &mut net.fc1.weight, &grads.fc1_weight,
+            &mut self.first_moment_fc1_weight, &mut self.second_moment_fc1_weight,
+            self.lr, self.beta1, self.beta2, self.eps, self.weight_decay,
+            beta1_correction, beta2_correction,
+        );
 
         // Update FC1 bias
-        if let (Some(ref mut first_moment), Some(ref mut second_moment), Some(ref grad), Some(ref mut bias)) = (
-            &mut self.first_moment_fc1_bias,
-            &mut self.second_moment_fc1_bias,
-            &grads.fc1_bias,
-            &mut net.fc1.bias,
+        if let (Some(ref mut fm), Some(ref mut sm), Some(ref g), Some(ref mut b)) = (
+            &mut self.first_moment_fc1_bias, &mut self.second_moment_fc1_bias,
+            &grads.fc1_bias, &mut net.fc1.bias,
         ) {
-            *first_moment = &*first_moment * self.beta1 + grad * (1.0 - self.beta1);
-            *second_moment = &*second_moment * self.beta2 + &grad.mapv(|x| x * x) * (1.0 - self.beta2);
-            let corrected_first_moment = &*first_moment / beta1_correction;
-            let corrected_second_moment = &*second_moment / beta2_correction;
-            *bias = &*bias - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+            adam_update_bias(b, g, fm, sm, self.lr, self.beta1, self.beta2, self.eps, beta1_correction, beta2_correction);
         }
 
-        // Update FC2 weight (with AdamW weight decay)
-        self.first_moment_fc2_weight = &self.first_moment_fc2_weight * self.beta1 + &grads.fc2_weight * (1.0 - self.beta1);
-        self.second_moment_fc2_weight = &self.second_moment_fc2_weight * self.beta2 + &grads.fc2_weight.mapv(|x| x * x) * (1.0 - self.beta2);
-        let corrected_first_moment = &self.first_moment_fc2_weight / beta1_correction;
-        let corrected_second_moment = &self.second_moment_fc2_weight / beta2_correction;
-        // AdamW: weight decay applied separately from gradient
-        net.fc2.weight = &net.fc2.weight * (1.0 - self.lr * self.weight_decay)
-            - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+        // Update FC2 weight
+        adam_update_weight(
+            &mut net.fc2.weight, &grads.fc2_weight,
+            &mut self.first_moment_fc2_weight, &mut self.second_moment_fc2_weight,
+            self.lr, self.beta1, self.beta2, self.eps, self.weight_decay,
+            beta1_correction, beta2_correction,
+        );
 
         // Update FC2 bias
-        if let (Some(ref mut first_moment), Some(ref mut second_moment), Some(ref grad), Some(ref mut bias)) = (
-            &mut self.first_moment_fc2_bias,
-            &mut self.second_moment_fc2_bias,
-            &grads.fc2_bias,
-            &mut net.fc2.bias,
+        if let (Some(ref mut fm), Some(ref mut sm), Some(ref g), Some(ref mut b)) = (
+            &mut self.first_moment_fc2_bias, &mut self.second_moment_fc2_bias,
+            &grads.fc2_bias, &mut net.fc2.bias,
         ) {
-            *first_moment = &*first_moment * self.beta1 + grad * (1.0 - self.beta1);
-            *second_moment = &*second_moment * self.beta2 + &grad.mapv(|x| x * x) * (1.0 - self.beta2);
-            let corrected_first_moment = &*first_moment / beta1_correction;
-            let corrected_second_moment = &*second_moment / beta2_correction;
-            *bias = &*bias - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+            adam_update_bias(b, g, fm, sm, self.lr, self.beta1, self.beta2, self.eps, beta1_correction, beta2_correction);
         }
     }
 }
@@ -215,6 +213,26 @@ impl NoiseParams {
     }
 }
 
+/// Count correct predictions by comparing argmax of spike counts against labels
+fn count_correct(spike_count: &Array2<f32>, labels: &[usize]) -> (usize, usize) {
+    let mut correct = 0usize;
+    let mut total = 0usize;
+    for (i, &target) in labels.iter().enumerate() {
+        let predicted = spike_count
+            .row(i)
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        if predicted == target {
+            correct += 1;
+        }
+        total += 1;
+    }
+    (correct, total)
+}
+
 /// Trainer with parallel batch processing
 pub struct Trainer {
     pub config: TrainingConfig,
@@ -248,6 +266,7 @@ impl Trainer {
     pub fn new(network: Network, config: TrainingConfig) -> Self {
         let optimizer = AdamOptimizer::new(&network, config.lr);
         let rng = Xoshiro256PlusPlus::seed_from_u64(config.seed);
+        let bptt_steps = config.bptt_steps;
 
         // Configure rayon thread pool
         if config.num_workers > 0 {
@@ -271,7 +290,7 @@ impl Trainer {
             max_grad_norm: None,
             analog_gain: 0.0, // Disabled by default
             input_encoder: None, // Rate-coded by default
-            bptt_steps: None, // Full BPTT by default
+            bptt_steps,
         }
     }
 
@@ -375,20 +394,9 @@ impl Trainer {
             total_loss += loss * batch_size as f32;
 
             // Compute accuracy
-            for (i, &target) in labels.iter().enumerate() {
-                let row = spike_count.row(i);
-                let predicted = row
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                    .map(|(idx, _)| idx)
-                    .unwrap_or(0);
-
-                if predicted == target {
-                    correct += 1;
-                }
-                total += 1;
-            }
+            let (batch_correct, batch_total) = count_correct(&spike_count, &labels);
+            correct += batch_correct;
+            total += batch_total;
         }
 
         let avg_loss = total_loss / total as f32;
@@ -414,20 +422,9 @@ impl Trainer {
                 self.network.forward_quantized(&images, self.config.num_steps, self.quant_bits)
             };
 
-            for (i, &target) in labels.iter().enumerate() {
-                let row = spike_count.row(i);
-                let predicted = row
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                    .map(|(idx, _)| idx)
-                    .unwrap_or(0);
-
-                if predicted == target {
-                    correct += 1;
-                }
-                total += 1;
-            }
+            let (batch_correct, batch_total) = count_correct(&spike_count, &labels);
+            correct += batch_correct;
+            total += batch_total;
         }
 
         100.0 * correct as f32 / total as f32

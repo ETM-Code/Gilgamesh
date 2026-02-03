@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Reset mechanism for membrane potential after spike
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResetMechanism {
     /// Subtract threshold from membrane: mem = mem - threshold
     Subtract,
@@ -131,18 +132,31 @@ impl Default for NeuronMode {
     }
 }
 
-impl NeuronMode {
-    /// Create physics mode from beta and dt
-    /// Uses: beta = exp(-dt/tau), so tau = -dt/ln(beta)
-    pub fn physics_from_beta(beta: f32, dt: f32) -> Self {
-        let tau_m = if beta > 0.0 && beta < 1.0 {
-            -dt / beta.ln()
-        } else {
-            dt * 10.0 // Fallback: 10x dt if beta is invalid
-        };
-        NeuronMode::Physics {
-            tau_m,
-            dt,
+/// Parameters for Physics mode construction.
+/// Use struct update syntax to override specific fields:
+/// ```ignore
+/// PhysicsParams { tau_m: 0.005, dt: 1e-6, ..Default::default() }.into()
+/// ```
+#[derive(Clone, Debug)]
+pub struct PhysicsParams {
+    pub tau_m: f32,
+    pub dt: f32,
+    pub tau_pulse: f32,
+    pub v_peak: f32,
+    pub tau_theta: f32,
+    pub theta_low: f32,
+    pub theta_high: f32,
+    pub v_min: f32,
+    pub v_max: f32,
+    pub comparator_delay_s: f32,
+    pub reset_hold_s: f32,
+}
+
+impl Default for PhysicsParams {
+    fn default() -> Self {
+        Self {
+            tau_m: 0.00396,
+            dt: 0.001,
             tau_pulse: default_tau_pulse(),
             v_peak: default_v_peak(),
             tau_theta: default_tau_theta(),
@@ -154,22 +168,41 @@ impl NeuronMode {
             reset_hold_s: default_reset_hold(),
         }
     }
+}
+
+impl From<PhysicsParams> for NeuronMode {
+    fn from(p: PhysicsParams) -> Self {
+        NeuronMode::Physics {
+            tau_m: p.tau_m,
+            dt: p.dt,
+            tau_pulse: p.tau_pulse,
+            v_peak: p.v_peak,
+            tau_theta: p.tau_theta,
+            theta_low: p.theta_low,
+            theta_high: p.theta_high,
+            v_min: p.v_min,
+            v_max: p.v_max,
+            comparator_delay_s: p.comparator_delay_s,
+            reset_hold_s: p.reset_hold_s,
+        }
+    }
+}
+
+impl NeuronMode {
+    /// Create physics mode from beta and dt
+    /// Uses: beta = exp(-dt/tau), so tau = -dt/ln(beta)
+    pub fn physics_from_beta(beta: f32, dt: f32) -> Self {
+        let tau_m = if beta > 0.0 && beta < 1.0 {
+            -dt / beta.ln()
+        } else {
+            dt * 10.0 // Fallback: 10x dt if beta is invalid
+        };
+        PhysicsParams { tau_m, dt, ..Default::default() }.into()
+    }
 
     /// Create physics mode with pulse parameters (no threshold adaptation)
     pub fn physics(tau_m: f32, dt: f32, tau_pulse: f32, v_peak: f32) -> Self {
-        NeuronMode::Physics {
-            tau_m,
-            dt,
-            tau_pulse,
-            v_peak,
-            tau_theta: default_tau_theta(),
-            theta_low: default_theta_low(),
-            theta_high: default_theta_high(),
-            v_min: default_v_min(),
-            v_max: default_v_max(),
-            comparator_delay_s: default_comparator_delay(),
-            reset_hold_s: default_reset_hold(),
-        }
+        PhysicsParams { tau_m, dt, tau_pulse, v_peak, ..Default::default() }.into()
     }
 
     /// Create physics mode with full parameters including threshold adaptation
@@ -182,19 +215,7 @@ impl NeuronMode {
         theta_low: f32,
         theta_high: f32,
     ) -> Self {
-        NeuronMode::Physics {
-            tau_m,
-            dt,
-            tau_pulse,
-            v_peak,
-            tau_theta,
-            theta_low,
-            theta_high,
-            v_min: default_v_min(),
-            v_max: default_v_max(),
-            comparator_delay_s: default_comparator_delay(),
-            reset_hold_s: default_reset_hold(),
-        }
+        PhysicsParams { tau_m, dt, tau_pulse, v_peak, tau_theta, theta_low, theta_high, ..Default::default() }.into()
     }
 
     /// Create physics mode with hardware timing parameters
@@ -206,19 +227,7 @@ impl NeuronMode {
         comparator_delay_s: f32,
         reset_hold_s: f32,
     ) -> Self {
-        NeuronMode::Physics {
-            tau_m,
-            dt,
-            tau_pulse,
-            v_peak,
-            tau_theta: default_tau_theta(),
-            theta_low: default_theta_low(),
-            theta_high: default_theta_high(),
-            v_min: default_v_min(),
-            v_max: default_v_max(),
-            comparator_delay_s,
-            reset_hold_s,
-        }
+        PhysicsParams { tau_m, dt, tau_pulse, v_peak, comparator_delay_s, reset_hold_s, ..Default::default() }.into()
     }
 
     /// Get effective beta for this mode

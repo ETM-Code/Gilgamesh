@@ -76,6 +76,7 @@ pub(crate) fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch
         num_steps,
         seed: 42,
         num_workers: 0,
+        bptt_steps: None,
     };
     let trainer = Trainer::new(network, config);
     let accuracy = trainer.evaluate(&dataset);

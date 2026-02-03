@@ -47,19 +47,9 @@ impl Leaky {
         mem_shifted.mapv(|potential| if potential > 0.0 { 1.0 } else { 0.0 })
     }
 
-    /// Apply reset mechanism after spike
+    /// Apply reset mechanism after spike with per-neuron threshold
     #[inline]
-    fn apply_reset(&self, mem: &Array2<f32>, spikes: &Array2<f32>, threshold: f32) -> Array2<f32> {
-        match self.reset_mechanism {
-            ResetMechanism::Subtract => mem - &(spikes * threshold),
-            ResetMechanism::Zero => mem * &(1.0 - spikes),
-            ResetMechanism::None => mem.clone(),
-        }
-    }
-
-    /// Apply reset with per-neuron threshold
-    #[inline]
-    fn apply_reset_adaptive(
+    fn apply_reset_array(
         &self,
         mem: &Array2<f32>,
         spikes: &Array2<f32>,
@@ -70,6 +60,12 @@ impl Leaky {
             ResetMechanism::Zero => mem * &(1.0 - spikes),
             ResetMechanism::None => mem.clone(),
         }
+    }
+
+    /// Apply reset mechanism after spike with scalar threshold
+    #[inline]
+    fn apply_reset(&self, mem: &Array2<f32>, spikes: &Array2<f32>, threshold: f32) -> Array2<f32> {
+        self.apply_reset_array(mem, spikes, &Array2::from_elem(mem.raw_dim(), threshold))
     }
 
     /// Update time since spike tracking
@@ -296,7 +292,7 @@ impl Leaky {
 
         let mem_shifted = &mem_new - &current_threshold;
         let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset_adaptive(&mem_new, &spikes, &current_threshold);
+        let mem_reset = self.apply_reset_array(&mem_new, &spikes, &current_threshold);
 
         let new_threshold = if state.adaptive_threshold.is_some() {
             Some(Self::update_adaptive_threshold(
@@ -355,7 +351,7 @@ impl Leaky {
 
         let mem_shifted = &mem_new - &current_threshold;
         let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset_adaptive(&mem_new, &spikes, &current_threshold);
+        let mem_reset = self.apply_reset_array(&mem_new, &spikes, &current_threshold);
 
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &spikes, dt);

@@ -5,61 +5,61 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::Path;
 
-/// Top-level configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Config {
-    /// Operation mode: "simple" or "physics"
-    #[serde(default = "default_mode")]
-    pub mode: String,
+use crate::neurons::lif::ResetMechanism;
 
-    /// Network architecture
-    #[serde(default)]
-    pub network: NetworkConfig,
-
-    /// Neuron parameters
-    #[serde(default)]
-    pub neuron: NeuronConfig,
-
-    /// Physics simulation parameters (used when mode="physics")
-    #[serde(default)]
-    pub physics: PhysicsConfig,
-
-    /// Hardware constraints
-    #[serde(default)]
-    pub hardware: HardwareConfig,
-
-    /// Training parameters
-    #[serde(default)]
-    pub training: TrainingConfig,
-
-    /// Input encoding options
-    #[serde(default)]
-    pub input_encoding: InputEncodingConfig,
-
-    /// Weight quantization (for digipot simulation)
-    #[serde(default)]
-    pub quantization: QuantizationConfig,
-
-    /// Noise injection for robustness
-    #[serde(default)]
-    pub noise: NoiseConfig,
-
-    /// Output mode selection
-    #[serde(default)]
-    pub output: OutputConfig,
+/// Operation mode for the network
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationMode {
+    /// Simple discrete-time model (snnTorch-compatible)
+    Simple,
+    /// Physics-accurate RC circuit model
+    Physics,
 }
 
-fn default_mode() -> String {
-    "simple".to_string()
+impl fmt::Display for OperationMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OperationMode::Simple => write!(f, "simple"),
+            OperationMode::Physics => write!(f, "physics"),
+        }
+    }
+}
+
+/// Top-level configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    /// Operation mode
+    pub mode: OperationMode,
+    /// Network architecture
+    pub network: NetworkConfig,
+    /// Neuron parameters
+    pub neuron: NeuronConfig,
+    /// Physics simulation parameters (used when mode="physics")
+    pub physics: PhysicsConfig,
+    /// Hardware constraints
+    pub hardware: HardwareConfig,
+    /// Training parameters
+    pub training: TrainingConfig,
+    /// Input encoding options
+    pub input_encoding: InputEncodingConfig,
+    /// Weight quantization (for digipot simulation)
+    pub quantization: QuantizationConfig,
+    /// Noise injection for robustness
+    pub noise: NoiseConfig,
+    /// Output mode selection
+    pub output: OutputConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            mode: default_mode(),
+            mode: OperationMode::Simple,
             network: NetworkConfig::default(),
             neuron: NeuronConfig::default(),
             physics: PhysicsConfig::default(),
@@ -98,43 +98,30 @@ impl Config {
 
     /// Check if physics mode is enabled
     pub fn is_physics_mode(&self) -> bool {
-        self.mode == "physics"
+        self.mode == OperationMode::Physics
     }
 }
 
 /// Network architecture configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NetworkConfig {
     /// Input layer size (default: 36 for 6x6 MNIST)
-    #[serde(default = "default_input_size")]
     pub input_size: usize,
-
     /// Hidden layer size
-    #[serde(default = "default_hidden_size")]
     pub hidden_size: usize,
-
     /// Output layer size (default: 10 for MNIST digits)
-    #[serde(default = "default_output_size")]
     pub output_size: usize,
-
     /// Image size for square MNIST downsampling (n×n, produces n² input features)
     /// Default: 6 (produces 36 input features). Ignored if image_width/height set.
-    #[serde(default = "default_image_size")]
     pub image_size: usize,
-
     /// Image width for non-square images (overrides image_size if set)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_width: Option<usize>,
-
     /// Image height for non-square images (overrides image_size if set)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub image_height: Option<usize>,
 }
-
-fn default_input_size() -> usize { 36 }
-fn default_hidden_size() -> usize { 12 }
-fn default_output_size() -> usize { 10 }
-fn default_image_size() -> usize { 6 }
 
 impl NetworkConfig {
     /// Get effective image width
@@ -151,10 +138,10 @@ impl NetworkConfig {
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            input_size: default_input_size(),
-            hidden_size: default_hidden_size(),
-            output_size: default_output_size(),
-            image_size: default_image_size(),
+            input_size: 36,
+            hidden_size: 12,
+            output_size: 10,
+            image_size: 6,
             image_width: None,
             image_height: None,
         }
@@ -163,94 +150,62 @@ impl Default for NetworkConfig {
 
 /// Neuron parameters
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NeuronConfig {
     /// Membrane decay rate (0 to 1)
-    #[serde(default = "default_beta")]
     pub beta: f32,
-
     /// Spike threshold
-    #[serde(default = "default_threshold")]
     pub threshold: f32,
-
-    /// Reset mechanism: "subtract", "zero", or "none"
-    #[serde(default = "default_reset_mechanism")]
-    pub reset_mechanism: String,
-
+    /// Reset mechanism after spike
+    pub reset_mechanism: ResetMechanism,
     /// Surrogate gradient slope
-    #[serde(default = "default_slope")]
     pub slope: f32,
 }
-
-fn default_beta() -> f32 { 0.9 }
-fn default_threshold() -> f32 { 1.0 }
-fn default_reset_mechanism() -> String { "subtract".to_string() }
-fn default_slope() -> f32 { 25.0 }
 
 impl Default for NeuronConfig {
     fn default() -> Self {
         Self {
-            beta: default_beta(),
-            threshold: default_threshold(),
-            reset_mechanism: default_reset_mechanism(),
-            slope: default_slope(),
+            beta: 0.9,
+            threshold: 1.0,
+            reset_mechanism: ResetMechanism::Subtract,
+            slope: 25.0,
         }
     }
 }
 
 /// Physics simulation parameters (gilgamesh-derived defaults)
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PhysicsConfig {
     /// Enable physics mode
-    #[serde(default)]
     pub enabled: bool,
-
-    /// Membrane time constant (seconds)
-    #[serde(default = "default_tau_m")]
+    /// Membrane time constant (seconds) — ~3.96ms (33nF × 120kΩ)
     pub tau_m: f32,
-
-    /// Pulse stretching time constant (seconds)
-    #[serde(default = "default_tau_pulse")]
+    /// Pulse stretching time constant (seconds) — ~1.5µs (R_pw × C_pw)
     pub tau_pulse: f32,
-
-    /// Threshold adaptation time constant (seconds)
-    #[serde(default = "default_tau_theta")]
+    /// Threshold adaptation time constant (seconds) — ~1ms
     pub tau_theta: f32,
-
-    /// Integration timestep (seconds)
-    #[serde(default = "default_dt")]
+    /// Integration timestep (seconds) — 1ms
     pub dt: f32,
-
     /// Enable threshold adaptation
-    #[serde(default)]
     pub adaptation_enabled: bool,
-
     /// Low threshold value (resting state)
-    #[serde(default = "default_theta_low")]
     pub theta_low: f32,
-
-    /// High threshold value (after spike)
-    #[serde(default = "default_theta_high")]
+    /// High threshold value (after spike, 20% increase)
     pub theta_high: f32,
 }
-
-fn default_tau_m() -> f32 { 0.00396 }     // ~3.96ms (33nF * 120kΩ)
-fn default_tau_pulse() -> f32 { 1.5e-6 } // ~1.5us (R_pw * C_pw)
-fn default_tau_theta() -> f32 { 0.001 }   // ~1ms
-fn default_dt() -> f32 { 0.001 }          // 1ms timestep
-fn default_theta_low() -> f32 { 1.0 }     // Resting threshold
-fn default_theta_high() -> f32 { 1.2 }    // 20% increase after spike
 
 impl Default for PhysicsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            tau_m: default_tau_m(),
-            tau_pulse: default_tau_pulse(),
-            tau_theta: default_tau_theta(),
-            dt: default_dt(),
+            tau_m: 0.00396,
+            tau_pulse: 1.5e-6,
+            tau_theta: 0.001,
+            dt: 0.001,
             adaptation_enabled: false,
-            theta_low: default_theta_low(),
-            theta_high: default_theta_high(),
+            theta_low: 1.0,
+            theta_high: 1.2,
         }
     }
 }
@@ -269,42 +224,28 @@ impl PhysicsConfig {
 
 /// Hardware constraints (from gilgamesh measurements)
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HardwareConfig {
     /// Supply voltage rail
-    #[serde(default = "default_v_rail")]
     pub v_rail: f32,
-
     /// Comparator output rail drop
-    #[serde(default = "default_comp_rail_drop")]
     pub comp_rail_drop: f32,
-
     /// Diode forward voltage drop
-    #[serde(default = "default_diode_drop")]
     pub diode_drop: f32,
-
     /// Minimum membrane voltage
-    #[serde(default = "default_v_min")]
     pub v_min: f32,
-
     /// Maximum membrane voltage
-    #[serde(default = "default_v_max")]
     pub v_max: f32,
 }
-
-fn default_v_rail() -> f32 { 5.0 }
-fn default_comp_rail_drop() -> f32 { 0.21 }
-fn default_diode_drop() -> f32 { 0.37 }
-fn default_v_min() -> f32 { 0.0 }
-fn default_v_max() -> f32 { 5.0 }
 
 impl Default for HardwareConfig {
     fn default() -> Self {
         Self {
-            v_rail: default_v_rail(),
-            comp_rail_drop: default_comp_rail_drop(),
-            diode_drop: default_diode_drop(),
-            v_min: default_v_min(),
-            v_max: default_v_max(),
+            v_rail: 5.0,
+            comp_rail_drop: 0.21,
+            diode_drop: 0.37,
+            v_min: 0.0,
+            v_max: 5.0,
         }
     }
 }
@@ -318,117 +259,91 @@ impl HardwareConfig {
 
 /// Training configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TrainingConfig {
     /// Learning rate
-    #[serde(default = "default_lr")]
     pub lr: f32,
-
     /// Number of training epochs
-    #[serde(default = "default_epochs")]
     pub epochs: usize,
-
     /// Batch size
-    #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-
     /// Number of timesteps per sample
-    #[serde(default = "default_num_steps")]
     pub num_steps: usize,
-
     /// Random seed
-    #[serde(default = "default_seed")]
     pub seed: u64,
-
     /// Number of parallel workers (0 = auto)
-    #[serde(default)]
     pub num_workers: usize,
-
     /// Truncated BPTT steps (None/0 = full BPTT)
-    #[serde(default)]
     pub bptt_steps: Option<usize>,
 }
-
-fn default_lr() -> f32 { 0.001 }
-fn default_epochs() -> usize { 15 }
-fn default_batch_size() -> usize { 128 }
-fn default_num_steps() -> usize { 25 }
-fn default_seed() -> u64 { 42 }
 
 impl Default for TrainingConfig {
     fn default() -> Self {
         Self {
-            lr: default_lr(),
-            epochs: default_epochs(),
-            batch_size: default_batch_size(),
-            num_steps: default_num_steps(),
-            seed: default_seed(),
+            lr: 0.001,
+            epochs: 15,
+            batch_size: 128,
+            num_steps: 25,
+            seed: 42,
             num_workers: 0,
             bptt_steps: None,
         }
     }
 }
 
-/// Input encoding configuration
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct InputEncodingConfig {
-    /// Encoding type: "rate_coded" or "temporal"
-    #[serde(default = "default_encoding_type")]
-    pub encoding_type: String,
-
-    /// Row spacing for temporal encoding (seconds)
-    #[serde(default = "default_row_spacing")]
-    pub row_spacing: f32,
-
-    /// Pulse width as fraction of row spacing
-    #[serde(default = "default_pulse_width")]
-    pub pulse_width: f32,
+/// Input encoding type
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncodingType {
+    /// All pixels presented simultaneously each timestep
+    RateCoded,
+    /// Rows presented sequentially over time
+    Temporal,
 }
 
-fn default_encoding_type() -> String { "rate_coded".to_string() }
-fn default_row_spacing() -> f32 { 0.0015 }
-fn default_pulse_width() -> f32 { 0.9 }
+/// Input encoding configuration
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputEncodingConfig {
+    /// Encoding type
+    pub encoding_type: EncodingType,
+    /// Row spacing for temporal encoding (seconds)
+    pub row_spacing: f32,
+    /// Pulse width as fraction of row spacing
+    pub pulse_width: f32,
+}
 
 impl Default for InputEncodingConfig {
     fn default() -> Self {
         Self {
-            encoding_type: default_encoding_type(),
-            row_spacing: default_row_spacing(),
-            pulse_width: default_pulse_width(),
+            encoding_type: EncodingType::RateCoded,
+            row_spacing: 0.0015,
+            pulse_width: 0.9,
         }
     }
 }
 
 /// Weight quantization configuration (for digipot simulation)
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QuantizationConfig {
     /// Enable weight quantization
-    #[serde(default)]
     pub enabled: bool,
-
     /// Number of magnitude bits (3 for current sources: 0-7 range)
-    #[serde(default = "default_bits")]
     pub bits: u8,
-
     /// Apply quantization during training (QAT)
-    #[serde(default = "default_apply_during_training")]
     pub apply_during_training: bool,
-
     /// Use symmetric quantization around 0
-    #[serde(default = "default_symmetric")]
     pub symmetric: bool,
 }
-
-fn default_bits() -> u8 { 3 }
-fn default_apply_during_training() -> bool { true }
-fn default_symmetric() -> bool { true }
 
 impl Default for QuantizationConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            bits: default_bits(),
-            apply_during_training: default_apply_during_training(),
-            symmetric: default_symmetric(),
+            bits: 3,
+            apply_during_training: true,
+            symmetric: true,
         }
     }
 }
@@ -459,81 +374,72 @@ impl QuantizationConfig {
 
 /// Noise injection configuration for robustness training
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NoiseConfig {
     /// Enable noise injection
-    #[serde(default)]
     pub enabled: bool,
-
     /// Only apply noise during training
-    #[serde(default = "default_training_only")]
     pub training_only: bool,
-
     /// Weight noise std (relative to weight magnitude)
-    #[serde(default = "default_weight_std")]
     pub weight_std: f32,
-
     /// Threshold noise std (relative to threshold)
-    #[serde(default = "default_threshold_std")]
     pub threshold_std: f32,
-
     /// Membrane noise std (absolute)
-    #[serde(default = "default_membrane_std")]
     pub membrane_std: f32,
-
     /// Input noise std (relative to input)
-    #[serde(default = "default_input_std")]
     pub input_std: f32,
 }
-
-fn default_training_only() -> bool { true }
-fn default_weight_std() -> f32 { 0.05 }
-fn default_threshold_std() -> f32 { 0.02 }
-fn default_membrane_std() -> f32 { 0.01 }
-fn default_input_std() -> f32 { 0.1 }
 
 impl Default for NoiseConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            training_only: default_training_only(),
-            weight_std: default_weight_std(),
-            threshold_std: default_threshold_std(),
-            membrane_std: default_membrane_std(),
-            input_std: default_input_std(),
+            training_only: true,
+            weight_std: 0.05,
+            threshold_std: 0.02,
+            membrane_std: 0.01,
+            input_std: 0.1,
         }
     }
+}
+
+/// Output mode type for configuration
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputModeType {
+    /// Sum spikes over time (standard snnTorch)
+    SpikeCount,
+    /// Use final membrane voltage
+    AnalogFinal,
+    /// Use max membrane voltage over time
+    AnalogMax,
+    /// Use filtered membrane (low-pass)
+    AnalogFiltered,
 }
 
 /// Output mode configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OutputConfig {
-    /// Output mode: "spike_count", "analog_final", "analog_max", "analog_filtered"
-    #[serde(default = "default_output_mode")]
-    pub mode: String,
-
+    /// Output mode
+    pub mode: OutputModeType,
     /// Filter time constant for analog_filtered mode
-    #[serde(default = "default_filter_tau")]
     pub filter_tau: f32,
-
     /// Analog gain for hybrid spike+membrane inter-layer transmission (0.0 = disabled)
-    #[serde(default)]
     pub analog_gain: f32,
 }
-
-fn default_output_mode() -> String { "spike_count".to_string() }
-fn default_filter_tau() -> f32 { 0.002 }
 
 impl Default for OutputConfig {
     fn default() -> Self {
         Self {
-            mode: default_output_mode(),
-            filter_tau: default_filter_tau(),
-            analog_gain: 0.0, // Disabled by default
+            mode: OutputModeType::SpikeCount,
+            filter_tau: 0.002,
+            analog_gain: 0.0,
         }
     }
 }
 
-/// Output mode enum for type-safe mode selection
+/// Runtime output mode with associated data
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputMode {
     /// Sum spikes over time (standard snnTorch)
@@ -547,13 +453,13 @@ pub enum OutputMode {
 }
 
 impl OutputConfig {
-    /// Parse mode string into OutputMode enum
+    /// Convert config into runtime OutputMode
     pub fn to_mode(&self) -> OutputMode {
-        match self.mode.as_str() {
-            "analog_final" => OutputMode::AnalogFinal,
-            "analog_max" => OutputMode::AnalogMax,
-            "analog_filtered" => OutputMode::AnalogFiltered { tau_filter: self.filter_tau },
-            _ => OutputMode::SpikeCount,
+        match self.mode {
+            OutputModeType::AnalogFinal => OutputMode::AnalogFinal,
+            OutputModeType::AnalogMax => OutputMode::AnalogMax,
+            OutputModeType::AnalogFiltered => OutputMode::AnalogFiltered { tau_filter: self.filter_tau },
+            OutputModeType::SpikeCount => OutputMode::SpikeCount,
         }
     }
 }
@@ -565,7 +471,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.mode, "simple");
+        assert_eq!(config.mode, OperationMode::Simple);
         assert_eq!(config.network.input_size, 36);
         assert_eq!(config.neuron.beta, 0.9);
         assert!(!config.quantization.enabled);
@@ -612,10 +518,10 @@ mod tests {
         let mut config = OutputConfig::default();
         assert_eq!(config.to_mode(), OutputMode::SpikeCount);
 
-        config.mode = "analog_final".to_string();
+        config.mode = OutputModeType::AnalogFinal;
         assert_eq!(config.to_mode(), OutputMode::AnalogFinal);
 
-        config.mode = "analog_filtered".to_string();
+        config.mode = OutputModeType::AnalogFiltered;
         config.filter_tau = 0.005;
         match config.to_mode() {
             OutputMode::AnalogFiltered { tau_filter } => {

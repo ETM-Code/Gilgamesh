@@ -47,12 +47,6 @@ impl Tensor2D {
         }
     }
 
-    /// Zero out gradients
-    pub fn zero_grad(&mut self) {
-        if let Some(ref mut g) = self.grad {
-            g.fill(0.0);
-        }
-    }
 }
 
 /// A 1D tensor (vector) with optional gradient storage
@@ -100,12 +94,6 @@ impl Tensor1D {
         }
     }
 
-    /// Zero out gradients
-    pub fn zero_grad(&mut self) {
-        if let Some(ref mut g) = self.grad {
-            g.fill(0.0);
-        }
-    }
 }
 
 /// Matrix multiplication: (batch, in) @ (in, out) -> (batch, out)
