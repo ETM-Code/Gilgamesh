@@ -195,7 +195,7 @@ class SynapseSearch:
 
     def _log(self, msg, indent=0):
         if self.verbose:
-            print("  " * indent + msg)
+            print("  " * indent + msg, flush=True)
 
     def phase1_landscape(self, dims_list):
         """Phase 1: Coarse scan to understand what accuracy each input size can achieve.
@@ -377,12 +377,12 @@ class SynapseSearch:
 
         return best
 
-    def run(self, targets=None):
+    def run(self, targets=None, min_features=9, max_features=120):
         """Run the full multi-phase search."""
         if targets is None:
             targets = TARGET_ACCURACIES
 
-        dims = generate_input_dimensions()
+        dims = generate_input_dimensions(min_features=min_features, max_features=max_features)
         self._log(f"Generated {len(dims)} input dimensions to explore")
         self._log(f"Range: {dims[0][0]}x{dims[0][1]} ({dims[0][0]*dims[0][1]} features) "
                   f"to {dims[-1][0]}x{dims[-1][1]} ({dims[-1][0]*dims[-1][1]} features)")
@@ -494,6 +494,10 @@ def main():
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--quick", action="store_true",
                         help="Quick mode: 3-epoch probes, 8-epoch full")
+    parser.add_argument("--min-features", type=int, default=9,
+                        help="Minimum input features (default: 9)")
+    parser.add_argument("--max-features", type=int, default=120,
+                        help="Maximum input features (default: 120)")
 
     args = parser.parse_args()
 
@@ -512,7 +516,8 @@ def main():
         verbose=not args.quiet,
     )
 
-    results = search.run(args.targets)
+    results = search.run(args.targets, min_features=args.min_features,
+                         max_features=args.max_features)
     save_results(search, results, args.output)
     print(f"\nResults saved to: {args.output}")
     print(f"Total training runs: {len(search.all_results)}")
