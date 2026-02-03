@@ -11,9 +11,9 @@ pub struct NetworkCache {
     // For rate-coded: input is same for all timesteps, passed separately to backward()
     // For temporal: encoded_input stores the per-timestep input for correct gradients
     pub encoded_input: Option<Array2<f32>>,
-    pub cur1: Array2<f32>,
-    pub spk1: Array2<f32>,
-    pub cur2: Array2<f32>,
+    pub hidden_current: Array2<f32>,
+    pub hidden_spikes: Array2<f32>,
+    pub output_current: Array2<f32>,
     pub lif1_cache: LeakyCache,
     pub lif2_cache: LeakyCache,
 }

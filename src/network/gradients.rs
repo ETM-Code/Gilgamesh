@@ -28,39 +28,39 @@ impl NetworkGradients {
     /// Add another gradient to this one
     pub fn add(&mut self, other: &NetworkGradients) {
         self.fc1_weight = &self.fc1_weight + &other.fc1_weight;
-        if let (Some(ref mut a), Some(ref b)) = (&mut self.fc1_bias, &other.fc1_bias) {
-            *a = &*a + b;
+        if let (Some(ref mut acc), Some(ref other_bias)) = (&mut self.fc1_bias, &other.fc1_bias) {
+            *acc = &*acc + other_bias;
         }
         self.fc2_weight = &self.fc2_weight + &other.fc2_weight;
-        if let (Some(ref mut a), Some(ref b)) = (&mut self.fc2_bias, &other.fc2_bias) {
-            *a = &*a + b;
+        if let (Some(ref mut acc), Some(ref other_bias)) = (&mut self.fc2_bias, &other.fc2_bias) {
+            *acc = &*acc + other_bias;
         }
     }
 
     /// Scale gradients by a factor
     pub fn scale(&mut self, factor: f32) {
         self.fc1_weight *= factor;
-        if let Some(ref mut b) = self.fc1_bias {
-            *b *= factor;
+        if let Some(ref mut bias) = self.fc1_bias {
+            *bias *= factor;
         }
         self.fc2_weight *= factor;
-        if let Some(ref mut b) = self.fc2_bias {
-            *b *= factor;
+        if let Some(ref mut bias) = self.fc2_bias {
+            *bias *= factor;
         }
     }
 
     /// Compute the total L2 norm of all gradients
     pub fn total_norm(&self) -> f32 {
-        let mut sum_sq = 0.0f32;
-        sum_sq += self.fc1_weight.iter().map(|x| x * x).sum::<f32>();
-        if let Some(ref b) = self.fc1_bias {
-            sum_sq += b.iter().map(|x| x * x).sum::<f32>();
+        let mut squared_sum = 0.0f32;
+        squared_sum += self.fc1_weight.iter().map(|x| x * x).sum::<f32>();
+        if let Some(ref bias) = self.fc1_bias {
+            squared_sum += bias.iter().map(|x| x * x).sum::<f32>();
         }
-        sum_sq += self.fc2_weight.iter().map(|x| x * x).sum::<f32>();
-        if let Some(ref b) = self.fc2_bias {
-            sum_sq += b.iter().map(|x| x * x).sum::<f32>();
+        squared_sum += self.fc2_weight.iter().map(|x| x * x).sum::<f32>();
+        if let Some(ref bias) = self.fc2_bias {
+            squared_sum += bias.iter().map(|x| x * x).sum::<f32>();
         }
-        sum_sq.sqrt()
+        squared_sum.sqrt()
     }
 
     /// Clip gradients by global norm (in place)

@@ -435,24 +435,24 @@ impl Default for QuantizationConfig {
 
 impl QuantizationConfig {
     /// Quantize a weight value
-    pub fn quantize(&self, w: f32) -> f32 {
+    pub fn quantize(&self, weight: f32) -> f32 {
         if !self.enabled {
-            return w;
+            return weight;
         }
 
-        let levels = (1u32 << self.bits) as f32;
+        let quantization_levels = (1u32 << self.bits) as f32;
 
         if self.symmetric {
             // Symmetric quantization: [-max, +max] mapped to levels
-            let max_val = w.abs();
-            if max_val < 1e-8 {
+            let max_magnitude = weight.abs();
+            if max_magnitude < 1e-8 {
                 return 0.0;
             }
-            let scale = (levels / 2.0) / max_val;
-            ((w * scale).round() / scale).clamp(-max_val, max_val)
+            let quantization_scale = (quantization_levels / 2.0) / max_magnitude;
+            ((weight * quantization_scale).round() / quantization_scale).clamp(-max_magnitude, max_magnitude)
         } else {
             // Asymmetric: just round to nearest level
-            (w * levels).round() / levels
+            (weight * quantization_levels).round() / quantization_levels
         }
     }
 }

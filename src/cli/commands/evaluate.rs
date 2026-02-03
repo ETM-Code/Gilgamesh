@@ -6,17 +6,17 @@ use gilgamesh::training::{Trainer, TrainingConfig};
 /// Prefers square, then factors closest to square, constrained to 4-14 range.
 fn find_image_dimensions(input_size: usize) -> Result<(usize, usize)> {
     // Try square first
-    let sqrt = (input_size as f64).sqrt() as usize;
-    if sqrt * sqrt == input_size && sqrt >= 4 && sqrt <= 14 {
-        return Ok((sqrt, sqrt));
+    let side_length = (input_size as f64).sqrt() as usize;
+    if side_length * side_length == input_size && side_length >= 4 && side_length <= 14 {
+        return Ok((side_length, side_length));
     }
 
     // Find factors closest to square, within reasonable MNIST downsampling range
-    for h in (4..=14).rev() {
-        if input_size % h == 0 {
-            let w = input_size / h;
-            if w >= 4 && w <= 14 {
-                return Ok((w, h));
+    for height_factor in (4..=14).rev() {
+        if input_size % height_factor == 0 {
+            let width_factor = input_size / height_factor;
+            if width_factor >= 4 && width_factor <= 14 {
+                return Ok((width_factor, height_factor));
             }
         }
     }
@@ -35,26 +35,26 @@ pub(crate) fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch
     println!();
 
     println!("Loading checkpoint: {}", checkpoint);
-    let cp = Checkpoint::load(checkpoint)
+    let loaded_checkpoint = Checkpoint::load(checkpoint)
         .with_context(|| format!("Failed to load checkpoint from {}", checkpoint))?;
-    let network = cp
+    let network = loaded_checkpoint
         .to_network()
         .with_context(|| "Failed to reconstruct network from checkpoint")?;
 
     println!(
         "Network: {} → {} → {} ({})",
-        cp.architecture.input_size,
-        cp.architecture.hidden_size,
-        cp.architecture.output_size,
-        cp.architecture.mode
+        loaded_checkpoint.architecture.input_size,
+        loaded_checkpoint.architecture.hidden_size,
+        loaded_checkpoint.architecture.output_size,
+        loaded_checkpoint.architecture.mode
     );
 
     // Get image dimensions from checkpoint if available, otherwise infer
-    let input_size = cp.architecture.input_size;
-    let (width, height) = match (cp.architecture.image_width, cp.architecture.image_height) {
-        (Some(w), Some(h)) => {
-            println!("Using checkpoint dimensions: {}x{}", w, h);
-            (w, h)
+    let input_size = loaded_checkpoint.architecture.input_size;
+    let (width, height) = match (loaded_checkpoint.architecture.image_width, loaded_checkpoint.architecture.image_height) {
+        (Some(width), Some(height)) => {
+            println!("Using checkpoint dimensions: {}x{}", width, height);
+            (width, height)
         }
         _ => {
             let dims = find_image_dimensions(input_size)?;

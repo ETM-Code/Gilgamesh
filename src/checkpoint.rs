@@ -317,15 +317,15 @@ impl Checkpoint {
 
 // Conversion helpers
 
-fn array2_to_vec(arr: &Array2<f32>) -> Vec<Vec<f32>> {
-    arr.rows()
+fn array2_to_vec(matrix: &Array2<f32>) -> Vec<Vec<f32>> {
+    matrix.rows()
         .into_iter()
         .map(|row| row.to_vec())
         .collect()
 }
 
-fn array1_to_vec(arr: &Array1<f32>) -> Vec<f32> {
-    arr.to_vec()
+fn array1_to_vec(vector: &Array1<f32>) -> Vec<f32> {
+    vector.to_vec()
 }
 
 fn vec_to_array2(vec: &[Vec<f32>]) -> Result<Array2<f32>> {
@@ -363,21 +363,21 @@ fn quantize_network_weights(
     bits: u8,
 ) -> QuantizedWeights {
     // For 3-bit magnitude: max = 7
-    let max_mag = ((1i32 << bits) - 1) as f32;
+    let max_magnitude = ((1i32 << bits) - 1) as f32;
 
     // Find max positive and negative weights per layer
-    let (fc1_pos_max, fc1_neg_max) = fc1.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
-        (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
+    let (fc1_pos_max, fc1_neg_max) = fc1.iter().fold((0.0f32, 0.0f32), |(pos, neg), &weight| {
+        (pos.max(weight.max(0.0)), neg.max((-weight).max(0.0)))
     });
-    let (fc2_pos_max, fc2_neg_max) = fc2.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
-        (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
+    let (fc2_pos_max, fc2_neg_max) = fc2.iter().fold((0.0f32, 0.0f32), |(pos, neg), &weight| {
+        (pos.max(weight.max(0.0)), neg.max((-weight).max(0.0)))
     });
 
     // Per-layer, per-sign scales
-    let fc1_pos_scale = if fc1_pos_max > 1e-8 { fc1_pos_max / max_mag } else { 1.0 };
-    let fc1_neg_scale = if fc1_neg_max > 1e-8 { fc1_neg_max / max_mag } else { 1.0 };
-    let fc2_pos_scale = if fc2_pos_max > 1e-8 { fc2_pos_max / max_mag } else { 1.0 };
-    let fc2_neg_scale = if fc2_neg_max > 1e-8 { fc2_neg_max / max_mag } else { 1.0 };
+    let fc1_pos_scale = if fc1_pos_max > 1e-8 { fc1_pos_max / max_magnitude } else { 1.0 };
+    let fc1_neg_scale = if fc1_neg_max > 1e-8 { fc1_neg_max / max_magnitude } else { 1.0 };
+    let fc2_pos_scale = if fc2_pos_max > 1e-8 { fc2_pos_max / max_magnitude } else { 1.0 };
+    let fc2_neg_scale = if fc2_neg_max > 1e-8 { fc2_neg_max / max_magnitude } else { 1.0 };
 
     // Quantize FC1 weights
     let fc1_weight: Vec<Vec<i8>> = fc1
@@ -385,13 +385,13 @@ fn quantize_network_weights(
         .into_iter()
         .map(|row| {
             row.iter()
-                .map(|&w| {
-                    if w >= 0.0 {
-                        let q = (w / fc1_pos_scale).round() as i8;
-                        q.clamp(0, max_mag as i8)
+                .map(|&weight| {
+                    if weight >= 0.0 {
+                        let quantized = (weight / fc1_pos_scale).round() as i8;
+                        quantized.clamp(0, max_magnitude as i8)
                     } else {
-                        let q = ((-w) / fc1_neg_scale).round() as i8;
-                        -q.clamp(0, max_mag as i8)
+                        let quantized = ((-weight) / fc1_neg_scale).round() as i8;
+                        -quantized.clamp(0, max_magnitude as i8)
                     }
                 })
                 .collect()
@@ -404,13 +404,13 @@ fn quantize_network_weights(
         .into_iter()
         .map(|row| {
             row.iter()
-                .map(|&w| {
-                    if w >= 0.0 {
-                        let q = (w / fc2_pos_scale).round() as i8;
-                        q.clamp(0, max_mag as i8)
+                .map(|&weight| {
+                    if weight >= 0.0 {
+                        let quantized = (weight / fc2_pos_scale).round() as i8;
+                        quantized.clamp(0, max_magnitude as i8)
                     } else {
-                        let q = ((-w) / fc2_neg_scale).round() as i8;
-                        -q.clamp(0, max_mag as i8)
+                        let quantized = ((-weight) / fc2_neg_scale).round() as i8;
+                        -quantized.clamp(0, max_magnitude as i8)
                     }
                 })
                 .collect()
@@ -419,7 +419,7 @@ fn quantize_network_weights(
 
     QuantizedWeights {
         magnitude_bits: bits,
-        max_magnitude: max_mag as i8,
+        max_magnitude: max_magnitude as i8,
         fc1_pos_scale,
         fc1_neg_scale,
         fc1_weight,

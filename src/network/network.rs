@@ -172,18 +172,18 @@ impl Network {
         quant_bits: Option<u8>,
     ) -> (Array2<f32>, Array2<f32>, NetworkState, NetworkCache) {
         // Layer 1: FC -> LIF
-        let cur1 = match quant_bits {
+        let hidden_current = match quant_bits {
             Some(bits) => self.fc1.forward_quantized(input, bits),
             None => self.fc1.forward(input),
         };
-        let (spk1, lif1_state, lif1_cache) = self.lif1.forward(&cur1, &state.lif1_state);
+        let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward(&hidden_current, &state.lif1_state);
 
         // Layer 2: FC -> LIF
-        let cur2 = match quant_bits {
-            Some(bits) => self.fc2.forward_quantized(&spk1, bits),
-            None => self.fc2.forward(&spk1),
+        let output_current = match quant_bits {
+            Some(bits) => self.fc2.forward_quantized(&hidden_spikes, bits),
+            None => self.fc2.forward(&hidden_spikes),
         };
-        let (spk2, lif2_state, lif2_cache) = self.lif2.forward(&cur2, &state.lif2_state);
+        let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward(&output_current, &state.lif2_state);
 
         let new_state = NetworkState {
             lif1_state,
@@ -192,15 +192,15 @@ impl Network {
 
         let cache = NetworkCache {
             encoded_input: None,
-            cur1,
-            spk1,
-            cur2,
+            hidden_current,
+            hidden_spikes,
+            output_current,
             lif1_cache,
             lif2_cache,
         };
 
         // Return output spikes and membrane potential
-        (spk2, new_state.lif2_state.mem.clone(), new_state, cache)
+        (output_spikes, new_state.lif2_state.mem.clone(), new_state, cache)
     }
 
     /// Full forward pass over multiple timesteps (rate-coded input)
@@ -234,12 +234,12 @@ impl Network {
         dt: f32,
     ) -> (Array2<f32>, Array2<f32>, NetworkState, NetworkCache) {
         // Layer 1: FC -> LIF with variable dt
-        let cur1 = self.fc1.forward(input);
-        let (spk1, lif1_state, lif1_cache) = self.lif1.forward_with_dt(&cur1, &state.lif1_state, dt);
+        let hidden_current = self.fc1.forward(input);
+        let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward_with_dt(&hidden_current, &state.lif1_state, dt);
 
         // Layer 2: FC -> LIF with variable dt
-        let cur2 = self.fc2.forward(&spk1);
-        let (spk2, lif2_state, lif2_cache) = self.lif2.forward_with_dt(&cur2, &state.lif2_state, dt);
+        let output_current = self.fc2.forward(&hidden_spikes);
+        let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward_with_dt(&output_current, &state.lif2_state, dt);
 
         let new_state = NetworkState {
             lif1_state,
@@ -248,14 +248,14 @@ impl Network {
 
         let cache = NetworkCache {
             encoded_input: None,
-            cur1,
-            spk1,
-            cur2,
+            hidden_current,
+            hidden_spikes,
+            output_current,
             lif1_cache,
             lif2_cache,
         };
 
-        (spk2, new_state.lif2_state.mem.clone(), new_state, cache)
+        (output_spikes, new_state.lif2_state.mem.clone(), new_state, cache)
     }
 
     /// Full forward pass with optional weight quantization
@@ -294,33 +294,33 @@ impl Network {
 
         for _ in 0..num_steps {
             // Layer 1: FC -> LIF (using pre-quantized weights)
-            let mut cur1 = input.dot(&fc1_weight);
+            let mut hidden_current = input.dot(&fc1_weight);
             if let Some(ref b) = self.fc1.bias {
-                for mut row in cur1.rows_mut() {
+                for mut row in hidden_current.rows_mut() {
                     row += b;
                 }
             }
-            let (spk1, lif1_state, lif1_cache) = self.lif1.forward(&cur1, &state.lif1_state);
+            let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward(&hidden_current, &state.lif1_state);
 
             // Layer 2: FC -> LIF (using pre-quantized weights)
-            let mut cur2 = spk1.dot(&fc2_weight);
+            let mut output_current = hidden_spikes.dot(&fc2_weight);
             if let Some(ref b) = self.fc2.bias {
-                for mut row in cur2.rows_mut() {
+                for mut row in output_current.rows_mut() {
                     row += b;
                 }
             }
-            let (spk2, lif2_state, lif2_cache) = self.lif2.forward(&cur2, &state.lif2_state);
+            let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward(&output_current, &state.lif2_state);
 
             // Update spike count in-place to avoid allocation
-            spike_count += &spk2;
+            spike_count += &output_spikes;
             final_mem = lif2_state.mem.clone();
 
             state = NetworkState { lif1_state, lif2_state };
             caches.push(NetworkCache {
                 encoded_input: None,
-                cur1,
-                spk1,
-                cur2,
+                hidden_current,
+                hidden_spikes,
+                output_current,
                 lif1_cache,
                 lif2_cache,
             });
@@ -352,9 +352,9 @@ impl Network {
         let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
 
         for _ in 0..num_steps {
-            let (spk2, mem2, new_state, cache) = self.forward_step_with_dt(input, &state, dt);
-            spike_count += &spk2;
-            final_mem = mem2;
+            let (output_spikes, output_membrane, new_state, cache) = self.forward_step_with_dt(input, &state, dt);
+            spike_count += &output_spikes;
+            final_mem = output_membrane;
             state = new_state;
             caches.push(cache);
         }
@@ -380,15 +380,15 @@ impl Network {
         dt: f32,
     ) -> (Array2<f32>, Array2<f32>, NetworkState, NetworkCache) {
         // Layer 1: FC -> LIF with pulse output
-        let cur1 = self.fc1.forward(input);
+        let hidden_current = self.fc1.forward(input);
         let (pulse1, lif1_state, lif1_cache) =
-            self.lif1.forward_with_pulse(&cur1, &state.lif1_state, dt);
+            self.lif1.forward_with_pulse(&hidden_current, &state.lif1_state, dt);
 
         // Layer 2: FC -> LIF with pulse output
         // The hidden layer output is pulse-shaped, transmitted to output layer
-        let cur2 = self.fc2.forward(&pulse1);
+        let output_current = self.fc2.forward(&pulse1);
         let (pulse2, lif2_state, lif2_cache) =
-            self.lif2.forward_with_pulse(&cur2, &state.lif2_state, dt);
+            self.lif2.forward_with_pulse(&output_current, &state.lif2_state, dt);
 
         let new_state = NetworkState {
             lif1_state,
@@ -397,9 +397,9 @@ impl Network {
 
         let cache = NetworkCache {
             encoded_input: None,
-            cur1,
-            spk1: lif1_cache.spikes.clone(), // Binary spikes for backward
-            cur2,
+            hidden_current,
+            hidden_spikes: lif1_cache.spikes.clone(), // Binary spikes for backward
+            output_current,
             lif1_cache,
             lif2_cache,
         };
@@ -434,10 +434,10 @@ impl Network {
         let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
 
         for _ in 0..num_steps {
-            let (_, mem2, new_state, cache) = self.forward_step_with_pulse(input, &state, dt);
+            let (_, output_membrane, new_state, cache) = self.forward_step_with_pulse(input, &state, dt);
             // Accumulate binary spikes (not pulses) for classification
             spike_count += &cache.lif2_cache.spikes;
-            final_mem = mem2;
+            final_mem = output_membrane;
             state = new_state;
             caches.push(cache);
         }
@@ -455,14 +455,14 @@ impl Network {
         dt: f32,
     ) -> (Array2<f32>, Array2<f32>, NetworkState, NetworkCache) {
         // Layer 1: FC -> LIF with adaptation
-        let cur1 = self.fc1.forward(input);
-        let (spk1, lif1_state, lif1_cache) =
-            self.lif1.forward_with_adaptation(&cur1, &state.lif1_state, dt);
+        let hidden_current = self.fc1.forward(input);
+        let (hidden_spikes, lif1_state, lif1_cache) =
+            self.lif1.forward_with_adaptation(&hidden_current, &state.lif1_state, dt);
 
         // Layer 2: FC -> LIF with adaptation
-        let cur2 = self.fc2.forward(&spk1);
-        let (spk2, lif2_state, lif2_cache) =
-            self.lif2.forward_with_adaptation(&cur2, &state.lif2_state, dt);
+        let output_current = self.fc2.forward(&hidden_spikes);
+        let (output_spikes, lif2_state, lif2_cache) =
+            self.lif2.forward_with_adaptation(&output_current, &state.lif2_state, dt);
 
         let new_state = NetworkState {
             lif1_state,
@@ -471,15 +471,15 @@ impl Network {
 
         let cache = NetworkCache {
             encoded_input: None,
-            cur1,
-            spk1,
-            cur2,
+            hidden_current,
+            hidden_spikes,
+            output_current,
             lif1_cache,
             lif2_cache,
         };
 
         // Return actual membrane potential (consistent with other forward_step methods)
-        (spk2, new_state.lif2_state.mem.clone(), new_state, cache)
+        (output_spikes, new_state.lif2_state.mem.clone(), new_state, cache)
     }
 
     /// Full forward pass with threshold adaptation
@@ -507,9 +507,9 @@ impl Network {
         let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
 
         for _ in 0..num_steps {
-            let (spk2, mem2, new_state, cache) = self.forward_step_with_adaptation(input, &state, dt);
-            spike_count += &spk2;
-            final_mem = mem2;
+            let (output_spikes, output_membrane, new_state, cache) = self.forward_step_with_adaptation(input, &state, dt);
+            spike_count += &output_spikes;
+            final_mem = output_membrane;
             state = new_state;
             caches.push(cache);
         }
@@ -580,14 +580,14 @@ impl Network {
             };
 
             // Layer 1: FC -> LIF
-            let mut cur1 = noisy_input.dot(&fc1_weight);
+            let mut hidden_current = noisy_input.dot(&fc1_weight);
             if let Some(ref b) = self.fc1.bias {
-                for mut row in cur1.rows_mut() {
+                for mut row in hidden_current.rows_mut() {
                     row += b;
                 }
             }
-            let (spk1, lif1_state, lif1_cache) = self.lif1.forward_noisy(
-                &cur1,
+            let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward_noisy(
+                &hidden_current,
                 &state.lif1_state,
                 threshold_noise_std,
                 membrane_noise_std,
@@ -595,28 +595,28 @@ impl Network {
             );
 
             // Layer 2: FC -> LIF
-            let mut cur2 = spk1.dot(&fc2_weight);
+            let mut output_current = hidden_spikes.dot(&fc2_weight);
             if let Some(ref b) = self.fc2.bias {
-                for mut row in cur2.rows_mut() {
+                for mut row in output_current.rows_mut() {
                     row += b;
                 }
             }
-            let (spk2, lif2_state, lif2_cache) = self.lif2.forward_noisy(
-                &cur2,
+            let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward_noisy(
+                &output_current,
                 &state.lif2_state,
                 threshold_noise_std,
                 membrane_noise_std,
                 rng,
             );
 
-            spike_count += &spk2;
+            spike_count += &output_spikes;
 
             state = NetworkState { lif1_state, lif2_state };
             caches.push(NetworkCache {
                 encoded_input: None,
-                cur1,
-                spk1,
-                cur2,
+                hidden_current,
+                hidden_spikes,
+                output_current,
                 lif1_cache,
                 lif2_cache,
             });
@@ -653,23 +653,23 @@ impl Network {
 
         for _ in 0..num_steps {
             // Layer 1: FC -> LIF
-            let cur1 = self.fc1.forward(input);
-            let (spk1, lif1_state, lif1_cache) = self.lif1.forward(&cur1, &state.lif1_state);
+            let hidden_current = self.fc1.forward(input);
+            let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward(&hidden_current, &state.lif1_state);
 
             // Inter-layer signal: spikes + analog membrane (if enabled)
             let layer1_output = if analog_gain > 0.0 {
                 // Combine binary spikes with amplified membrane voltage
-                &spk1 + &(&lif1_state.mem * analog_gain)
+                &hidden_spikes + &(&lif1_state.mem * analog_gain)
             } else {
                 // Pure spike-based (default)
-                spk1.clone()
+                hidden_spikes.clone()
             };
 
             // Layer 2: FC -> LIF (receives combined signal)
-            let cur2 = self.fc2.forward(&layer1_output);
-            let (spk2, lif2_state, lif2_cache) = self.lif2.forward(&cur2, &state.lif2_state);
+            let output_current = self.fc2.forward(&layer1_output);
+            let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward(&output_current, &state.lif2_state);
 
-            spike_count += &spk2;
+            spike_count += &output_spikes;
             final_mem = lif2_state.mem.clone();
 
             state = NetworkState {
@@ -678,9 +678,9 @@ impl Network {
             };
             caches.push(NetworkCache {
                 encoded_input: None,
-                cur1,
-                spk1, // Store original spikes for backward pass
-                cur2,
+                hidden_current,
+                hidden_spikes, // Store original spikes for backward pass
+                output_current,
                 lif1_cache,
                 lif2_cache,
             });
@@ -724,13 +724,13 @@ impl Network {
             let encoded_input = encoder.encode_timestep(input, t);
 
             // Standard forward step
-            let cur1 = self.fc1.forward(&encoded_input);
-            let (spk1, lif1_state, lif1_cache) = self.lif1.forward(&cur1, &state.lif1_state);
+            let hidden_current = self.fc1.forward(&encoded_input);
+            let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward(&hidden_current, &state.lif1_state);
 
-            let cur2 = self.fc2.forward(&spk1);
-            let (spk2, lif2_state, lif2_cache) = self.lif2.forward(&cur2, &state.lif2_state);
+            let output_current = self.fc2.forward(&hidden_spikes);
+            let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward(&output_current, &state.lif2_state);
 
-            spike_count += &spk2;
+            spike_count += &output_spikes;
             final_mem = lif2_state.mem.clone();
 
             state = NetworkState { lif1_state, lif2_state };
@@ -739,9 +739,9 @@ impl Network {
             // For rate-coded, encoder returns input unchanged so this is equivalent
             caches.push(NetworkCache {
                 encoded_input: Some(encoded_input),
-                cur1,
-                spk1,
-                cur2,
+                hidden_current,
+                hidden_spikes,
+                output_current,
                 lif1_cache,
                 lif2_cache,
             });
@@ -791,36 +791,36 @@ impl Network {
         let grad_per_step = grad_output / num_steps as f32;
 
         // Membrane gradients from next timestep (for BPTT)
-        let mut grad_mem1_next = Array2::zeros((batch_size, self.lif1.size));
-        let mut grad_mem2_next = Array2::zeros((batch_size, self.lif2.size));
+        let mut grad_hidden_membrane_next = Array2::zeros((batch_size, self.lif1.size));
+        let mut grad_output_membrane_next = Array2::zeros((batch_size, self.lif2.size));
 
         // Process timesteps in reverse order (only the truncated subset)
         for cache in caches_to_use.iter().rev() {
             // Backward through LIF2
-            let (grad_cur2, grad_mem2_prev) =
-                self.lif2.backward(&grad_per_step, &grad_mem2_next, &cache.lif2_cache);
-            grad_mem2_next = grad_mem2_prev;
+            let (grad_output_current, grad_output_membrane_prev) =
+                self.lif2.backward(&grad_per_step, &grad_output_membrane_next, &cache.lif2_cache);
+            grad_output_membrane_next = grad_output_membrane_prev;
 
             // Backward through FC2
-            let (grad_spk1, gw2, gb2) = self.fc2.backward(&cache.spk1, &grad_cur2);
-            grad_fc2_weight = &grad_fc2_weight + &gw2;
-            if let (Some(ref mut acc), Some(gb)) = (&mut grad_fc2_bias, gb2) {
-                *acc = &*acc + &gb;
+            let (grad_hidden_spikes, fc2_weight_grad, fc2_bias_grad) = self.fc2.backward(&cache.hidden_spikes, &grad_output_current);
+            grad_fc2_weight = &grad_fc2_weight + &fc2_weight_grad;
+            if let (Some(ref mut acc), Some(bias_grad)) = (&mut grad_fc2_bias, fc2_bias_grad) {
+                *acc = &*acc + &bias_grad;
             }
 
             // Backward through LIF1
-            let (grad_cur1, grad_mem1_prev) =
-                self.lif1.backward(&grad_spk1, &grad_mem1_next, &cache.lif1_cache);
-            grad_mem1_next = grad_mem1_prev;
+            let (grad_hidden_current, grad_hidden_membrane_prev) =
+                self.lif1.backward(&grad_hidden_spikes, &grad_hidden_membrane_next, &cache.lif1_cache);
+            grad_hidden_membrane_next = grad_hidden_membrane_prev;
 
             // Backward through FC1
             // Use encoded_input from cache if available (temporal encoding),
             // otherwise use the static input (rate-coded)
             let fc1_input = cache.encoded_input.as_ref().unwrap_or(input);
-            let (_, gw1, gb1) = self.fc1.backward(fc1_input, &grad_cur1);
-            grad_fc1_weight = &grad_fc1_weight + &gw1;
-            if let (Some(ref mut acc), Some(gb)) = (&mut grad_fc1_bias, gb1) {
-                *acc = &*acc + &gb;
+            let (_, fc1_weight_grad, fc1_bias_grad) = self.fc1.backward(fc1_input, &grad_hidden_current);
+            grad_fc1_weight = &grad_fc1_weight + &fc1_weight_grad;
+            if let (Some(ref mut acc), Some(bias_grad)) = (&mut grad_fc1_bias, fc1_bias_grad) {
+                *acc = &*acc + &bias_grad;
             }
         }
 
@@ -835,13 +835,13 @@ impl Network {
     /// Apply gradient update with learning rate
     pub fn apply_gradients(&mut self, grads: &NetworkGradients, lr: f32) {
         self.fc1.weight = &self.fc1.weight - &(&grads.fc1_weight * lr);
-        if let (Some(ref mut b), Some(ref gb)) = (&mut self.fc1.bias, &grads.fc1_bias) {
-            *b = &*b - &(gb * lr);
+        if let (Some(ref mut bias), Some(ref bias_grad)) = (&mut self.fc1.bias, &grads.fc1_bias) {
+            *bias = &*bias - &(bias_grad * lr);
         }
 
         self.fc2.weight = &self.fc2.weight - &(&grads.fc2_weight * lr);
-        if let (Some(ref mut b), Some(ref gb)) = (&mut self.fc2.bias, &grads.fc2_bias) {
-            *b = &*b - &(gb * lr);
+        if let (Some(ref mut bias), Some(ref bias_grad)) = (&mut self.fc2.bias, &grads.fc2_bias) {
+            *bias = &*bias - &(bias_grad * lr);
         }
     }
 
@@ -881,24 +881,24 @@ impl Network {
 
         for _ in 0..num_steps {
             // Layer 1: FC -> LIF
-            let cur1 = self.fc1.forward(input);
-            let (spk1, lif1_state, _) = self.lif1.forward(&cur1, &state.lif1_state);
+            let hidden_current = self.fc1.forward(input);
+            let (hidden_spikes, lif1_state, _) = self.lif1.forward(&hidden_current, &state.lif1_state);
 
             // Record hidden layer state
-            hidden_current_history.push(cur1);
+            hidden_current_history.push(hidden_current);
             hidden_mem_history.push(lif1_state.mem.clone());
-            hidden_spike_history.push(spk1.clone());
+            hidden_spike_history.push(hidden_spikes.clone());
 
             // Layer 2: FC -> LIF
-            let cur2 = self.fc2.forward(&spk1);
-            let (spk2, lif2_state, _) = self.lif2.forward(&cur2, &state.lif2_state);
+            let output_current = self.fc2.forward(&hidden_spikes);
+            let (output_spikes, lif2_state, _) = self.lif2.forward(&output_current, &state.lif2_state);
 
             // Record output layer state
-            output_current_history.push(cur2);
+            output_current_history.push(output_current);
             output_mem_history.push(lif2_state.mem.clone());
-            output_spike_history.push(spk2.clone());
+            output_spike_history.push(output_spikes.clone());
 
-            spike_count += &spk2;
+            spike_count += &output_spikes;
 
             state = NetworkState {
                 lif1_state,

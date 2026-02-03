@@ -371,9 +371,9 @@ impl SpiceNetlist {
         if let Some(ref bias) = net.fc1.bias {
             content.push_str("\n* Hidden layer bias currents\n");
             for h in 0..hidden_size {
-                let b = bias[h];
-                if b.abs() > 1e-6 {
-                    let scaled_bias = b * current_gain;
+                let bias_value = bias[h];
+                if bias_value.abs() > 1e-6 {
+                    let scaled_bias = bias_value * current_gain;
                     // Positive bias should depolarize (inject into sum).
                     content.push_str(&format!("Ib1_{} 0 sum_h_{} DC {:.6e}\n", h, h, scaled_bias));
                 }
@@ -421,9 +421,9 @@ impl SpiceNetlist {
         if let Some(ref bias) = net.fc2.bias {
             content.push_str("\n* Output layer bias currents\n");
             for o in 0..output_size {
-                let b = bias[o];
-                if b.abs() > 1e-6 {
-                    let scaled_bias = b * current_gain;
+                let bias_value = bias[o];
+                if bias_value.abs() > 1e-6 {
+                    let scaled_bias = bias_value * current_gain;
                     content.push_str(&format!("Ib2_{} 0 sum_o_{} DC {:.6e}\n", o, o, scaled_bias));
                 }
             }

@@ -17,25 +17,25 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 /// Uses symmetric quantization around 0, mapping [-max, +max] to n-bit levels.
 /// For 8-bit: 127 positive levels, 127 negative levels, 1 zero (255 total values).
 #[inline]
-pub fn quantize_weight(w: f32, bits: u8, w_max: f32) -> f32 {
-    if w_max < 1e-8 || bits < 2 {
+pub fn quantize_weight(weight: f32, bits: u8, max_magnitude: f32) -> f32 {
+    if max_magnitude < 1e-8 || bits < 2 {
         return 0.0;
     }
     // Clamp bits to reasonable range
     let bits = bits.min(16);
     // Use 2^(bits-1) - 1 for proper symmetric signed quantization
     let levels = ((1u32 << (bits - 1)) - 1) as f32;
-    let scale = levels / w_max;
-    let q = (w * scale).round() / scale;
-    q.clamp(-w_max, w_max)
+    let scale = levels / max_magnitude;
+    let quantized = (weight * scale).round() / scale;
+    quantized.clamp(-max_magnitude, max_magnitude)
 }
 
 /// Quantize a weight array in-place (for efficiency)
 pub fn quantize_weights(weights: &Array2<f32>, bits: u8) -> Array2<f32> {
     // Find max absolute weight for scaling
-    let w_max = weights.iter().fold(0.0f32, |acc, &w| acc.max(w.abs()));
+    let max_magnitude = weights.iter().fold(0.0f32, |acc, &weight| acc.max(weight.abs()));
 
-    weights.mapv(|w| quantize_weight(w, bits, w_max))
+    weights.mapv(|weight| quantize_weight(weight, bits, max_magnitude))
 }
 
 /// Linear (fully connected) layer
@@ -130,10 +130,10 @@ impl Linear {
     ///   output: [batch, out_features]
     pub fn forward(&self, input: &Array2<f32>) -> Array2<f32> {
         let mut output = input.dot(&self.weight);
-        if let Some(ref b) = self.bias {
+        if let Some(ref bias) = self.bias {
             // Broadcast bias across batch dimension
             for mut row in output.rows_mut() {
-                row += b;
+                row += bias;
             }
         }
         // Apply current gain for hardware simulation
@@ -158,9 +158,9 @@ impl Linear {
     pub fn forward_quantized(&self, input: &Array2<f32>, bits: u8) -> Array2<f32> {
         let quantized_weight = quantize_weights(&self.weight, bits);
         let mut output = input.dot(&quantized_weight);
-        if let Some(ref b) = self.bias {
+        if let Some(ref bias) = self.bias {
             for mut row in output.rows_mut() {
-                row += b;
+                row += bias;
             }
         }
         if let Some(gain) = self.current_gain {
@@ -191,18 +191,18 @@ impl Linear {
         // Add relative noise to weights
         let noisy_weight = if weight_noise_std > 0.0 {
             let normal = Normal::new(0.0, weight_noise_std as f64).unwrap();
-            self.weight.mapv(|w| {
+            self.weight.mapv(|weight| {
                 let noise = normal.sample(rng) as f32;
-                w * (1.0 + noise)
+                weight * (1.0 + noise)
             })
         } else {
             self.weight.clone()
         };
 
         let mut output = input.dot(&noisy_weight);
-        if let Some(ref b) = self.bias {
+        if let Some(ref bias) = self.bias {
             for mut row in output.rows_mut() {
-                row += b;
+                row += bias;
             }
         }
         if let Some(gain) = self.current_gain {
@@ -243,8 +243,8 @@ impl Linear {
     /// Apply gradient update with learning rate
     pub fn apply_gradient(&mut self, grad_weight: &Array2<f32>, grad_bias: Option<&Array1<f32>>, lr: f32) {
         self.weight = &self.weight - &(grad_weight * lr);
-        if let (Some(ref mut b), Some(gb)) = (&mut self.bias, grad_bias) {
-            *b = &*b - &(gb * lr);
+        if let (Some(ref mut bias), Some(bias_grad)) = (&mut self.bias, grad_bias) {
+            *bias = &*bias - &(bias_grad * lr);
         }
     }
 
@@ -324,17 +324,17 @@ mod tests {
     #[test]
     fn test_quantize_weight() {
         // Test 8-bit quantization
-        let w_max = 1.0;
+        let max_magnitude = 1.0;
 
         // Zero should stay zero
-        assert_eq!(quantize_weight(0.0, 8, w_max), 0.0);
+        assert_eq!(quantize_weight(0.0, 8, max_magnitude), 0.0);
 
         // Max should stay max
-        assert!((quantize_weight(1.0, 8, w_max) - 1.0).abs() < 0.01);
+        assert!((quantize_weight(1.0, 8, max_magnitude) - 1.0).abs() < 0.01);
 
         // Values should be rounded to discrete levels
-        let q = quantize_weight(0.5, 8, w_max);
-        assert!(q.is_finite());
+        let quantized = quantize_weight(0.5, 8, max_magnitude);
+        assert!(quantized.is_finite());
     }
 
     #[test]

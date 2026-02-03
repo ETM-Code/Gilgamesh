@@ -82,25 +82,25 @@ impl MnistDataset {
             let img_data = &raw[start..start + pixels_per_image];
 
             // Downsample by averaging (supports non-integer scales)
-            for ty in 0..target_height {
-                for tx in 0..target_width {
+            for target_y in 0..target_height {
+                for target_x in 0..target_width {
                     let mut sum = 0.0f32;
                     let mut count = 0;
 
                     // Source region bounds
-                    let sy_start = (ty as f32 * scale_y) as usize;
-                    let sy_end = ((ty + 1) as f32 * scale_y).ceil() as usize;
-                    let sx_start = (tx as f32 * scale_x) as usize;
-                    let sx_end = ((tx + 1) as f32 * scale_x).ceil() as usize;
+                    let source_y_start = (target_y as f32 * scale_y) as usize;
+                    let source_y_end = ((target_y + 1) as f32 * scale_y).ceil() as usize;
+                    let source_x_start = (target_x as f32 * scale_x) as usize;
+                    let source_x_end = ((target_x + 1) as f32 * scale_x).ceil() as usize;
 
-                    for sy in sy_start..sy_end.min(original_size) {
-                        for sx in sx_start..sx_end.min(original_size) {
-                            sum += img_data[sy * original_size + sx] as f32;
+                    for source_y in source_y_start..source_y_end.min(original_size) {
+                        for source_x in source_x_start..source_x_end.min(original_size) {
+                            sum += img_data[source_y * original_size + source_x] as f32;
                             count += 1;
                         }
                     }
 
-                    let pixel_idx = ty * target_width + tx;
+                    let pixel_idx = target_y * target_width + target_x;
                     // Normalize to [0, 1] then apply MNIST normalization
                     let normalized = if count > 0 { (sum / count as f32) / 255.0 } else { 0.0 };
                     // MNIST normalization: (x - 0.1307) / 0.3081

@@ -9,7 +9,7 @@ use ndarray::array;
 use std::path::Path;
 
 
-pub(crate) fn run_spice_mini(
+pub(crate) fn run_spice_test_harness(
     output_dir: &str,
     run_ngspice: bool,
     two_neurons: bool,
@@ -119,7 +119,7 @@ pub(crate) fn run_spice_mini(
 
     if two_neurons {
         let rust_out = output_path.join("rust_two_neuron.csv");
-        run_two_neuron_rust(
+        simulate_two_neurons(
             c_mem,
             r_leak,
             threshold,
@@ -142,7 +142,7 @@ pub(crate) fn run_spice_mini(
         println!("Rust output:     {}", rust_out.display());
     } else {
         let rust_out = output_path.join("rust_single_neuron.csv");
-        run_single_neuron_rust(
+        simulate_single_neuron(
             c_mem,
             r_leak,
             threshold,
@@ -199,7 +199,7 @@ fn compute_reset_floor(params: &SpiceParams, reset_hold: f32, theta_low: f32) ->
     theta_low * (-reset_hold / tau_reset).exp()
 }
 
-fn build_hardware_mode(
+fn create_hardware_neuron_mode(
     tau_m: f32,
     dt: f32,
     tau_pulse: f32,
@@ -238,7 +238,7 @@ fn build_hardware_mode(
     }
 }
 
-fn run_single_neuron_rust(
+fn simulate_single_neuron(
     c_mem: f32,
     r_leak: f32,
     threshold: f32,
@@ -274,7 +274,7 @@ fn run_single_neuron_rust(
         i_total_max: 50e-6,
     };
 
-    let mode = build_hardware_mode(
+    let mode = create_hardware_neuron_mode(
         tau_m,
         dt,
         tau_pulse,
@@ -326,7 +326,7 @@ fn run_single_neuron_rust(
     Ok(())
 }
 
-fn run_two_neuron_rust(
+fn simulate_two_neurons(
     c_mem: f32,
     r_leak: f32,
     threshold: f32,
@@ -363,7 +363,7 @@ fn run_two_neuron_rust(
         i_total_max: 50e-6,
     };
 
-    let mode_a = build_hardware_mode(
+    let mode_a = create_hardware_neuron_mode(
         tau_m,
         dt,
         tau_pulse,
@@ -376,7 +376,7 @@ fn run_two_neuron_rust(
         theta_low,
         theta_high,
     );
-    let mode_b = build_hardware_mode(
+    let mode_b = create_hardware_neuron_mode(
         tau_m,
         dt,
         tau_pulse,

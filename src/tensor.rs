@@ -109,15 +109,15 @@ impl Tensor1D {
 }
 
 /// Matrix multiplication: (batch, in) @ (in, out) -> (batch, out)
-pub fn matmul(a: &Array2<f32>, b: &Array2<f32>) -> Array2<f32> {
-    a.dot(b)
+pub fn matmul(lhs: &Array2<f32>, rhs: &Array2<f32>) -> Array2<f32> {
+    lhs.dot(rhs)
 }
 
 /// Batched matrix-vector multiplication with bias
 pub fn linear_forward(input: &Array2<f32>, weight: &Array2<f32>, bias: Option<&Array1<f32>>) -> Array2<f32> {
     let mut output = input.dot(weight);
-    if let Some(b) = bias {
-        output += b;
+    if let Some(bias_vec) = bias {
+        output += bias_vec;
     }
     output
 }
@@ -167,13 +167,13 @@ pub fn cross_entropy_loss(logits: &Array2<f32>, targets: &[usize]) -> (f32, Arra
 
 /// Heaviside step function (spike generation)
 #[inline]
-pub fn heaviside(x: f32) -> f32 {
-    if x > 0.0 { 1.0 } else { 0.0 }
+pub fn heaviside(value: f32) -> f32 {
+    if value > 0.0 { 1.0 } else { 0.0 }
 }
 
 /// Element-wise heaviside for arrays
-pub fn heaviside_array(x: &Array2<f32>) -> Array2<f32> {
-    x.mapv(heaviside)
+pub fn heaviside_array(values: &Array2<f32>) -> Array2<f32> {
+    values.mapv(heaviside)
 }
 
 #[cfg(test)]

@@ -55,37 +55,37 @@ impl SurrogateGradient {
     }
 
     /// Forward pass: Heaviside step function
-    /// Returns 1.0 if x > 0, else 0.0
+    /// Returns 1.0 if shifted_potential > 0, else 0.0
     #[inline]
-    pub fn forward(&self, x: f32) -> f32 {
-        if x > 0.0 { 1.0 } else { 0.0 }
+    pub fn forward(&self, shifted_potential: f32) -> f32 {
+        if shifted_potential > 0.0 { 1.0 } else { 0.0 }
     }
 
     /// Backward pass: Surrogate gradient
-    /// x is (membrane - threshold), i.e., the input to the Heaviside function
+    /// shifted_potential is (membrane - threshold), i.e., the input to the Heaviside function
     #[inline]
-    pub fn backward(&self, x: f32) -> f32 {
+    pub fn backward(&self, shifted_potential: f32) -> f32 {
         match self {
             SurrogateGradient::FastSigmoid { slope } => {
-                // grad = 1 / (slope * |x| + 1)^2
-                let denom = slope * x.abs() + 1.0;
+                // grad = 1 / (slope * |shifted_potential| + 1)^2
+                let denom = slope * shifted_potential.abs() + 1.0;
                 1.0 / (denom * denom)
             }
             SurrogateGradient::ATan { alpha } => {
-                // grad = alpha / 2 / (1 + (pi/2 * alpha * x)^2)
+                // grad = alpha / 2 / (1 + (pi/2 * alpha * shifted_potential)^2)
                 let pi_half = std::f32::consts::FRAC_PI_2;
-                let scaled = pi_half * alpha * x;
+                let scaled = pi_half * alpha * shifted_potential;
                 alpha / 2.0 / (1.0 + scaled * scaled)
             }
             SurrogateGradient::Sigmoid { slope } => {
-                // grad = slope * exp(-slope * x) / (exp(-slope * x) + 1)^2
-                let exp_neg = (-slope * x).exp();
+                // grad = slope * exp(-slope * shifted_potential) / (exp(-slope * shifted_potential) + 1)^2
+                let exp_neg = (-slope * shifted_potential).exp();
                 let denom = exp_neg + 1.0;
                 slope * exp_neg / (denom * denom)
             }
             SurrogateGradient::StraightThrough => 1.0,
             SurrogateGradient::Triangular { threshold } => {
-                if x < 0.0 {
+                if shifted_potential < 0.0 {
                     *threshold
                 } else {
                     -threshold
@@ -95,13 +95,13 @@ impl SurrogateGradient {
     }
 
     /// Vectorized forward pass
-    pub fn forward_batch(&self, x: &[f32]) -> Vec<f32> {
-        x.iter().map(|&v| self.forward(v)).collect()
+    pub fn forward_batch(&self, shifted_potentials: &[f32]) -> Vec<f32> {
+        shifted_potentials.iter().map(|&v| self.forward(v)).collect()
     }
 
     /// Vectorized backward pass
-    pub fn backward_batch(&self, x: &[f32]) -> Vec<f32> {
-        x.iter().map(|&v| self.backward(v)).collect()
+    pub fn backward_batch(&self, shifted_potentials: &[f32]) -> Vec<f32> {
+        shifted_potentials.iter().map(|&v| self.backward(v)).collect()
     }
 
     /// Get the slope/sharpness parameter for this surrogate gradient
@@ -144,8 +144,8 @@ impl SpikeFunction {
         let mut spikes = Vec::with_capacity(mem.len());
         let mut grads = Vec::with_capacity(mem.len());
 
-        for &m in mem {
-            let shifted = m - self.threshold;
+        for &membrane in mem {
+            let shifted = membrane - self.threshold;
             spikes.push(self.surrogate.forward(shifted));
             grads.push(self.surrogate.backward(shifted));
         }

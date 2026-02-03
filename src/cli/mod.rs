@@ -445,7 +445,7 @@ impl Cli {
                 dt,
                 v_peak,
                 enable_inject,
-            } => commands::run_spice_mini(
+            } => commands::run_spice_test_harness(
                 &output_dir,
                 run_ngspice,
                 two_neurons,

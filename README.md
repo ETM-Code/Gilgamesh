@@ -160,20 +160,25 @@ Input (36) → Linear → LIF (12) → Linear → LIF (10) → Spike Count → P
 
 ### Architecture Comparison
 
-| Architecture | Image | Params | Test Accuracy |
-|--------------|-------|--------|---------------|
-| 36-3-10 | 6x6 | 138 | 49.73% |
-| 36-4-10 | 6x6 | 184 | 49.41% |
-| 36-5-10 | 6x6 | 230 | 74.97% |
+| Architecture | Image | Synapses | Test Accuracy |
+|--------------|-------|----------|---------------|
+| 24-6-10 | 3x8 | 204 | 80.06% |
+| 25-9-10 | 5x5 | 315 | 85.33% |
 | 36-6-10 | 6x6 | 276 | 85.05% |
 | 36-9-10 | 6x6 | 414 | 89.34% |
-| 36-11-10 | 6x6 | 506 | 89.46% |
 | **36-12-10** | **6x6** | **552** | **91.38%** |
 | 49-9-10 | 7x7 | 531 | 90.14% |
 
-**Minimum for 85% accuracy:** 36-6-10 with 276 synapses.
+### Minimum Synapses by Target Accuracy
 
-The default 6x6 with 12 hidden neurons achieves the best accuracy while keeping parameters minimal for embedded deployment.
+Results from automated synapse search across non-square image dimensions:
+
+| Target | Architecture | Image | Synapses | Achieved |
+|--------|-------------|-------|----------|----------|
+| 85% | 25-9-10 | 5x5 | 315 | 85.33% |
+| 80% | 24-6-10 | 3x8 | 204 | 80.06% |
+
+Non-square images (e.g. 3x8) can outperform square ones by capturing more vertical structure from MNIST digits with fewer total pixels.
 
 ### Quantization for Hardware Deployment
 
@@ -482,17 +487,17 @@ Features:
 
 ### Synapse Search
 
-Find the minimum number of synapses required to achieve target accuracy levels using binary search.
+Multi-phase intelligent search for minimum synapses to achieve target accuracies. Explores non-square image dimensions (w×h) since orientation affects how much spatial info is captured from MNIST.
 
 ```bash
 # Full search (all targets: 95%, 90%, 85%, 80%, 70%)
 python3 tools/synapse_search.py
 
-# Quick test mode (5 epochs, limited image sizes)
+# Quick mode (3-epoch probes, 8-epoch full training)
 python3 tools/synapse_search.py --quick
 
-# Custom search
-python3 tools/synapse_search.py --targets 95 90 85 --image-sizes 5 6 7 8 --epochs 15
+# Custom targets and feature range
+python3 tools/synapse_search.py --targets 85 80 --min-features 9 --max-features 49
 
 # Specify output file
 python3 tools/synapse_search.py --output results.json
@@ -500,22 +505,24 @@ python3 tools/synapse_search.py --output results.json
 
 Options:
 - `--targets`: Target accuracies to search for (default: 95 90 85 80 70)
-- `--image-sizes`: MNIST downsampling sizes to try (default: 3-14)
-- `--epochs`: Training epochs per run (default: 15)
-- `--quick`: Quick mode with 5 epochs and limited search space
+- `--probe-epochs`: Epochs for Phase 1 landscape probing (default: 5)
+- `--full-epochs`: Epochs for Phase 2/3 full training (default: 15)
+- `--min-features` / `--max-features`: Input feature range (default: 9-120)
+- `--quick`: Quick mode (3-epoch probes, 8-epoch full)
 - `--output`: Output JSON file for results
 
-The search varies:
-- **Image size**: Controls input layer size (n×n → n² features)
-- **Hidden size**: Binary search to find minimum achieving target
+The search has three phases:
+1. **Landscape scan**: Probe each (w,h) dimension at small and large hidden sizes
+2. **Binary search**: For promising dimensions, binary search on hidden size
+3. **Refinement**: Multi-seed testing and nearby dimension exploration
 
 **Synapse formula (weights only, no biases):**
 ```
 Total = hidden × (input + 10)
-      = hidden × (image_size² + 10)
+      = hidden × (width × height + 10)
 ```
 
-Example: 36-12-10 architecture = 12 × (36 + 10) = **552 synapses**
+Example: 24-6-10 architecture (3x8 image) = 6 × (24 + 10) = **204 synapses**
 
 ### Checkpoint Auto-Detection
 

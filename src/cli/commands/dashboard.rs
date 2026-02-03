@@ -36,14 +36,14 @@ pub(crate) fn run_dashboard(config: Option<String>, epochs: usize, data_dir: &st
     let metrics_clone = metrics.clone();
 
     {
-        let mut m = metrics.lock().unwrap();
-        m.is_training = true;
+        let mut metrics_guard = metrics.lock().unwrap();
+        metrics_guard.is_training = true;
     }
 
-    let cfg_clone = cfg.clone();
-    let data_dir_owned = data_dir.to_string();
+    let thread_config = cfg.clone();
+    let thread_data_dir = data_dir.to_string();
     thread::spawn(move || {
-        let result = run_training_for_dashboard(&cfg_clone, &data_dir_owned, metrics_clone);
+        let result = run_training_for_dashboard(&thread_config, &thread_data_dir, metrics_clone);
         if let Err(e) = result {
             eprintln!("Training error: {}", e);
         }
@@ -98,8 +98,8 @@ fn run_training_for_dashboard(
         let test_acc = trainer.evaluate(&dataset);
 
         {
-            let mut m = metrics.lock().unwrap();
-            m.record_epoch(train_loss as f64, train_acc as f64, test_acc as f64, lr as f64);
+            let mut metrics_guard = metrics.lock().unwrap();
+            metrics_guard.record_epoch(train_loss as f64, train_acc as f64, test_acc as f64, lr as f64);
         }
 
         println!(
@@ -109,9 +109,9 @@ fn run_training_for_dashboard(
     }
 
     {
-        let mut m = metrics.lock().unwrap();
-        m.is_training = false;
-        m.is_complete = true;
+        let mut metrics_guard = metrics.lock().unwrap();
+        metrics_guard.is_training = false;
+        metrics_guard.is_complete = true;
     }
 
     Ok(())

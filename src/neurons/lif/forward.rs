@@ -44,7 +44,7 @@ impl Leaky {
     /// Generate spikes from membrane potential
     #[inline]
     fn generate_spikes(mem_shifted: &Array2<f32>) -> Array2<f32> {
-        mem_shifted.mapv(|x| if x > 0.0 { 1.0 } else { 0.0 })
+        mem_shifted.mapv(|potential| if potential > 0.0 { 1.0 } else { 0.0 })
     }
 
     /// Apply reset mechanism after spike
@@ -79,35 +79,35 @@ impl Leaky {
         spikes: &Array2<f32>,
         dt: f32,
     ) -> Option<Array2<f32>> {
-        if let Some(tss) = prev {
-            let mut new_tss = tss + dt;
-            new_tss
+        if let Some(time_since_spike) = prev {
+            let mut new_time_since_spike = time_since_spike + dt;
+            new_time_since_spike
                 .iter_mut()
                 .zip(spikes.iter())
-                .for_each(|(t, &s)| {
-                    if s > 0.0 {
-                        *t = 0.0;
+                .for_each(|(time, &spike)| {
+                    if spike > 0.0 {
+                        *time = 0.0;
                     }
                 });
-            Some(new_tss)
+            Some(new_time_since_spike)
         } else {
-            let mut tss = Array2::from_elem(spikes.raw_dim(), f32::INFINITY);
-            tss.iter_mut().zip(spikes.iter()).for_each(|(t, &s)| {
-                if s > 0.0 {
-                    *t = 0.0;
+            let mut time_since_spike = Array2::from_elem(spikes.raw_dim(), f32::INFINITY);
+            time_since_spike.iter_mut().zip(spikes.iter()).for_each(|(time, &spike)| {
+                if spike > 0.0 {
+                    *time = 0.0;
                 }
             });
-            Some(tss)
+            Some(time_since_spike)
         }
     }
 
     /// Compute pulse output from time since spike
     #[inline]
-    fn compute_pulse_output(tss: &Array2<f32>, tau_pulse: f32, v_peak: f32) -> Array2<f32> {
+    fn compute_pulse_output(time_since_spike: &Array2<f32>, tau_pulse: f32, v_peak: f32) -> Array2<f32> {
         let cutoff = 5.0 * tau_pulse;
-        tss.mapv(|t| {
-            if t < cutoff {
-                v_peak * (-t / tau_pulse).exp()
+        time_since_spike.mapv(|elapsed| {
+            if elapsed < cutoff {
+                v_peak * (-elapsed / tau_pulse).exp()
             } else {
                 0.0
             }
@@ -248,8 +248,8 @@ impl Leaky {
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &spikes, dt);
 
-        let pulse_output = if let Some(ref tss) = new_time_since_spike {
-            Self::compute_pulse_output(tss, tau_pulse, v_peak)
+        let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
+            Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak)
         } else {
             &spikes * v_peak
         };
@@ -369,8 +369,8 @@ impl Leaky {
             theta_high,
         ));
 
-        let pulse_output = if let Some(ref tss) = new_time_since_spike {
-            Self::compute_pulse_output(tss, tau_pulse, v_peak)
+        let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
+            Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak)
         } else {
             &spikes * v_peak
         };
@@ -437,11 +437,11 @@ impl Leaky {
 
         Zip::from(&mut pending)
             .and(&mut emitted_spikes)
-            .for_each(|p, e| {
-                if *p > 0 {
-                    *p -= 1;
-                    if *p == 0 {
-                        *e = 1.0;
+            .for_each(|pending_step, emitted| {
+                if *pending_step > 0 {
+                    *pending_step -= 1;
+                    if *pending_step == 0 {
+                        *emitted = 1.0;
                     }
                 }
             });
@@ -454,11 +454,11 @@ impl Leaky {
         Zip::from(&mut mem_new)
             .and(&mem_integrated)
             .and(&hold)
-            .for_each(|m, &integrated, &h| {
-                if h == 0 {
-                    *m = integrated;
+            .for_each(|membrane, &integrated, &hold_remaining| {
+                if hold_remaining == 0 {
+                    *membrane = integrated;
                 } else {
-                    *m = v_min;
+                    *membrane = v_min;
                 }
             });
 
@@ -473,18 +473,18 @@ impl Leaky {
             .and(&pending)
             .and(&hold)
             .and(&emitted_spikes)
-            .for_each(|cross, &shifted, &pend, &h, &just_emitted| {
-                if shifted > 0.0 && pend == 0 && h == 0 && just_emitted == 0.0 {
-                    *cross = 1.0;
+            .for_each(|crossing, &shifted, &pending_step, &hold_remaining, &just_emitted| {
+                if shifted > 0.0 && pending_step == 0 && hold_remaining == 0 && just_emitted == 0.0 {
+                    *crossing = 1.0;
                 }
             });
 
         if delay_steps > 0 {
             Zip::from(&mut pending)
                 .and(&new_crossings)
-                .for_each(|p, &cross| {
-                    if cross > 0.0 {
-                        *p = delay_steps;
+                .for_each(|pending_step, &crossing| {
+                    if crossing > 0.0 {
+                        *pending_step = delay_steps;
                     }
                 });
         } else {
@@ -494,23 +494,23 @@ impl Leaky {
         if hold_steps > 0 {
             Zip::from(&mut hold)
                 .and(&emitted_spikes)
-                .for_each(|h, &spike| {
+                .for_each(|hold_remaining, &spike| {
                     if spike > 0.0 {
-                        *h = hold_steps;
+                        *hold_remaining = hold_steps;
                     }
                 });
         }
 
-        hold.mapv_inplace(|h| if h > 0 { h - 1 } else { 0 });
+        hold.mapv_inplace(|hold_remaining| if hold_remaining > 0 { hold_remaining - 1 } else { 0 });
 
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &emitted_spikes, dt);
 
-        let pulse_output = if let Some(ref tss) = new_time_since_spike {
+        let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
             let tau_pulse = self.mode.tau_pulse();
             let v_peak = self.mode.v_peak();
             if tau_pulse > 0.0 {
-                Self::compute_pulse_output(tss, tau_pulse, v_peak)
+                Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak)
             } else {
                 &emitted_spikes * v_peak
             }

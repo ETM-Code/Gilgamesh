@@ -47,16 +47,16 @@ pub struct AdamOptimizer {
     pub beta2: f32,
     pub eps: f32,
     pub weight_decay: f32,
-    pub t: usize,
+    pub timestep: usize,
     // Moment estimates for each parameter group
-    pub m_fc1_weight: Array2<f32>,
-    pub v_fc1_weight: Array2<f32>,
-    pub m_fc1_bias: Option<Array1<f32>>,
-    pub v_fc1_bias: Option<Array1<f32>>,
-    pub m_fc2_weight: Array2<f32>,
-    pub v_fc2_weight: Array2<f32>,
-    pub m_fc2_bias: Option<Array1<f32>>,
-    pub v_fc2_bias: Option<Array1<f32>>,
+    pub first_moment_fc1_weight: Array2<f32>,
+    pub second_moment_fc1_weight: Array2<f32>,
+    pub first_moment_fc1_bias: Option<Array1<f32>>,
+    pub second_moment_fc1_bias: Option<Array1<f32>>,
+    pub first_moment_fc2_weight: Array2<f32>,
+    pub second_moment_fc2_weight: Array2<f32>,
+    pub first_moment_fc2_bias: Option<Array1<f32>>,
+    pub second_moment_fc2_bias: Option<Array1<f32>>,
 }
 
 impl AdamOptimizer {
@@ -67,15 +67,15 @@ impl AdamOptimizer {
             beta2: 0.999,
             eps: 1e-8,
             weight_decay: 0.0,
-            t: 0,
-            m_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
-            v_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
-            m_fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            v_fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            m_fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
-            v_fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
-            m_fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            v_fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
+            timestep: 0,
+            first_moment_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
+            second_moment_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
+            first_moment_fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
+            second_moment_fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
+            first_moment_fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
+            second_moment_fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
+            first_moment_fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
+            second_moment_fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
         }
     }
 
@@ -90,61 +90,61 @@ impl AdamOptimizer {
     }
 
     /// Set weight decay (L2 regularization strength)
-    pub fn set_weight_decay(&mut self, wd: f32) {
-        self.weight_decay = wd;
+    pub fn set_weight_decay(&mut self, weight_decay: f32) {
+        self.weight_decay = weight_decay;
     }
 
     pub fn step(&mut self, net: &mut Network, grads: &NetworkGradients) {
-        self.t += 1;
+        self.timestep += 1;
 
         // Bias correction factors
-        let bc1 = 1.0 - self.beta1.powi(self.t as i32);
-        let bc2 = 1.0 - self.beta2.powi(self.t as i32);
+        let beta1_correction = 1.0 - self.beta1.powi(self.timestep as i32);
+        let beta2_correction = 1.0 - self.beta2.powi(self.timestep as i32);
 
         // Update FC1 weight (with AdamW weight decay)
-        self.m_fc1_weight = &self.m_fc1_weight * self.beta1 + &grads.fc1_weight * (1.0 - self.beta1);
-        self.v_fc1_weight = &self.v_fc1_weight * self.beta2 + &grads.fc1_weight.mapv(|x| x * x) * (1.0 - self.beta2);
-        let m_hat = &self.m_fc1_weight / bc1;
-        let v_hat = &self.v_fc1_weight / bc2;
+        self.first_moment_fc1_weight = &self.first_moment_fc1_weight * self.beta1 + &grads.fc1_weight * (1.0 - self.beta1);
+        self.second_moment_fc1_weight = &self.second_moment_fc1_weight * self.beta2 + &grads.fc1_weight.mapv(|x| x * x) * (1.0 - self.beta2);
+        let corrected_first_moment = &self.first_moment_fc1_weight / beta1_correction;
+        let corrected_second_moment = &self.second_moment_fc1_weight / beta2_correction;
         // AdamW: weight decay applied separately from gradient
         net.fc1.weight = &net.fc1.weight * (1.0 - self.lr * self.weight_decay)
-            - &(&m_hat / &(v_hat.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+            - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
 
         // Update FC1 bias
-        if let (Some(ref mut m), Some(ref mut v), Some(ref g), Some(ref mut b)) = (
-            &mut self.m_fc1_bias,
-            &mut self.v_fc1_bias,
+        if let (Some(ref mut first_moment), Some(ref mut second_moment), Some(ref grad), Some(ref mut bias)) = (
+            &mut self.first_moment_fc1_bias,
+            &mut self.second_moment_fc1_bias,
             &grads.fc1_bias,
             &mut net.fc1.bias,
         ) {
-            *m = &*m * self.beta1 + g * (1.0 - self.beta1);
-            *v = &*v * self.beta2 + &g.mapv(|x| x * x) * (1.0 - self.beta2);
-            let m_hat = &*m / bc1;
-            let v_hat = &*v / bc2;
-            *b = &*b - &(&m_hat / &(v_hat.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+            *first_moment = &*first_moment * self.beta1 + grad * (1.0 - self.beta1);
+            *second_moment = &*second_moment * self.beta2 + &grad.mapv(|x| x * x) * (1.0 - self.beta2);
+            let corrected_first_moment = &*first_moment / beta1_correction;
+            let corrected_second_moment = &*second_moment / beta2_correction;
+            *bias = &*bias - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
         }
 
         // Update FC2 weight (with AdamW weight decay)
-        self.m_fc2_weight = &self.m_fc2_weight * self.beta1 + &grads.fc2_weight * (1.0 - self.beta1);
-        self.v_fc2_weight = &self.v_fc2_weight * self.beta2 + &grads.fc2_weight.mapv(|x| x * x) * (1.0 - self.beta2);
-        let m_hat = &self.m_fc2_weight / bc1;
-        let v_hat = &self.v_fc2_weight / bc2;
+        self.first_moment_fc2_weight = &self.first_moment_fc2_weight * self.beta1 + &grads.fc2_weight * (1.0 - self.beta1);
+        self.second_moment_fc2_weight = &self.second_moment_fc2_weight * self.beta2 + &grads.fc2_weight.mapv(|x| x * x) * (1.0 - self.beta2);
+        let corrected_first_moment = &self.first_moment_fc2_weight / beta1_correction;
+        let corrected_second_moment = &self.second_moment_fc2_weight / beta2_correction;
         // AdamW: weight decay applied separately from gradient
         net.fc2.weight = &net.fc2.weight * (1.0 - self.lr * self.weight_decay)
-            - &(&m_hat / &(v_hat.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+            - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
 
         // Update FC2 bias
-        if let (Some(ref mut m), Some(ref mut v), Some(ref g), Some(ref mut b)) = (
-            &mut self.m_fc2_bias,
-            &mut self.v_fc2_bias,
+        if let (Some(ref mut first_moment), Some(ref mut second_moment), Some(ref grad), Some(ref mut bias)) = (
+            &mut self.first_moment_fc2_bias,
+            &mut self.second_moment_fc2_bias,
             &grads.fc2_bias,
             &mut net.fc2.bias,
         ) {
-            *m = &*m * self.beta1 + g * (1.0 - self.beta1);
-            *v = &*v * self.beta2 + &g.mapv(|x| x * x) * (1.0 - self.beta2);
-            let m_hat = &*m / bc1;
-            let v_hat = &*v / bc2;
-            *b = &*b - &(&m_hat / &(v_hat.mapv(|x| x.sqrt()) + self.eps) * self.lr);
+            *first_moment = &*first_moment * self.beta1 + grad * (1.0 - self.beta1);
+            *second_moment = &*second_moment * self.beta2 + &grad.mapv(|x| x * x) * (1.0 - self.beta2);
+            let corrected_first_moment = &*first_moment / beta1_correction;
+            let corrected_second_moment = &*second_moment / beta2_correction;
+            *bias = &*bias - &(&corrected_first_moment / &(corrected_second_moment.mapv(|x| x.sqrt()) + self.eps) * self.lr);
         }
     }
 }
@@ -477,7 +477,7 @@ mod tests {
         let mut net_mut = net.clone();
         optimizer.step(&mut net_mut, &grads);
 
-        assert_eq!(optimizer.t, 1);
+        assert_eq!(optimizer.timestep, 1);
     }
 
     #[test]
