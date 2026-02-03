@@ -43,22 +43,24 @@ pub(crate) fn train_with_config(
     }
     println!();
 
-    let image_size = cfg.network.image_size;
+    let image_width = cfg.network.get_width();
+    let image_height = cfg.network.get_height();
     println!("Loading MNIST dataset...");
-    let dataset = MnistDataset::load_with_size(data_dir, image_size)
+    let dataset = MnistDataset::load_with_dimensions(data_dir, image_width, image_height)
         .context("Failed to load MNIST dataset")?;
     println!(
         "Loaded {} training samples, {} test samples",
         dataset.train_len(),
         dataset.test_len()
     );
-    println!("Image size: {}x{} = {} features", image_size, image_size, dataset.feature_dim());
+    println!("Image size: {}x{} = {} features", image_width, image_height, dataset.feature_dim());
     println!();
 
     use gilgamesh::data::InputEncoder;
     let input_encoder = if cfg.input_encoding.encoding_type == "temporal" {
+        // Temporal encoding uses image_height for row-by-row presentation
         Some(InputEncoder::temporal(
-            image_size,
+            image_height,
             cfg.input_encoding.row_spacing,
             cfg.input_encoding.pulse_width,
             cfg.physics.dt,
@@ -262,12 +264,28 @@ pub(crate) fn train_with_config(
             config_file: None,
         };
 
-        let checkpoint = Checkpoint::from_network(&trainer.network, Some(metadata));
+        // Include quantized weights for hardware deployment
+        // Use configured bits if quantization enabled, otherwise default to 4-bit
+        let quant_bits = Some(cfg.quantization.bits);
+
+        // Store image dimensions for correct evaluation later
+        let image_dims = Some((image_width, image_height));
+
+        let checkpoint = Checkpoint::from_network_quantized(
+            &trainer.network,
+            Some(metadata),
+            quant_bits,
+            image_dims,
+        );
         checkpoint
             .save(checkpoint_path)
             .with_context(|| format!("Failed to save checkpoint to {}", checkpoint_path))?;
 
         println!("Checkpoint saved to: {}", checkpoint_path);
+        println!(
+            "Quantized weights included: {}-bit magnitude integers for hardware",
+            cfg.quantization.bits
+        );
     }
 
     Ok(())

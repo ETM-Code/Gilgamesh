@@ -41,6 +41,18 @@ pub(crate) enum Commands {
         #[arg(long)]
         hidden_size: Option<usize>,
 
+        /// Image size for square images (e.g., 6 for 6x6). Determines input layer size.
+        #[arg(long)]
+        image_size: Option<usize>,
+
+        /// Image width (for non-square). Use with --image-height.
+        #[arg(long)]
+        image_width: Option<usize>,
+
+        /// Image height (for non-square). Use with --image-width.
+        #[arg(long)]
+        image_height: Option<usize>,
+
         /// Membrane decay (beta)
         #[arg(long, default_value = "0.9")]
         beta: f32,
@@ -57,12 +69,12 @@ pub(crate) enum Commands {
         #[arg(long, default_value = "25.0")]
         slope: f32,
 
-        /// Enable 8-bit weight quantization
+        /// Enable weight quantization (3-bit magnitude for current sources)
         #[arg(long)]
         quantize: bool,
 
-        /// Quantization bits (default: 8)
-        #[arg(long, default_value = "8")]
+        /// Quantization magnitude bits (default: 3 for hardware current sources)
+        #[arg(long, default_value = "3")]
         quantize_bits: u8,
 
         /// Enable noise injection
@@ -323,6 +335,9 @@ impl Cli {
                 batch_size,
                 num_steps,
                 hidden_size,
+                image_size,
+                image_width,
+                image_height,
                 beta,
                 seed,
                 data_dir,
@@ -352,6 +367,15 @@ impl Cli {
                     cfg.training.seed = seed;
                     if let Some(h) = hidden_size {
                         cfg.network.hidden_size = h;
+                    }
+                    // Handle image dimensions
+                    if let (Some(w), Some(h)) = (image_width, image_height) {
+                        cfg.network.image_width = Some(w);
+                        cfg.network.image_height = Some(h);
+                        cfg.network.input_size = w * h;
+                    } else if let Some(img) = image_size {
+                        cfg.network.image_size = img;
+                        cfg.network.input_size = img * img;
                     }
                     cfg.neuron.beta = beta;
                     cfg.neuron.slope = slope;

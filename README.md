@@ -175,6 +175,36 @@ Input (36) → Linear → LIF (12) → Linear → LIF (10) → Spike Count → P
 
 The default 6x6 with 12 hidden neurons achieves the best accuracy while keeping parameters minimal for embedded deployment.
 
+### Quantization for Hardware Deployment
+
+Weights are quantized for hardware current sources using signed magnitude format with separate scales for positive and negative weights per layer. This allows optimal use of the limited bit depth.
+
+| Network | Bits | Original | Quantized | Accuracy Drop |
+|---------|------|----------|-----------|---------------|
+| 36-6-10 | 3 | 85.68% | 78.32% | 7.4% |
+| 36-12-10 | 3 | 91.80% | 82.82% | 9.0% |
+| **36-12-10** | **4** | **92.05%** | **91.11%** | **0.9%** |
+
+**Recommendation:** Use 4-bit magnitude for hardware deployment (only ~1% accuracy loss). The 3-bit magnitude (max value 7) causes significant accuracy degradation.
+
+Checkpoint format includes both f32 weights and quantized integer weights:
+```json
+{
+  "quantized": {
+    "magnitude_bits": 4,
+    "max_magnitude": 15,
+    "fc1_pos_scale": 0.0197,
+    "fc1_neg_scale": 0.0315,
+    "fc1_weight": [[0, 2, -10, 1, ...], ...],
+    "fc2_pos_scale": 0.0436,
+    "fc2_neg_scale": 0.0627,
+    "fc2_weight": [[-4, 15, 1, 7, -11, ...], ...]
+  }
+}
+```
+
+To reconstruct analog weights: `weight = magnitude × (pos_scale if positive else neg_scale)`
+
 ## Modes of Operation
 
 ### Simple Mode (snnTorch-compatible)

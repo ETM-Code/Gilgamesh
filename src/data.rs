@@ -7,13 +7,14 @@ use anyhow::Result;
 use mnist::MnistBuilder;
 use ndarray::Array2;
 
-/// MNIST dataset with 6x6 downsampling (matching snnTorch comparison)
+/// MNIST dataset with configurable downsampling
 pub struct MnistDataset {
     pub train_images: Array2<f32>,
     pub train_labels: Vec<usize>,
     pub test_images: Array2<f32>,
     pub test_labels: Vec<usize>,
-    pub image_size: usize,
+    pub image_width: usize,
+    pub image_height: usize,
 }
 
 impl MnistDataset {
@@ -24,8 +25,13 @@ impl MnistDataset {
         Self::load_with_size(data_dir, 6)
     }
 
-    /// Load with custom image size
+    /// Load with custom square image size
     pub fn load_with_size(data_dir: &str, target_size: usize) -> Result<Self> {
+        Self::load_with_dimensions(data_dir, target_size, target_size)
+    }
+
+    /// Load with custom width x height (non-square supported)
+    pub fn load_with_dimensions(data_dir: &str, width: usize, height: usize) -> Result<Self> {
         // Create data directory if it doesn't exist
         std::fs::create_dir_all(data_dir)?;
 
@@ -37,11 +43,11 @@ impl MnistDataset {
             .finalize();
 
         // Convert and normalize training images
-        let train_images = Self::process_images(&mnist.trn_img, 60_000, 28, target_size)?;
+        let train_images = Self::process_images(&mnist.trn_img, 60_000, 28, width, height)?;
         let train_labels: Vec<usize> = mnist.trn_lbl.iter().map(|&l| l as usize).collect();
 
         // Convert and normalize test images
-        let test_images = Self::process_images(&mnist.tst_img, 10_000, 28, target_size)?;
+        let test_images = Self::process_images(&mnist.tst_img, 10_000, 28, width, height)?;
         let test_labels: Vec<usize> = mnist.tst_lbl.iter().map(|&l| l as usize).collect();
 
         Ok(Self {
@@ -49,47 +55,54 @@ impl MnistDataset {
             train_labels,
             test_images,
             test_labels,
-            image_size: target_size,
+            image_width: width,
+            image_height: height,
         })
     }
 
-    /// Process raw images: normalize and downsample
+    /// Process raw images: normalize and downsample to target width x height
     fn process_images(
         raw: &[u8],
         num_images: usize,
         original_size: usize,
-        target_size: usize,
+        target_width: usize,
+        target_height: usize,
     ) -> Result<Array2<f32>> {
         let pixels_per_image = original_size * original_size;
-        let target_pixels = target_size * target_size;
+        let target_pixels = target_width * target_height;
 
         let mut images = Array2::zeros((num_images, target_pixels));
+
+        // Calculate scale factors for each dimension
+        let scale_x = original_size as f32 / target_width as f32;
+        let scale_y = original_size as f32 / target_height as f32;
 
         for i in 0..num_images {
             let start = i * pixels_per_image;
             let img_data = &raw[start..start + pixels_per_image];
 
-            // Downsample by averaging
-            let scale = original_size / target_size;
-            for ty in 0..target_size {
-                for tx in 0..target_size {
+            // Downsample by averaging (supports non-integer scales)
+            for ty in 0..target_height {
+                for tx in 0..target_width {
                     let mut sum = 0.0f32;
                     let mut count = 0;
 
-                    for dy in 0..scale {
-                        for dx in 0..scale {
-                            let sy = ty * scale + dy;
-                            let sx = tx * scale + dx;
-                            if sy < original_size && sx < original_size {
-                                sum += img_data[sy * original_size + sx] as f32;
-                                count += 1;
-                            }
+                    // Source region bounds
+                    let sy_start = (ty as f32 * scale_y) as usize;
+                    let sy_end = ((ty + 1) as f32 * scale_y).ceil() as usize;
+                    let sx_start = (tx as f32 * scale_x) as usize;
+                    let sx_end = ((tx + 1) as f32 * scale_x).ceil() as usize;
+
+                    for sy in sy_start..sy_end.min(original_size) {
+                        for sx in sx_start..sx_end.min(original_size) {
+                            sum += img_data[sy * original_size + sx] as f32;
+                            count += 1;
                         }
                     }
 
-                    let pixel_idx = ty * target_size + tx;
+                    let pixel_idx = ty * target_width + tx;
                     // Normalize to [0, 1] then apply MNIST normalization
-                    let normalized = (sum / count as f32) / 255.0;
+                    let normalized = if count > 0 { (sum / count as f32) / 255.0 } else { 0.0 };
                     // MNIST normalization: (x - 0.1307) / 0.3081
                     images[[i, pixel_idx]] = (normalized - 0.1307) / 0.3081;
                 }
@@ -102,7 +115,7 @@ impl MnistDataset {
     /// Get a batch of training data
     pub fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
         let batch_size = indices.len();
-        let features = self.image_size * self.image_size;
+        let features = self.feature_dim();
 
         let mut batch_images = Array2::zeros((batch_size, features));
         let mut batch_labels = Vec::with_capacity(batch_size);
@@ -118,7 +131,7 @@ impl MnistDataset {
     /// Get a batch of test data
     pub fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
         let batch_size = indices.len();
-        let features = self.image_size * self.image_size;
+        let features = self.feature_dim();
 
         let mut batch_images = Array2::zeros((batch_size, features));
         let mut batch_labels = Vec::with_capacity(batch_size);
@@ -141,9 +154,14 @@ impl MnistDataset {
         self.test_labels.len()
     }
 
-    /// Feature dimension
+    /// Feature dimension (width × height)
     pub fn feature_dim(&self) -> usize {
-        self.image_size * self.image_size
+        self.image_width * self.image_height
+    }
+
+    /// Image size for square images (returns width, assumes square)
+    pub fn image_size(&self) -> usize {
+        self.image_width
     }
 }
 

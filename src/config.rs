@@ -117,16 +117,36 @@ pub struct NetworkConfig {
     #[serde(default = "default_output_size")]
     pub output_size: usize,
 
-    /// Image size for MNIST downsampling (n×n, produces n² input features)
-    /// Default: 6 (produces 36 input features)
+    /// Image size for square MNIST downsampling (n×n, produces n² input features)
+    /// Default: 6 (produces 36 input features). Ignored if image_width/height set.
     #[serde(default = "default_image_size")]
     pub image_size: usize,
+
+    /// Image width for non-square images (overrides image_size if set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<usize>,
+
+    /// Image height for non-square images (overrides image_size if set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<usize>,
 }
 
 fn default_input_size() -> usize { 36 }
 fn default_hidden_size() -> usize { 12 }
 fn default_output_size() -> usize { 10 }
 fn default_image_size() -> usize { 6 }
+
+impl NetworkConfig {
+    /// Get effective image width
+    pub fn get_width(&self) -> usize {
+        self.image_width.unwrap_or(self.image_size)
+    }
+
+    /// Get effective image height
+    pub fn get_height(&self) -> usize {
+        self.image_height.unwrap_or(self.image_size)
+    }
+}
 
 impl Default for NetworkConfig {
     fn default() -> Self {
@@ -135,6 +155,8 @@ impl Default for NetworkConfig {
             hidden_size: default_hidden_size(),
             output_size: default_output_size(),
             image_size: default_image_size(),
+            image_width: None,
+            image_height: None,
         }
     }
 }
@@ -383,7 +405,7 @@ pub struct QuantizationConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Number of bits (8 for digipot)
+    /// Number of magnitude bits (3 for current sources: 0-7 range)
     #[serde(default = "default_bits")]
     pub bits: u8,
 
@@ -396,7 +418,7 @@ pub struct QuantizationConfig {
     pub symmetric: bool,
 }
 
-fn default_bits() -> u8 { 8 }
+fn default_bits() -> u8 { 3 }
 fn default_apply_during_training() -> bool { true }
 fn default_symmetric() -> bool { true }
 

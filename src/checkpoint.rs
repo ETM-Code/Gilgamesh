@@ -24,8 +24,11 @@ pub struct Checkpoint {
     pub version: u32,
     /// Network architecture info
     pub architecture: ArchitectureInfo,
-    /// Layer weights and biases
+    /// Layer weights and biases (f32 for training/inference)
     pub weights: NetworkWeights,
+    /// Quantized integer weights for hardware deployment
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantized: Option<QuantizedWeights>,
     /// Optional training metadata
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<TrainingMetadata>,
@@ -40,6 +43,12 @@ pub struct ArchitectureInfo {
     pub hidden_size: usize,
     /// Output layer size
     pub output_size: usize,
+    /// Image width (for MNIST downsampling)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_width: Option<usize>,
+    /// Image height (for MNIST downsampling)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_height: Option<usize>,
     /// Network mode: "simple" or "physics"
     pub mode: String,
     /// Beta (membrane decay) - for simple mode
@@ -84,6 +93,30 @@ pub struct NetworkWeights {
     pub fc2_bias: Option<Vec<f32>>,
 }
 
+/// Quantized integer weights for hardware deployment
+///
+/// Hardware format: 3-bit magnitude + sign select + off
+/// Separate scales for positive and negative current sources per layer
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QuantizedWeights {
+    /// Number of magnitude bits (3 for the current hardware)
+    pub magnitude_bits: u8,
+    /// Max magnitude value (7 for 3-bit)
+    pub max_magnitude: i8,
+    /// FC1 positive scale: positive_weight = magnitude × fc1_pos_scale
+    pub fc1_pos_scale: f32,
+    /// FC1 negative scale: negative_weight = -magnitude × fc1_neg_scale
+    pub fc1_neg_scale: f32,
+    /// FC1 quantized weights: sign (bool) + magnitude (0-7), stored as signed i8
+    pub fc1_weight: Vec<Vec<i8>>,
+    /// FC2 positive scale
+    pub fc2_pos_scale: f32,
+    /// FC2 negative scale
+    pub fc2_neg_scale: f32,
+    /// FC2 quantized weights
+    pub fc2_weight: Vec<Vec<i8>>,
+}
+
 /// Training metadata for checkpoint
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrainingMetadata {
@@ -104,6 +137,22 @@ pub struct TrainingMetadata {
 impl Checkpoint {
     /// Create a checkpoint from a trained network
     pub fn from_network(network: &Network, metadata: Option<TrainingMetadata>) -> Self {
+        Self::from_network_quantized(network, metadata, None, None)
+    }
+
+    /// Create a checkpoint with optional quantized weights for hardware
+    ///
+    /// Args:
+    ///   network: Trained network
+    ///   metadata: Optional training metadata
+    ///   quant_bits: If Some(bits), include quantized integer weights
+    ///   image_dims: Optional (width, height) for non-square MNIST images
+    pub fn from_network_quantized(
+        network: &Network,
+        metadata: Option<TrainingMetadata>,
+        quant_bits: Option<u8>,
+        image_dims: Option<(usize, usize)>,
+    ) -> Self {
         let is_physics = network.is_physics_mode();
 
         // Extract architecture info from network using mode accessors
@@ -111,6 +160,8 @@ impl Checkpoint {
             input_size: network.fc1.in_features,
             hidden_size: network.fc1.out_features,
             output_size: network.fc2.out_features,
+            image_width: image_dims.map(|(w, _)| w),
+            image_height: image_dims.map(|(_, h)| h),
             mode: if is_physics {
                 "physics".to_string()
             } else {
@@ -140,10 +191,20 @@ impl Checkpoint {
             fc2_bias: network.fc2.bias.as_ref().map(array1_to_vec),
         };
 
+        // Generate quantized weights if requested
+        let quantized = quant_bits.map(|bits| {
+            quantize_network_weights(
+                &network.fc1.weight,
+                &network.fc2.weight,
+                bits,
+            )
+        });
+
         Self {
             version: CHECKPOINT_VERSION,
             architecture,
             weights,
+            quantized,
             metadata,
         }
     }
@@ -287,6 +348,85 @@ fn vec_to_array2(vec: &[Vec<f32>]) -> Result<Array2<f32>> {
 
 fn vec_to_array1(vec: &[f32]) -> Result<Array1<f32>> {
     Ok(Array1::from_vec(vec.to_vec()))
+}
+
+/// Quantize network weights for hardware with separate pos/neg scales
+///
+/// Hardware: 3-bit magnitude (0-7) + sign select + off
+/// Each layer gets separate scales for positive and negative weights
+/// To reconstruct:
+///   positive: magnitude × pos_scale
+///   negative: -magnitude × neg_scale
+fn quantize_network_weights(
+    fc1: &Array2<f32>,
+    fc2: &Array2<f32>,
+    bits: u8,
+) -> QuantizedWeights {
+    // For 3-bit magnitude: max = 7
+    let max_mag = ((1i32 << bits) - 1) as f32;
+
+    // Find max positive and negative weights per layer
+    let (fc1_pos_max, fc1_neg_max) = fc1.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
+        (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
+    });
+    let (fc2_pos_max, fc2_neg_max) = fc2.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
+        (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
+    });
+
+    // Per-layer, per-sign scales
+    let fc1_pos_scale = if fc1_pos_max > 1e-8 { fc1_pos_max / max_mag } else { 1.0 };
+    let fc1_neg_scale = if fc1_neg_max > 1e-8 { fc1_neg_max / max_mag } else { 1.0 };
+    let fc2_pos_scale = if fc2_pos_max > 1e-8 { fc2_pos_max / max_mag } else { 1.0 };
+    let fc2_neg_scale = if fc2_neg_max > 1e-8 { fc2_neg_max / max_mag } else { 1.0 };
+
+    // Quantize FC1 weights
+    let fc1_weight: Vec<Vec<i8>> = fc1
+        .rows()
+        .into_iter()
+        .map(|row| {
+            row.iter()
+                .map(|&w| {
+                    if w >= 0.0 {
+                        let q = (w / fc1_pos_scale).round() as i8;
+                        q.clamp(0, max_mag as i8)
+                    } else {
+                        let q = ((-w) / fc1_neg_scale).round() as i8;
+                        -q.clamp(0, max_mag as i8)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    // Quantize FC2 weights
+    let fc2_weight: Vec<Vec<i8>> = fc2
+        .rows()
+        .into_iter()
+        .map(|row| {
+            row.iter()
+                .map(|&w| {
+                    if w >= 0.0 {
+                        let q = (w / fc2_pos_scale).round() as i8;
+                        q.clamp(0, max_mag as i8)
+                    } else {
+                        let q = ((-w) / fc2_neg_scale).round() as i8;
+                        -q.clamp(0, max_mag as i8)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    QuantizedWeights {
+        magnitude_bits: bits,
+        max_magnitude: max_mag as i8,
+        fc1_pos_scale,
+        fc1_neg_scale,
+        fc1_weight,
+        fc2_pos_scale,
+        fc2_neg_scale,
+        fc2_weight,
+    }
 }
 
 #[cfg(test)]
