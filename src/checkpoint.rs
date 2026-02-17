@@ -300,6 +300,7 @@ impl Checkpoint {
             lif1,
             fc2,
             lif2,
+            spiking_input: false,
         })
     }
 }

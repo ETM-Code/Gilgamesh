@@ -180,9 +180,69 @@ Results from automated synapse search across non-square image dimensions:
 
 Non-square images (e.g. 3x8) can outperform square ones by capturing more vertical structure from MNIST digits with fewer total pixels.
 
-### Quantization for Hardware Deployment
+### Quantization-Aware Training (QAT) for Hardware
 
-Weights are quantized for hardware current sources using signed magnitude format with separate scales for positive and negative weights per layer. This allows optimal use of the limited bit depth.
+Weights are quantized during training using split-sign scaling: 3-bit magnitude (0-7) + 1-bit sign, with independent current scales for excitatory and inhibitory sources per layer. This matches the hardware model where separate current DACs drive positive and negative synapses.
+
+Input pixels are quantized to 12-bit DAC resolution during training.
+
+**QAT results without noise** (rate-coded, 6x6, physics mode, 3-bit split-sign weights, 12-bit input):
+
+| Architecture | Synapses | Best Accuracy | Notes |
+|--------------|----------|---------------|-------|
+| 36-5-10 | 230 | 75.6% avg | High seed variance (±3%) |
+| 36-6-10 | 276 | 77.2% avg | High seed variance |
+| 36-7-10 | 322 | 83.2% avg | ±2.2% across seeds |
+| **36-8-10** | **368** | **84.6% avg** | **±1.0%, most efficient for ~85%** |
+| 36-9-10 | 414 | 85.7% avg | Stable across seeds |
+| 36-12-10 | 552 | 87.0% | 3-bit ceiling |
+
+**With noise injection** (weight=5%, threshold=2%, membrane=0.01, input=10%, enabled by default):
+
+Noise improves robustness to hardware variation. 7x7 input captures more spatial structure and raises the 3-bit accuracy ceiling from ~87% to ~90%.
+
+| Architecture | Image | Synapses | Accuracy | Notes |
+|--------------|-------|----------|----------|-------|
+| 49-5-10 | 7x7 | 295 | 83.66% | |
+| 49-6-10 | 7x7 | 354 | 84.75% | |
+| 49-7-10 | 7x7 | 413 | 84.78% | |
+| **49-8-10** | **7x7** | **472** | **87.47%** | |
+| 49-9-10 | 7x7 | 531 | 89.83% | Near 3-bit ceiling |
+| 36-7-10 | 6x6 | 322 | 84.66% | |
+| 36-8-10 | 6x6 | 368 | 84.07% | |
+| 36-9-10 | 6x6 | 414 | 87.39% | |
+
+**4-bit QAT results** (rate-coded, physics mode, 4-bit split-sign weights, 12-bit input, noise enabled):
+
+| Architecture | Image | Synapses | Accuracy |
+|--------------|-------|----------|----------|
+| 64-5-10 | 8x8 | 370 | 75.63% |
+| 64-6-10 | 8x8 | 444 | 85.81% |
+| 64-7-10 | 8x8 | 518 | 86.36% |
+| 64-8-10 | 8x8 | 592 | 88.39% |
+| 64-9-10 | 8x8 | 666 | 89.24% |
+| 64-10-10 | 8x8 | 740 | 89.72% |
+| 81-5-10 | 9x9 | 455 | 84.72% |
+| 81-6-10 | 9x9 | 546 | 87.61% |
+| 81-7-10 | 9x9 | 637 | 89.36% |
+| 81-8-10 | 9x9 | 728 | 89.47% |
+| **81-9-10** | **9x9** | **819** | **91.32%** |
+| 100-5-10 | 10x10 | 550 | 78.03% |
+| 100-6-10 | 10x10 | 660 | 87.65% |
+| 100-7-10 | 10x10 | 770 | 88.55% |
+| 100-8-10 | 10x10 | 880 | 90.45% |
+| **100-9-10** | **10x10** | **990** | **92.03%** |
+
+**Key findings:**
+- **4-bit weights raise the accuracy ceiling** to ~92% (vs ~90% for 3-bit at 7x7)
+- With 3-bit weights, accuracy saturates around **87% for 6x6** and **90% for 7x7** — weight precision is the bottleneck, not network capacity
+- **9x9 is the most efficient** for 90%+ accuracy: 81-9-10 hits 91.32% at 819 synapses vs 100-9-10 at 92.03% with 990 synapses
+- Larger images help but with diminishing returns — 9x9 and 10x10 are within ~1% at same hidden sizes, while 8x8 lags ~2%
+- Noise is enabled by default for all training
+
+Saved model: `models/rate_quant_3bit_6x6_h8.json`
+
+**Post-training quantization** (for comparison — quantizing after full-precision training):
 
 | Network | Bits | Original | Quantized | Accuracy Drop |
 |---------|------|----------|-----------|---------------|
@@ -190,7 +250,7 @@ Weights are quantized for hardware current sources using signed magnitude format
 | 36-12-10 | 3 | 91.80% | 82.82% | 9.0% |
 | **36-12-10** | **4** | **92.05%** | **91.11%** | **0.9%** |
 
-**Recommendation:** Use 4-bit magnitude for hardware deployment (only ~1% accuracy loss). The 3-bit magnitude (max value 7) causes significant accuracy degradation.
+QAT with 3-bit weights significantly closes the gap vs post-training quantization (84.6% QAT vs 78.3% post-training at similar network size).
 
 Checkpoint format includes both f32 weights and quantized integer weights:
 ```json
@@ -240,6 +300,24 @@ The equivalence: `beta = exp(-dt / tau_m)`, so `tau_m = -dt / ln(beta)`
 
 ### Rate-Coded (default)
 All 36 pixels presented simultaneously at every timestep. The pixel intensity determines spike probability or input current.
+
+### Spiking Input Encoding
+Converts pixel values to spike trains via deterministic accumulator, making all connections uniform spiking synapses (matching hardware where every connection is a spike-triggered current source).
+
+Features:
+- **Burst spikes**: `floor(accumulator)` allows multi-level encoding (like Loihi 2 graded spikes)
+- **Dithered initialization**: Random accumulator offsets in [0,1) break quantization patterns
+- **Residual injection**: Final timestep adds remaining accumulator value as fractional spike
+- **Normalization fix**: Undoes MNIST normalization to get [0,1] pixel values for the accumulator
+
+Results with noise injection (weight=5%, threshold=2%, membrane=0.01, input=10%):
+
+| Architecture | Image | Synapses | Accuracy |
+|--------------|-------|----------|----------|
+| 36-12-10 | 6x6 | 552 | 86.69% |
+| 40-7-10 | 5x8 | 350 | 82.95% |
+| 36-8-10 | 4x9 | 368 | 82.67% |
+| 25-9-10 | 5x5 | 315 | 81.89% |
 
 ### Temporal Encoding
 Rows presented sequentially, mimicking hardware scanning:
@@ -484,6 +562,129 @@ Features:
 - Full 36→12→10 network with VCCS (voltage-controlled current sources) for weights
 - Compares gilgamesh spike counts against ngspice simulation
 - Outputs comparison table with predictions from both simulators
+
+Performance benchmark (full network, sample 42, physics_6x6_fixed checkpoint):
+- **gilgamesh is 12005x faster than ngspice** for the timed simulation kernel in this setup.
+- Measured with `network_spice_bench` using `--duration-ms 1.0`, where:
+  - gilgamesh in-process average: **0.027 ms**
+  - ngspice average: **327.149 ms**
+- Startup-inclusive CLI comparison in the same run: ngspice was **3.5x** slower than `gilgamesh spice` CLI average.
+
+```bash
+cargo build --release --bin network_spice_bench --bin gilgamesh
+./target/release/network_spice_bench \
+  --checkpoint ./models/physics_6x6_fixed.json \
+  --data-dir ./data \
+  --sample 42 \
+  --num-steps 25 \
+  --duration-ms 1.0 \
+  --gilgamesh-iters 200 \
+  --warmup 10 \
+  --gilgamesh-cli-runs 5 \
+  --spice-runs 1 \
+  --output-dir ./benchmark_spice_latest
+```
+
+Latency/accuracy tradeoff (Physics 6x6, `dt=1ms`):
+- Baseline model (`models/physics_6x6_fixed.json`) was trained at 25 steps.
+- Since each step is 1ms of simulated time, `25 steps = 25ms`, `10 steps = 10ms`.
+
+Baseline checkpoint accuracy vs steps:
+
+| Steps | Simulated time | Test accuracy |
+|-------|----------------|---------------|
+| 5 | 5ms | 66.84% |
+| 10 | 10ms | 82.75% |
+| 15 | 15ms | 85.20% |
+| 20 | 20ms | 86.58% |
+| 25 | 25ms | 87.20% |
+
+Retraining for 10-step inference:
+- Trained a dedicated 10-step model (`configs/physics_6x6_10steps.json`).
+- Output checkpoint: `models/physics_6x6_10steps_retrained.json`.
+- Results:
+  - retrained model @10 steps: **85.69%**
+  - retrained model @25 steps: **86.40%**
+  - baseline model @25 steps: **87.20%**
+
+So retraining for 10ms recovered accuracy substantially compared to truncating the 25-step-trained model at 10 steps (82.75% → 85.69%).
+
+Model topology used in these tests:
+- Input: 36 features (6x6)
+- Hidden: 12 LIF neurons (physics mode)
+- Output: 10 LIF neurons (physics mode)
+- Total spiking neurons: 22
+- Synapses: 552 (`36×12 + 12×10`)
+
+### Training Speed Benchmark (Physics Mode vs snnTorch vs PyTorch)
+
+Measured on this machine:
+- macOS arm64 (Darwin 25.2.0)
+- Apple M3
+- 16GB RAM
+- CPU-only benchmark (`--device cpu` for Python runs)
+
+Matched benchmark spec:
+- Dataset: MNIST downsampled to 6x6
+- Architecture: `36 -> 12 -> 10`
+- Timesteps: `25`
+- Epochs: `15`
+- Batch size: `128`
+- Seed: `42`
+
+Commands used:
+
+```bash
+# gilgamesh (physics mode)
+/usr/bin/time -p ./target/release/gilgamesh train \
+  --config ./configs/physics_6x6.json \
+  --data-dir ./data
+
+# snnTorch baseline SNN (GilgameshSNN model in comparison script)
+/usr/bin/time -p ./comparison/.venv/bin/python ./comparison/snntorch_comparison.py \
+  --data-dir ./comparison/data \
+  --output-dir ./artifacts/training_bench_20260211/snntorch_baseline \
+  --models baseline \
+  --epochs 15 \
+  --batch-size 128 \
+  --num-steps 25 \
+  --hidden-size 12 \
+  --seed 42 \
+  --device cpu
+
+# PyTorch ANN baseline (StandardANN model in comparison script)
+/usr/bin/time -p ./comparison/.venv/bin/python ./comparison/snntorch_comparison.py \
+  --data-dir ./comparison/data \
+  --output-dir ./artifacts/training_bench_20260211/pytorch_ann \
+  --models ann \
+  --epochs 15 \
+  --batch-size 128 \
+  --num-steps 25 \
+  --hidden-size 12 \
+  --seed 42 \
+  --device cpu
+```
+
+Results (wall-clock `real` time):
+
+| Stack | Time | Best test accuracy | Relative to gilgamesh |
+|-------|------|--------------------|-----------------------|
+| gilgamesh (physics mode) | **4.87s** | 86.99% | 1.00x |
+| snnTorch SNN (`baseline`) | 76.74s | 90.56% | **15.76x slower** |
+| PyTorch ANN (`ann`) | 40.83s | 88.51% | **8.38x slower** |
+
+For this workload, gilgamesh is absolutely goated on training speed.
+
+Why the gap is large on this benchmark:
+- gilgamesh uses a fixed, compiled Rust training path with custom forward/backward and optimizer updates.
+- No dynamic autograd graph construction overhead.
+- Tiny model + many timesteps amplifies per-op framework overhead in Python stacks.
+- gilgamesh batches preloaded contiguous arrays directly.
+
+Raw logs for this run:
+- `artifacts/training_bench_20260211/gilgamesh_physics.log`
+- `artifacts/training_bench_20260211/snntorch_baseline.log`
+- `artifacts/training_bench_20260211/pytorch_ann.log`
 
 ### Synapse Search
 

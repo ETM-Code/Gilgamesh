@@ -299,6 +299,9 @@ pub enum EncodingType {
     RateCoded,
     /// Rows presented sequentially over time
     Temporal,
+    /// Pixels generate spike trains at rates proportional to intensity
+    /// Uses deterministic accumulator: uniform spiking hardware throughout
+    Spiking,
 }
 
 /// Input encoding configuration
@@ -335,6 +338,13 @@ pub struct QuantizationConfig {
     pub apply_during_training: bool,
     /// Use symmetric quantization around 0
     pub symmetric: bool,
+    /// Use split-sign quantization: independent current scaling for positive
+    /// and negative weights. Models hardware with separate excitatory/inhibitory
+    /// current sources where each uses the full magnitude range independently.
+    pub split_sign: bool,
+    /// Input quantization bits (0 = no input quantization).
+    /// Models DAC resolution for input pixel values.
+    pub input_bits: u8,
 }
 
 impl Default for QuantizationConfig {
@@ -344,6 +354,8 @@ impl Default for QuantizationConfig {
             bits: 3,
             apply_during_training: true,
             symmetric: true,
+            split_sign: false,
+            input_bits: 0,
         }
     }
 }
@@ -393,8 +405,8 @@ pub struct NoiseConfig {
 impl Default for NoiseConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            training_only: true,
+            enabled: true,
+            training_only: false,
             weight_std: 0.05,
             threshold_std: 0.02,
             membrane_std: 0.01,

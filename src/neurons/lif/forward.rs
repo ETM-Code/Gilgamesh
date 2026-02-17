@@ -35,7 +35,9 @@ impl Leaky {
             } => {
                 let effective_dt = dt_override.unwrap_or(*dt);
                 let decay = (-effective_dt / tau_m).exp();
-                let mem_new = mem_prev * decay + input;
+                // RC membrane: V(t+dt) = V_ss + (V(t) - V_ss) * exp(-dt/tau)
+                // where V_ss = input (steady-state voltage for constant drive)
+                let mem_new = mem_prev * decay + input * (1.0 - decay);
                 mem_new.mapv(|v| v.clamp(*v_min, *v_max))
             }
         }
@@ -98,12 +100,21 @@ impl Leaky {
     }
 
     /// Compute pulse output from time since spike
+    ///
+    /// Returns the average pulse voltage over the current timestep [t, t+dt],
+    /// matching the charge that SPICE's continuous RC circuit would integrate.
+    ///
+    /// For a spike at t=0, the physical pulse is v_peak * exp(-t/tau_pulse).
+    /// The average over timestep n is:
+    ///   v_avg = (v_peak * tau_pulse / dt) * exp(-n*dt/tau_pulse) * (1 - exp(-dt/tau_pulse))
     #[inline]
-    fn compute_pulse_output(time_since_spike: &Array2<f32>, tau_pulse: f32, v_peak: f32) -> Array2<f32> {
+    fn compute_pulse_output(time_since_spike: &Array2<f32>, tau_pulse: f32, v_peak: f32, dt: f32) -> Array2<f32> {
         let cutoff = 5.0 * tau_pulse;
+        // Exact average of exponential pulse over one timestep
+        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
         time_since_spike.mapv(|elapsed| {
             if elapsed < cutoff {
-                v_peak * (-elapsed / tau_pulse).exp()
+                v_peak * charge_scale * (-elapsed / tau_pulse).exp()
             } else {
                 0.0
             }
@@ -244,10 +255,11 @@ impl Leaky {
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &spikes, dt);
 
+        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
         let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
-            Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak)
+            Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak, dt)
         } else {
-            &spikes * v_peak
+            &spikes * (v_peak * charge_scale)
         };
 
         let cache = LeakyCache {
@@ -365,10 +377,11 @@ impl Leaky {
             theta_high,
         ));
 
+        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
         let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
-            Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak)
+            Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak, dt)
         } else {
-            &spikes * v_peak
+            &spikes * (v_peak * charge_scale)
         };
 
         let cache = LeakyCache {
@@ -506,7 +519,7 @@ impl Leaky {
             let tau_pulse = self.mode.tau_pulse();
             let v_peak = self.mode.v_peak();
             if tau_pulse > 0.0 {
-                Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak)
+                Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak, dt)
             } else {
                 &emitted_spikes * v_peak
             }

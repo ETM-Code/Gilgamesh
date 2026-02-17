@@ -1,0 +1,317 @@
+================================================================================
+GILGAMESH SPICE ALIGNMENT — SESSION NOTES
+================================================================================
+Date: 2026-02-09
+Goal: Make Rust SNN simulator match SPICE for hardware validation
+Status: IN PROGRESS — fundamental physics fixes done, SPICE comparison still
+        shows discrepancy in output spike counts (see "Current State" below)
+
+================================================================================
+1. BACKGROUND
+================================================================================
+
+Gilgamesh is a Rust-based spiking neural network simulator with a SPICE export
+path for hardware validation. The network architecture is:
+
+    Input (36) -> FC1 -> LIF (12 hidden) -> FC2 -> LIF (10 output) -> Spike Count
+
+A previous assistant review identified 12 issues. Four were approved for fixing:
+  1. Membrane equation doesn't match RC physics
+  2. SPICE weight scaling is wrong
+  3. v_peak default is wrong (2.6V instead of 4.44V)
+  4. parse_wrdata hardcodes output_size=10
+
+================================================================================
+2. CHANGES MADE (this session + prior continuation)
+================================================================================
+
+All changes are uncommitted on the main branch. 21 files modified, 685
+insertions, 184 deletions total across both continuation sessions.
+
+--- PHYSICS FIXES (the core of this work) ---
+
+FILE: src/neurons/lif/forward.rs
+
+  FIX 1: RC Membrane Equation (line ~37-40)
+    OLD: mem_new = mem_prev * decay + input
+    NEW: mem_new = mem_prev * decay + input * (1.0 - decay)
+
+    Why: The correct discrete RC equation is:
+      V(t+dt) = V_ss + (V(t) - V_ss) * exp(-dt/tau)
+    where V_ss = input (steady-state voltage for constant drive). This expands to:
+      V(t+dt) = V(t) * exp(-dt/tau) + input * (1 - exp(-dt/tau))
+    The old equation was missing the (1-decay) factor, which meant at small dt
+    (e.g. 1us) inputs were not attenuated at all, while at larger dt they were
+    wrong by a factor of 1/(1-decay). With dt=1ms and tau=3.96ms, decay=0.777,
+    so (1-decay)=0.223 — the old code overdrove neurons by ~4.5x.
+
+  FIX 2: Pulse Charge Scaling (compute_pulse_output, line ~109-119)
+    OLD: charge_scale = tau_pulse / dt
+         output = v_peak * charge_scale * exp(-elapsed/tau_pulse)
+    NEW: charge_scale = (tau_pulse / dt) * (1.0 - exp(-dt / tau_pulse))
+         output = v_peak * charge_scale * exp(-elapsed/tau_pulse)
+
+    Why: The pulse output represents the AVERAGE pulse voltage over one discrete
+    timestep [n*dt, (n+1)*dt]. For an exponential pulse v_peak*exp(-t/tau_pulse),
+    the average over timestep n is:
+      v_avg = (v_peak*tau_pulse/dt) * exp(-n*dt/tau_pulse) * (1 - exp(-dt/tau_pulse))
+
+    The old code omitted the (1 - exp(-dt/tau_pulse)) factor, overestimating
+    charge delivery by 1/(1-exp(-dt/tau_pulse)). With dt=1ms, tau_pulse=0.5ms:
+    old charge_scale = 0.500, new charge_scale = 0.432 (~13.5% reduction).
+
+    This fix appears in 3 locations (forward_with_pulse, forward_full_physics,
+    and the fallback immediate-spike path).
+
+
+FILE: src/neurons/lif/mode.rs (line ~123)
+
+  FIX 3: v_peak Default
+    OLD: v_peak: 2.6
+    NEW: v_peak: default_v_peak()  (returns 4.44V = VDD - diode_drop - comp_drop)
+
+    Why: 2.6V was a stale placeholder. The actual hardware pulse stretcher peaks
+    at VDD (5.0V) minus the diode forward voltage (0.37V) minus comparator rail
+    drop (0.21V), giving ~4.42V. The default_v_peak() function computes this.
+
+
+FILE: src/spice.rs
+
+  FIX 4: Weight Scaling for VCCS (transconductance)
+    OLD: current_gain = 4.0 * threshold.over_vref / membrane.r_leak
+         (then gm = w * current_gain / input_scale)
+    NEW: gm = w / R_leak  (for both input->hidden and hidden->output synapses)
+
+    Why: With the corrected RC membrane equation, V_ss = I * R_leak. For a VCCS
+    driving current I = gm * V_control into the membrane RC, the steady-state
+    membrane voltage is gm * V_control * R_leak. We want this to equal w * V_control
+    (matching Rust's fc.forward() which computes weight * input). So gm = w / R_leak.
+    The old formula had an extra factor of 4 * threshold that was compensating for
+    the broken membrane equation.
+
+  FIX 5: Bias scaling
+    OLD: scaled_bias = bias * current_gain
+    NEW: scaled_bias = bias / R_leak
+    Same reasoning as weight scaling.
+
+  FIX 6: parse_wrdata output_size parameter
+    OLD: let output_size = 10;  (hardcoded)
+    NEW: fn parse_wrdata(path, output_size: usize)  (parameter)
+    Also updated run_ngspice to take and pass output_size.
+
+  FIX 7: from_network physics extraction
+    OLD: Used default SpiceParams regardless of model
+    NEW: Extracts tau_m, tau_pulse, threshold, dt from the actual neuron NeuronMode
+    Also takes sim_duration: f32 (seconds) instead of num_steps: usize.
+
+
+FILE: src/network/network.rs
+
+  FIX 8: Pulse-aware forward_traced
+    OLD: forward_traced always used binary spikes (0/1) between hidden and output layers
+    NEW: When physics mode with tau_pulse > 0, uses forward_with_pulse for hidden layer
+         and passes pulse output through fc2 to output layer — matching SPICE behavior
+
+    Why: SPICE hidden->output synapses are VCCS driven by pulse_h_N (continuous
+    exponential decay from ~4.4V). Rust was using binary 0/1 spikes, which is a
+    completely different signal magnitude. This caused massive mismatch.
+
+  FIX 9: Pulse-aware training forward pass (forward_quantized_full)
+    Same change as above but in the training path. Binary spikes are still stored
+    in cache for the backward pass (surrogate gradient), but the pulse output
+    flows through fc2 weights for the output layer computation.
+
+
+FILE: src/cli/commands/train.rs
+
+  FIX 10: tau_pulse propagation from config
+    OLD: Network::new_physics(input, hidden, output, tau_m, dt, seed)
+         (tau_pulse defaulted to 1.5us internally)
+    NEW: Network::new_physics_with_pulse(input, hidden, output, tau_m, dt, tau_pulse, v_peak, seed)
+         tau_pulse read from cfg.physics.tau_pulse (0.5ms in physics_6x6.json)
+
+    Why: The config had tau_pulse=0.5ms but the network was constructed with the
+    default 1.5us, meaning SPICE and Rust had completely different pulse durations.
+
+
+FILE: src/cli/commands/spice.rs
+
+  FIX 11: Duration and auto-extension
+    NEW: --duration CLI flag (ms), auto-extends to 10x tau_m if simulation
+    time is too short. Prints circuit parameters clearly including tau_pulse.
+    Also added "Gilgamesh spike counts" debug output.
+
+
+--- OTHER CHANGES (from prior sessions, also uncommitted) ---
+
+FILE: src/config.rs
+  - New EncodingType::Spiking variant
+  - New quantization fields: split_sign, input_bits
+  - Noise defaults changed to enabled by default
+
+FILE: src/layers/linear.rs
+  - Complete quantization rewrite: split-sign scaling with independent
+    excitatory/inhibitory current DAC scales
+  - New quantize_input function
+
+FILE: src/network/cache.rs, state.rs
+  - New fields for spiking input encoding (input_spikes, input_accum)
+
+FILE: src/training.rs
+  - New fields: noise_during_eval, split_sign_quant, input_quant_bits
+  - evaluate() changed from &self to &mut self
+
+FILE: tools/synapse_search.py
+  - New --spiking and --noise flags
+
+FILE: README.md
+  - Expanded quantization and spiking encoding documentation
+
+
+--- NEW FILES ---
+
+FILE: configs/physics_6x6.json
+  Physics mode config for 6x6 MNIST with:
+  - tau_m = 3.96ms, dt = 1ms, tau_pulse = 0.5ms
+  - VDD = 5V, threshold = 1V
+  - 15 epochs, batch size 128, 25 timesteps
+
+FILE: models/physics_6x6_fixed.json
+  Trained model checkpoint (87.20% test accuracy) with corrected physics.
+
+
+================================================================================
+3. CURRENT STATE
+================================================================================
+
+The model has been retrained with all physics fixes (87.20% accuracy).
+
+LATEST COMPARISON (v6, sample 42, label=4):
+
+  Gilgamesh (Rust):  [0, 3, 0, 0, 18, 0, 0, 12, 6, 15]  total=54  pred=4 (correct)
+
+  SPICE (Rust parser): class 3=81, class 5=39, class 9=60   pred=3  (WRONG)
+  SPICE (Python parser): class 3=5, class 4=4, class 9=14   pred=9  total=36
+
+  THE RUST SPICE PARSER IS PRODUCING INCORRECT RESULTS.
+
+  The Python parser (which I wrote to verify) shows much more reasonable numbers
+  but still doesn't match Rust. The Rust parse_wrdata function appears to have
+  a bug — it's overcounting spikes significantly for some classes.
+
+Hidden layer SPICE spikes (from Python parser):
+  Neurons 1,4,8 are active (15, 26, 14 spikes respectively), neuron 6 fired once.
+  Total hidden: 56 spikes.
+
+Comparison summary with Python parser results:
+  Class    Rust    SPICE
+  0          0        0
+  1          3        1
+  2          0        0
+  3          0        5
+  4         18        4     <- Rust winner
+  5          0        5
+  6          0        0
+  7         12        6
+  8          6        1
+  9         15       14     <- SPICE winner
+  Total     54       36
+
+Predictions differ: Rust=4, SPICE=9.
+
+
+================================================================================
+4. KNOWN REMAINING ISSUES
+================================================================================
+
+ISSUE A: parse_wrdata Bug
+  The Rust wrdata parser (src/spice.rs, parse_wrdata function) produces wildly
+  different spike counts than a simple Python parser reading the same file.
+  Rust reported 81 spikes for class 3 while Python shows 5. This is the most
+  immediate bug to fix. Possible causes:
+  - wrdata line wrapping confusing the parser (lines are ~1500 chars)
+  - f32 precision issues when parsing scientific notation values
+  - Some edge case in the threshold crossing detection
+
+ISSUE B: Rust vs SPICE Spike Count Mismatch
+  Even with the correct Python parser, Rust produces significantly more spikes
+  (54 vs 36) and a different prediction (4 vs 9). Sources of discrepancy:
+
+  1. Discrete vs Continuous Integration: Rust steps at dt=1ms while SPICE
+     integrates continuously at ~0.25us steps. The pulse charge_scale correction
+     helps but doesn't fully account for the continuous RC response to a decaying
+     exponential input.
+
+  2. Reset Mechanism: Rust uses "subtract" reset (mem = mem - threshold), keeping
+     residual charge. SPICE uses a switch to ground (Ron=10 ohm), which does a
+     "zero" reset. After each spike, Rust retains ~0.1V residual while SPICE
+     goes to ~0V. Over many spikes this makes Rust fire faster.
+
+  3. Refractory Period: SPICE's reset switch stays closed while comp_pulse > 3.5V
+     (about 0.12ms after each spike). During this time the membrane can't charge.
+     Rust has no refractory period — it starts integrating immediately after reset.
+
+  4. Threshold Adaptation: SPICE has a small threshold adaptation circuit
+     (Cadapt + Ginj). Analysis shows this is negligible (~24uV per spike) so
+     it's not a significant source of error.
+
+  5. Pulse Shape: Rust uses a pure exponential for the pulse stretcher output.
+     SPICE's actual circuit has a diode, charging resistor, and bleed resistors
+     that modify the pulse shape slightly.
+
+ISSUE C: Training Uses Different Physics Than Comparison
+  The training forward pass (forward_quantized_full) may not perfectly match
+  forward_traced in all code paths. Both now use pulse outputs between layers
+  in physics mode, but subtle differences in state initialization or accumulation
+  could cause the trained weights to be suboptimal for the exact comparison path.
+
+ISSUE D: Old Models Broken
+  The membrane equation change (fix 1) fundamentally changes the physics.
+  All previously trained models (physics_h9.json, etc.) will produce wrong
+  results. Only models retrained after the fix are valid.
+
+
+================================================================================
+5. RECOMMENDED NEXT STEPS
+================================================================================
+
+1. FIX parse_wrdata: Debug why the Rust parser produces wrong spike counts.
+   Most likely the parser is not handling line continuations or field counts
+   correctly for the 48-variable wrdata output.
+
+2. Switch reset to "zero" mode: Change Rust's default reset mechanism for
+   physics mode from "subtract" to "zero" to match SPICE hardware behavior.
+
+3. Add refractory period: In physics mode, hold membrane at reset for a
+   duration proportional to tau_pulse after each spike.
+
+4. Retrain and compare: After fixes 2-3, retrain and re-run SPICE comparison.
+   With matching reset and refractory behavior, the remaining discrepancy
+   should be small (just the discrete-vs-continuous integration error).
+
+5. Validate with single neuron: Use the existing neuron_compare.py single-neuron
+   test to verify Rust-SPICE agreement before testing the full network.
+
+
+================================================================================
+6. FILE REFERENCE (modified files with line counts)
+================================================================================
+
+Key files for the SPICE alignment work:
+
+  src/neurons/lif/forward.rs    ~550 LOC  Membrane eq, pulse output, spike gen
+  src/neurons/lif/mode.rs       ~180 LOC  NeuronMode enum, default params
+  src/spice.rs                 ~1207 LOC  SPICE netlist gen, wrdata parser
+  src/network/network.rs        ~1200 LOC  Forward passes (traced, quantized)
+  src/cli/commands/spice.rs     ~195 LOC  SPICE CLI command
+  src/cli/commands/train.rs     ~180 LOC  Training CLI command
+  configs/physics_6x6.json              Physics mode config for 6x6
+  models/physics_6x6_fixed.json        Trained model (87.20% accuracy)
+
+Supporting files (also modified but less central):
+  src/config.rs, src/checkpoint.rs, src/training.rs, src/layers/linear.rs,
+  src/network/cache.rs, src/network/state.rs, src/cli/mod.rs
+
+================================================================================
+END OF SESSION NOTES
+================================================================================

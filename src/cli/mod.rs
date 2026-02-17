@@ -177,6 +177,53 @@ pub(crate) enum Commands {
         seed: u64,
     },
 
+    /// Generate spike raster plots for correctly classified digits
+    Raster {
+        /// Path to checkpoint file (uses most recent if not specified)
+        #[arg(long)]
+        checkpoint: Option<String>,
+
+        /// Data directory
+        #[arg(long, default_value = "./data")]
+        data_dir: String,
+
+        /// Number of correctly classified samples to include
+        #[arg(long, default_value = "6")]
+        num_samples: usize,
+
+        /// Number of timesteps per inference
+        #[arg(long, default_value = "25")]
+        num_steps: usize,
+
+        /// Maximum number of test samples to scan while searching for correct predictions
+        #[arg(long, default_value = "500")]
+        max_search: usize,
+
+        /// Output JSON path for raster data
+        #[arg(long, default_value = "./artifacts/spike_raster_data.json")]
+        output_json: String,
+
+        /// Output image path for rendered raster plot
+        #[arg(long, default_value = "./artifacts/spike_raster_plot.png")]
+        output_image: String,
+
+        /// Skip plot rendering (only dump JSON)
+        #[arg(long)]
+        no_plot: bool,
+
+        /// Optional background image path for the plot
+        #[arg(long)]
+        background_image: Option<String>,
+
+        /// Background image alpha (0-1)
+        #[arg(long, default_value = "0.2")]
+        bg_alpha: f32,
+
+        /// Output PNG DPI
+        #[arg(long, default_value = "200")]
+        dpi: usize,
+    },
+
     /// Compare gilgamesh simulation with ngspice for hardware validation
     Spice {
         /// Path to checkpoint file (uses most recent if not specified)
@@ -199,9 +246,13 @@ pub(crate) enum Commands {
         #[arg(long)]
         run_ngspice: bool,
 
-        /// Number of timesteps
+        /// Number of timesteps (used for Rust forward pass)
         #[arg(long, default_value = "25")]
         num_steps: usize,
+
+        /// Simulation duration in milliseconds (auto-computed from model if not set)
+        #[arg(long)]
+        duration: Option<f32>,
 
         /// Enable analog output stage in SPICE netlist
         #[arg(long)]
@@ -416,6 +467,31 @@ impl Cli {
                 num_steps,
                 seed,
             } => commands::run_inspector(checkpoint, &data_dir, num_steps, seed),
+            Commands::Raster {
+                checkpoint,
+                data_dir,
+                num_samples,
+                num_steps,
+                max_search,
+                output_json,
+                output_image,
+                no_plot,
+                background_image,
+                bg_alpha,
+                dpi,
+            } => commands::run_spike_raster(
+                checkpoint,
+                &data_dir,
+                num_samples,
+                num_steps,
+                max_search,
+                &output_json,
+                &output_image,
+                no_plot,
+                background_image,
+                bg_alpha,
+                dpi,
+            ),
             Commands::Spice {
                 checkpoint,
                 data_dir,
@@ -423,6 +499,7 @@ impl Cli {
                 output_dir,
                 run_ngspice,
                 num_steps,
+                duration,
                 analog_output,
                 no_pulse_stretch,
             } => commands::run_spice(
@@ -432,6 +509,7 @@ impl Cli {
                 &output_dir,
                 run_ngspice,
                 num_steps,
+                duration,
                 analog_output,
                 !no_pulse_stretch,
             ),

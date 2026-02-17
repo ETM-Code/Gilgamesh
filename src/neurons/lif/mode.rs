@@ -120,7 +120,7 @@ impl Default for NeuronMode {
             tau_m: 0.00396,      // 3.96ms (matches SPICE: 120kΩ * 33nF)
             dt: 1e-6,            // 1µs timestep
             tau_pulse: default_tau_pulse(),
-            v_peak: 2.6,         // Peak with diode drop
+            v_peak: default_v_peak(), // ~4.44V (VDD - diode drop)
             tau_theta: default_tau_theta(),
             theta_low: default_theta_low(),
             theta_high: default_theta_high(),

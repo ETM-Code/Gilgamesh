@@ -39,7 +39,10 @@ pub(crate) fn train_with_config(
         println!("Quantization:   {}-bit", cfg.quantization.bits);
     }
     if cfg.noise.enabled {
-        println!("Noise:          weight_std={}", cfg.noise.weight_std);
+        let scope = if cfg.noise.training_only { "train only" } else { "train+eval" };
+        println!("Noise:          weight={:.2}% thresh={:.1}% membrane={:.3} input={:.1}% ({})",
+            cfg.noise.weight_std * 100.0, cfg.noise.threshold_std * 100.0,
+            cfg.noise.membrane_std, cfg.noise.input_std * 100.0, scope);
     }
     println!();
 
@@ -100,8 +103,15 @@ pub(crate) fn train_with_config(
                 seed,
             )
         } else {
-            println!("Using Physics mode: tau_m={:.4}s, dt={:.4}s", tau_m, dt);
-            Network::new_physics(input_size, hidden_size, output_size, tau_m, dt, seed)
+            let tau_pulse = cfg.physics.tau_pulse;
+            let v_peak = cfg.hardware.pulse_peak();
+            println!(
+                "Using Physics mode: tau_m={:.4}s, dt={:.4}s, tau_pulse={:.4e}s, v_peak={:.2}V",
+                tau_m, dt, tau_pulse, v_peak
+            );
+            Network::new_physics_with_pulse(
+                input_size, hidden_size, output_size, tau_m, dt, tau_pulse, v_peak, seed,
+            )
         }
     } else {
         Network::new(input_size, hidden_size, output_size, beta, seed)
@@ -109,6 +119,11 @@ pub(crate) fn train_with_config(
 
     network.lif1.spike_grad = SurrogateGradient::fast_sigmoid(slope);
     network.lif2.spike_grad = SurrogateGradient::fast_sigmoid(slope);
+
+    if cfg.input_encoding.encoding_type == EncodingType::Spiking {
+        network.spiking_input = true;
+        println!("Input encoding: spiking (deterministic accumulator)");
+    }
 
     println!("Network architecture:");
     println!("  Input:  {}", input_size);
@@ -136,6 +151,13 @@ pub(crate) fn train_with_config(
     if cfg.quantization.enabled {
         trainer.quant_bits = Some(cfg.quantization.bits);
     }
+    if cfg.quantization.split_sign {
+        trainer.split_sign_quant = true;
+    }
+    if cfg.quantization.input_bits > 0 {
+        trainer.input_quant_bits = cfg.quantization.input_bits;
+        println!("Input quant:    {}-bit DAC", cfg.quantization.input_bits);
+    }
 
     if cfg.noise.enabled {
         trainer.noise = NoiseParams {
@@ -144,6 +166,9 @@ pub(crate) fn train_with_config(
             membrane_std: cfg.noise.membrane_std,
             input_std: cfg.noise.input_std,
         };
+        if !cfg.noise.training_only {
+            trainer.noise_during_eval = true;
+        }
     }
 
     if cfg.physics.adaptation_enabled {

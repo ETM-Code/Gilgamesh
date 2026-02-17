@@ -77,9 +77,17 @@ def generate_input_dimensions(min_features=9, max_features=120):
     return sorted(dims, key=lambda d: (d[0] * d[1], abs(d[0] - d[1])))
 
 
-def create_config(width, height, hidden_size, epochs=15, seed=42):
+def create_config(width, height, hidden_size, epochs=15, seed=42,
+                   spiking=False, noise=False, tau_m=None, num_steps=None):
     """Create a physics-mode training config with given dimensions."""
     input_size = width * height
+
+    # Spiking mode uses slower tau_m and more timesteps by default
+    if tau_m is None:
+        tau_m = 0.02 if spiking else 0.00396
+    if num_steps is None:
+        num_steps = 50 if spiking else 25
+
     config = {
         "mode": "physics",
         "network": {
@@ -96,7 +104,7 @@ def create_config(width, height, hidden_size, epochs=15, seed=42):
         },
         "physics": {
             "enabled": True,
-            "tau_m": 0.00396,
+            "tau_m": tau_m,
             "dt": 0.001,
             "adaptation_enabled": False,
         },
@@ -104,12 +112,19 @@ def create_config(width, height, hidden_size, epochs=15, seed=42):
             "lr": 0.001,
             "epochs": epochs,
             "batch_size": 128,
-            "num_steps": 25,
+            "num_steps": num_steps,
             "seed": seed,
         },
-        "input_encoding": {"encoding_type": "rate_coded"},
+        "input_encoding": {"encoding_type": "spiking" if spiking else "rate_coded"},
         "quantization": {"enabled": False},
-        "noise": {"enabled": False},
+        "noise": {
+            "enabled": noise,
+            "training_only": False,
+            "weight_std": 0.05,
+            "threshold_std": 0.02,
+            "membrane_std": 0.01,
+            "input_std": 0.1,
+        } if noise else {"enabled": False},
         "output": {"mode": "spike_count", "analog_gain": 0.0},
     }
     if width != height:
@@ -169,12 +184,15 @@ class SynapseSearch:
     """Multi-phase intelligent search for minimum synapses."""
 
     def __init__(self, data_dir="./data", gilgamesh_bin="./target/release/gilgamesh",
-                 probe_epochs=5, full_epochs=15, verbose=True):
+                 probe_epochs=5, full_epochs=15, verbose=True,
+                 spiking=False, noise=False):
         self.data_dir = data_dir
         self.gilgamesh_bin = gilgamesh_bin
         self.probe_epochs = probe_epochs
         self.full_epochs = full_epochs
         self.verbose = verbose
+        self.spiking = spiking
+        self.noise = noise
         # Cache: (w, h, hidden, epochs, seed) -> TrainingResult
         self.cache = {}
         self.all_results = []
@@ -187,7 +205,8 @@ class SynapseSearch:
         if key in self.cache:
             return self.cache[key]
 
-        config = create_config(w, h, hidden, epochs=epochs, seed=seed)
+        config = create_config(w, h, hidden, epochs=epochs, seed=seed,
+                               spiking=self.spiking, noise=self.noise)
         result = run_training(config, self.data_dir, self.gilgamesh_bin)
         self.cache[key] = result
         self.all_results.append(result)
@@ -383,6 +402,10 @@ class SynapseSearch:
             targets = TARGET_ACCURACIES
 
         dims = generate_input_dimensions(min_features=min_features, max_features=max_features)
+        mode_desc = "spiking" if self.spiking else "rate-coded"
+        if self.noise:
+            mode_desc += " + noise"
+        self._log(f"Mode: {mode_desc}")
         self._log(f"Generated {len(dims)} input dimensions to explore")
         self._log(f"Range: {dims[0][0]}x{dims[0][1]} ({dims[0][0]*dims[0][1]} features) "
                   f"to {dims[-1][0]}x{dims[-1][1]} ({dims[-1][0]*dims[-1][1]} features)")
@@ -498,6 +521,10 @@ def main():
                         help="Minimum input features (default: 9)")
     parser.add_argument("--max-features", type=int, default=120,
                         help="Maximum input features (default: 120)")
+    parser.add_argument("--spiking", action="store_true",
+                        help="Use spiking input encoding (slower tau_m, more timesteps)")
+    parser.add_argument("--noise", action="store_true",
+                        help="Enable noise during training and evaluation")
 
     args = parser.parse_args()
 
@@ -506,7 +533,12 @@ def main():
         args.full_epochs = 8
 
     if args.output is None:
-        args.output = f"synapse_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        suffix = ""
+        if args.spiking:
+            suffix += "_spiking"
+        if args.noise:
+            suffix += "_noise"
+        args.output = f"synapse_search{suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
     search = SynapseSearch(
         data_dir=args.data_dir,
@@ -514,6 +546,8 @@ def main():
         probe_epochs=args.probe_epochs,
         full_epochs=args.full_epochs,
         verbose=not args.quiet,
+        spiking=args.spiking,
+        noise=args.noise,
     )
 
     results = search.run(args.targets, min_features=args.min_features,

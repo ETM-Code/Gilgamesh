@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use gilgamesh::network::Network;
+use gilgamesh::neurons::NeuronMode;
 
 use crate::cli::utils::find_latest_checkpoint;
 
@@ -10,6 +11,7 @@ pub(crate) fn run_spice(
     output_dir: &str,
     should_run_ngspice: bool,
     num_steps: usize,
+    duration_ms: Option<f32>,
     analog_output: bool,
     pulse_stretch: bool,
 ) -> Result<()> {
@@ -63,6 +65,40 @@ pub(crate) fn run_spice(
         .with_analog_output(analog_output)
         .with_pulse_stretch(pulse_stretch);
 
+    // Compute simulation duration and effective num_steps.
+    // If --duration is set, use it. Otherwise, auto-compute from model params,
+    // ensuring enough time for the membrane to reach threshold and spike.
+    let model_dt = match &network.lif1.mode {
+        NeuronMode::Physics { dt, .. } => *dt,
+        NeuronMode::Simple => 0.001, // 1ms default for simple mode
+    };
+
+    let sim_duration_s = if let Some(dur_ms) = duration_ms {
+        dur_ms / 1000.0
+    } else {
+        let naive_duration = num_steps as f32 * model_dt;
+        let min_duration = 10.0 * params.tau_m();
+        if naive_duration < min_duration {
+            println!(
+                "Note: {} steps × {:.3}ms dt = {:.3}ms is short relative to tau_m={:.2}ms.",
+                num_steps,
+                model_dt * 1000.0,
+                naive_duration * 1000.0,
+                params.tau_m() * 1000.0,
+            );
+            println!(
+                "  Auto-extending to {:.1}ms (10× tau_m). Use --duration to override.",
+                min_duration * 1000.0,
+            );
+            println!();
+            min_duration
+        } else {
+            naive_duration
+        }
+    };
+
+    let effective_num_steps = (sim_duration_s / model_dt).round() as usize;
+
     println!("Circuit parameters:");
     println!(
         "  Supply:        VDD={:.1}V, Vref={:.1}V",
@@ -79,7 +115,7 @@ pub(crate) fn run_spice(
         params.threshold.over_vref, params.threshold.hysteresis
     );
     println!(
-        "  Pulse stretch: {} (tau={:.2}ms)",
+        "  Pulse stretch: {} (tau={:.4}ms)",
         if pulse_stretch { "enabled" } else { "disabled" },
         params.tau_pulse() * 1000.0
     );
@@ -87,11 +123,17 @@ pub(crate) fn run_spice(
         "  Analog output: {}",
         if analog_output { "enabled" } else { "disabled" }
     );
+    println!(
+        "  Duration:      {:.2}ms ({} steps × {:.3}ms dt)",
+        sim_duration_s * 1000.0,
+        effective_num_steps,
+        model_dt * 1000.0,
+    );
     println!();
 
-    println!("Running gilgamesh simulation ({} steps)...", num_steps);
+    println!("Running gilgamesh simulation ({} steps)...", effective_num_steps);
     let input_batch = input.clone().insert_axis(ndarray::Axis(0));
-    let trace = network.forward_traced(&input_batch, num_steps);
+    let trace = network.forward_traced(&input_batch, effective_num_steps);
 
     let gilgamesh_spikes: Vec<f32> = trace.output_spike_count.row(0).to_vec();
     let gilgamesh_pred = gilgamesh_spikes
@@ -106,6 +148,7 @@ pub(crate) fn run_spice(
         gilgamesh_pred,
         gilgamesh_pred == label
     );
+    println!("Gilgamesh spike counts: {:?}", gilgamesh_spikes);
 
     let output_path = Path::new(output_dir);
     fs::create_dir_all(output_path)
@@ -113,7 +156,7 @@ pub(crate) fn run_spice(
 
     println!();
     println!("Generating SPICE netlist (detailed pulse-stretch model)...");
-    let netlist = SpiceNetlist::from_network(&network, input.as_slice().unwrap(), num_steps, &params);
+    let netlist = SpiceNetlist::from_network(&network, input.as_slice().unwrap(), sim_duration_s, &params);
 
     let netlist_path = output_path.join("gilgamesh.cir");
     netlist.write(&netlist_path)?;
@@ -123,7 +166,8 @@ pub(crate) fn run_spice(
         println!();
         println!("Running ngspice...");
 
-        match run_ngspice(&netlist_path, output_path) {
+        let output_size = network.fc2.weight.shape()[1];
+        match run_ngspice(&netlist_path, output_path, output_size) {
             Ok(spice_output) => {
                 println!("SPICE simulation complete");
                 println!();
@@ -149,4 +193,3 @@ pub(crate) fn run_spice(
 
     Ok(())
 }
-

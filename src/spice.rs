@@ -223,13 +223,49 @@ impl Default for SpiceParams {
 }
 
 impl SpiceParams {
-    /// Create from network (extracts physics parameters where available)
-    pub fn from_network(_net: &Network) -> Self {
-        let params = Self::default();
+    /// Create from network, extracting physics parameters from the neuron model.
+    ///
+    /// Maps model parameters to SPICE component values:
+    /// - tau_m → R_leak (keeping C_mem fixed)
+    /// - threshold → voltage divider R_top (keeping R_bottom fixed)
+    /// - tau_pulse → pulse stretch C_pw (keeping R_pw fixed)
+    /// - v_peak → comparator output high voltage
+    /// - comparator_delay → comparator propagation delay
+    pub fn from_network(net: &Network) -> Self {
+        let mut params = Self::default();
 
-        // Keep fixed hardware membrane values (do not override with network tau_m).
+        if let NeuronMode::Physics {
+            tau_m,
+            tau_pulse,
+            comparator_delay_s,
+            ..
+        } = &net.lif1.mode
+        {
+            // Membrane: keep C_mem fixed, set R_leak = tau_m / C_mem
+            params.membrane.r_leak = tau_m / params.membrane.c_mem;
 
-        // Keep hardware threshold pinned to the physical divider target (0.8V).
+            // Threshold divider: Vth = Vdd * R_bottom / (R_top + R_bottom)
+            // Solve for R_top: R_top = R_bottom * (Vdd / Vth - 1)
+            let threshold = net.lif1.threshold;
+            if threshold > 0.0 && threshold < params.supply.vdd {
+                params.threshold.over_vref = threshold;
+                let ratio = threshold / params.supply.vdd;
+                params.threshold.r_top =
+                    params.threshold.r_bottom * (1.0 / ratio - 1.0);
+            }
+
+            // Pulse stretch: keep R_pw fixed, set C_pw = tau_pulse / R_pw
+            params.pulse_stretch.c_pw = tau_pulse / params.pulse_stretch.r_pw;
+
+            // Note: comparator.vhigh stays at VDD (rail-to-rail swing).
+            // v_peak is the pulse output AFTER the diode drop in the stretching
+            // circuit, not the comparator output level.
+
+            // Comparator propagation delay
+            if *comparator_delay_s > 0.0 {
+                params.comparator.prop_delay = *comparator_delay_s;
+            }
+        }
 
         params
     }
@@ -273,19 +309,18 @@ impl SpiceNetlist {
     pub fn from_network(
         net: &Network,
         input: &[f32],
-        num_steps: usize,
+        sim_duration: f32,
         params: &SpiceParams,
     ) -> Self {
         let input_size = net.fc1.in_features;
         let hidden_size = net.fc1.out_features;
         let output_size = net.fc2.out_features;
 
-        // Simulation time in seconds (align with network dt if in Physics mode).
         let model_dt = match &net.lif1.mode {
             NeuronMode::Physics { dt, .. } => *dt,
             NeuronMode::Simple => params.dt,
         };
-        let sim_time = num_steps as f32 * model_dt;
+        let sim_time = sim_duration;
         let sim_step = params.dt;
 
         let mut content = String::new();
@@ -348,9 +383,10 @@ impl SpiceNetlist {
         content.push_str("* ========== Input -> Hidden Synapses (VCCS) ==========\n");
         content.push_str("* G<name> n+ n- nc+ nc- transconductance\n");
         content.push_str("* Current from n+ to n- = transconductance * (V(nc+) - V(nc-))\n");
-        let input_scale_v = 1.0_f32;
-        let current_gain = 4.0 * params.threshold.over_vref / params.membrane.r_leak;
-        let input_transconductance = current_gain / input_scale_v.max(1e-6);
+        // With corrected RC membrane: V_new = V_prev*decay + V_ss*(1-decay)
+        // V_ss = I*R_leak in SPICE, V_ss = sum(w*input) in Rust
+        // Match requires: gm*V_ctrl*R_leak = w*V_ctrl → gm = w/R_leak
+        let input_transconductance = 1.0 / params.membrane.r_leak;
         for h in 0..hidden_size {
             for i in 0..input_size {
                 let weight = net.fc1.weight[[i, h]];
@@ -373,7 +409,8 @@ impl SpiceNetlist {
             for h in 0..hidden_size {
                 let bias_value = bias[h];
                 if bias_value.abs() > 1e-6 {
-                    let scaled_bias = bias_value * current_gain;
+                    // Bias in Rust is a voltage added to input; in SPICE: I*R = bias → I = bias/R
+                    let scaled_bias = bias_value / params.membrane.r_leak;
                     // Positive bias should depolarize (inject into sum).
                     content.push_str(&format!("Ib1_{} 0 sum_h_{} DC {:.6e}\n", h, h, scaled_bias));
                 }
@@ -400,9 +437,11 @@ impl SpiceNetlist {
 
         // ========== Hidden to output synapses ==========
         content.push_str("* ========== Hidden -> Output Synapses (VCCS) ==========\n");
-        content.push_str("* Uses stretched pulse output (pulse_h_*) for better charge transfer\n");
-        let pulse_scale_v = params.comparator.vhigh.max(1e-6);
-        let pulse_transconductance = current_gain / pulse_scale_v;
+        content.push_str("* Pulse-driven: same gm = w/R as input layer (physics-correct)\n");
+        // Same physics as input synapses: gm = w/R_leak.
+        // Rust now correctly scales pulse charge by tau_pulse/dt,
+        // so both simulators agree on charge per spike.
+        let pulse_transconductance = 1.0 / params.membrane.r_leak;
         for o in 0..output_size {
             for h in 0..hidden_size {
                 let weight = net.fc2.weight[[h, o]];
@@ -423,7 +462,7 @@ impl SpiceNetlist {
             for o in 0..output_size {
                 let bias_value = bias[o];
                 if bias_value.abs() > 1e-6 {
-                    let scaled_bias = bias_value * current_gain;
+                    let scaled_bias = bias_value / params.membrane.r_leak;
                     content.push_str(&format!("Ib2_{} 0 sum_o_{} DC {:.6e}\n", o, o, scaled_bias));
                 }
             }
@@ -910,50 +949,87 @@ impl SpiceOutput {
     ///
     /// wrdata format: each line has pairs of (time, value) for each variable
     /// Example: t1 v1 t2 v2 t3 v3 ... (time repeats for each variable)
-    pub fn parse_wrdata<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub fn parse_wrdata<P: AsRef<Path>>(path: P, output_size: usize) -> Result<Self> {
         let content = fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read wrdata file: {:?}", path.as_ref()))?;
 
         let mut time: Vec<f32> = Vec::new();
         let mut all_values: Vec<Vec<f32>> = Vec::new();
         let mut num_vars = 0;
+        let mut current_time: Option<f32> = None;
+        let mut current_row: Vec<f32> = Vec::new();
+        let mut pending_time: Option<f32> = None;
 
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
+        let finalize_row = |row_time: f32,
+                            row: &mut Vec<f32>,
+                            time: &mut Vec<f32>,
+                            all_values: &mut Vec<Vec<f32>>,
+                            num_vars: &mut usize| {
+            if row.is_empty() {
+                return;
             }
 
-            let values: Vec<f32> = line
-                .split_whitespace()
-                .filter_map(|s| s.parse::<f32>().ok())
-                .collect();
-
-            if values.is_empty() {
-                continue;
+            if *num_vars == 0 {
+                *num_vars = row.len();
+                *all_values = vec![Vec::new(); *num_vars];
             }
 
-            // wrdata format: t1 v1 t2 v2 t3 v3 ...
-            // Each pair is (time, value) for one variable
-            // Time should be the same for all variables in a row
-            let pairs = values.len() / 2;
-            if num_vars == 0 {
-                num_vars = pairs;
-                all_values = vec![Vec::new(); num_vars];
-            }
-
-            // Extract time from first pair
-            if pairs > 0 {
-                time.push(values[0]);
-            }
-
-            // Extract each variable's value (skip time in each pair)
-            for i in 0..pairs.min(num_vars) {
-                let value_idx = i * 2 + 1; // odd indices are values
-                if value_idx < values.len() {
-                    all_values[i].push(values[value_idx]);
+            if row.len() >= *num_vars {
+                time.push(row_time);
+                for i in 0..*num_vars {
+                    all_values[i].push(row[i]);
                 }
             }
+
+            row.clear();
+        };
+
+        for token in content.split_whitespace() {
+            let parsed = match token.parse::<f32>() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            if pending_time.is_none() {
+                pending_time = Some(parsed);
+                continue;
+            }
+
+            let t = pending_time.take().unwrap_or(0.0);
+            let v = parsed;
+
+            if current_time.is_none() {
+                current_time = Some(t);
+            }
+
+            let row_time = current_time.unwrap_or(t);
+            let same_time = (t - row_time).abs() <= 1e-12;
+            let row_complete = num_vars > 0 && current_row.len() == num_vars;
+
+            // New timestep or repeated-time row after a full row:
+            // flush accumulated values and start a new row.
+            if !same_time || row_complete {
+                finalize_row(
+                    row_time,
+                    &mut current_row,
+                    &mut time,
+                    &mut all_values,
+                    &mut num_vars,
+                );
+                current_time = Some(t);
+            }
+
+            current_row.push(v);
+        }
+
+        if let Some(row_time) = current_time {
+            finalize_row(
+                row_time,
+                &mut current_row,
+                &mut time,
+                &mut all_values,
+                &mut num_vars,
+            );
         }
 
         // Build voltage map with generic names
@@ -961,8 +1037,7 @@ impl SpiceOutput {
         // v(pulse_o_0) v(pulse_o_1) ... v(mem_o_0) v(mem_o_1) ... v(pulse_h_0) v(mem_h_0) ...
         let mut voltages = HashMap::new();
 
-        // We saved: output pulses (10), output mems (10), then some hidden (pulse, mem pairs)
-        let output_size = 10;
+        // We saved: output pulses (output_size), output mems (output_size), then some hidden
         for i in 0..output_size.min(num_vars) {
             voltages.insert(format!("v(pulse_o_{})", i), all_values.get(i).cloned().unwrap_or_default());
         }
@@ -977,8 +1052,10 @@ impl SpiceOutput {
     }
 }
 
-/// Run ngspice on a netlist file
-pub fn run_ngspice<P1: AsRef<Path>, P2: AsRef<Path>>(netlist_path: P1, output_dir: P2) -> Result<SpiceOutput> {
+/// Run ngspice on a netlist file, streaming output to the terminal for progress visibility.
+pub fn run_ngspice<P1: AsRef<Path>, P2: AsRef<Path>>(netlist_path: P1, output_dir: P2, output_size: usize) -> Result<SpiceOutput> {
+    use std::process::Stdio;
+
     let netlist_path = netlist_path.as_ref();
     let output_dir = output_dir.as_ref();
 
@@ -989,27 +1066,37 @@ pub fn run_ngspice<P1: AsRef<Path>, P2: AsRef<Path>>(netlist_path: P1, output_di
     // Get absolute path to netlist (needed because we change working directory)
     let netlist_abs = netlist_path.canonicalize()
         .with_context(|| format!("Failed to resolve netlist path: {:?}", netlist_path))?;
+    let output_dir_abs = output_dir.canonicalize()
+        .with_context(|| format!("Failed to resolve output directory: {:?}", output_dir))?;
 
-    // Run ngspice in batch mode
+    // Write ngspice log to a file so we can check it on failure
+    let log_path = output_dir_abs.join("ngspice.log");
+    let raw_path = output_dir_abs.join("gilgamesh_output.raw");
+
+    // Run ngspice in batch mode with inherited stdout for live progress.
     // -b: batch mode (non-interactive)
     // -r: specify raw output file
-    let output = Command::new("ngspice")
+    // -o: log file for warnings/errors
+    let status = Command::new("ngspice")
         .args(["-b", "-r"])
-        .arg(output_dir.join("gilgamesh_output.raw"))
+        .arg(&raw_path)
+        .arg("-o")
+        .arg(&log_path)
         .arg(&netlist_abs)
-        .current_dir(output_dir)
-        .output()
+        .current_dir(&output_dir_abs)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
         .with_context(|| "Failed to run ngspice. Is it installed?")?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!("ngspice failed:\nstderr: {}\nstdout: {}", stderr, stdout);
+    if !status.success() {
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        anyhow::bail!("ngspice failed (exit code {:?}):\n{}", status.code(), log);
     }
 
     // Parse output (wrdata format produces .txt file)
-    let txt_path = output_dir.join("gilgamesh_output.txt");
-    SpiceOutput::parse_wrdata(&txt_path)
+    let txt_path = output_dir_abs.join("gilgamesh_output.txt");
+    SpiceOutput::parse_wrdata(&txt_path, output_size)
 }
 
 /// Comparison result between gilgamesh and SPICE simulation
@@ -1030,6 +1117,26 @@ pub struct ComparisonResult {
 }
 
 impl ComparisonResult {
+    fn count_pulse_spikes(voltages: &[f32], spike_threshold: f32, rearm_threshold: f32) -> f32 {
+        if voltages.is_empty() {
+            return 0.0;
+        }
+
+        let mut count = 0.0f32;
+        let mut armed = true;
+
+        for &v in voltages {
+            if armed && v >= spike_threshold {
+                count += 1.0;
+                armed = false;
+            } else if !armed && v <= rearm_threshold {
+                armed = true;
+            }
+        }
+
+        count
+    }
+
     /// Compare gilgamesh trace with SPICE output
     pub fn compare(
         trace: &SimulationTrace,
@@ -1044,8 +1151,14 @@ impl ComparisonResult {
         // Estimate SPICE spike counts from voltage threshold crossings
         let mut spice_spikes = vec![0.0f32; output_size];
 
-        // Threshold for pulse detection (halfway between vlow and vhigh)
-        let pulse_threshold = (params.comparator.vlow + params.comparator.vhigh) / 2.0;
+        // Use comparator/switch-aligned thresholds with hysteresis to suppress
+        // pulse chatter around the midpoint.
+        let rearm_threshold = (params.comparator.vlow + params.comparator.vhigh) / 2.0;
+        let spike_threshold = params
+            .reset
+            .switch_vt
+            .max(rearm_threshold + 0.1)
+            .min(params.comparator.vhigh);
 
         for o in 0..output_size {
             // Try new node naming first, then fall back to old
@@ -1056,15 +1169,8 @@ impl ComparisonResult {
                 .or_else(|| spice.get_voltage(&alt_node_name));
 
             if let Some(voltages) = voltages {
-                // Count threshold crossings (rising edges)
-                let mut prev_above = false;
-                for &v in voltages {
-                    let above = v > pulse_threshold;
-                    if above && !prev_above {
-                        spice_spikes[o] += 1.0;
-                    }
-                    prev_above = above;
-                }
+                spice_spikes[o] =
+                    Self::count_pulse_spikes(voltages, spike_threshold, rearm_threshold);
             }
         }
 
@@ -1190,7 +1296,7 @@ mod tests {
         // Check key components are present
         assert!(subckt.contains("Passive membrane"));
         assert!(subckt.contains("Threshold divider"));
-        assert!(subckt.contains("Soft comparator"));
+        assert!(subckt.contains("Comparator model"));
         assert!(subckt.contains("Pulse stretching"));
         assert!(subckt.contains("Reset path"));
     }
@@ -1203,5 +1309,39 @@ mod tests {
         // Check analog output stage is present
         assert!(subckt.contains("Analog output stage"));
         assert!(subckt.contains("Eana_opamp"));
+    }
+
+    #[test]
+    fn test_wrdata_parser_handles_wrapped_rows() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gilgamesh_wrdata_test_{}.txt", unique));
+
+        let content = concat!(
+            "0.0 10.0 0.0 20.0\n",
+            "0.0 30.0 0.0 40.0\n",
+            "1.0 11.0 1.0 21.0 1.0 31.0 1.0 41.0\n",
+        );
+        fs::write(&path, content).expect("failed to write temp wrdata");
+
+        let parsed = SpiceOutput::parse_wrdata(&path, 2).expect("wrdata parse failed");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(parsed.time, vec![0.0, 1.0]);
+        assert_eq!(parsed.get_voltage("v(pulse_o_0)").cloned().unwrap_or_default(), vec![10.0, 11.0]);
+        assert_eq!(parsed.get_voltage("v(pulse_o_1)").cloned().unwrap_or_default(), vec![20.0, 21.0]);
+        assert_eq!(parsed.get_voltage("v(mem_o_0)").cloned().unwrap_or_default(), vec![30.0, 31.0]);
+        assert_eq!(parsed.get_voltage("v(mem_o_1)").cloned().unwrap_or_default(), vec![40.0, 41.0]);
+    }
+
+    #[test]
+    fn test_spike_count_hysteresis_suppresses_chatter() {
+        let voltages = vec![0.0, 3.6, 3.2, 3.7, 3.3, 2.4, 3.8, 2.3];
+        let count = ComparisonResult::count_pulse_spikes(&voltages, 3.5, 2.5);
+        assert_eq!(count, 2.0);
     }
 }

@@ -20,6 +20,9 @@ pub struct Network {
     pub lif1: Leaky,
     pub fc2: Linear,
     pub lif2: Leaky,
+    /// When true, input pixels are converted to spike trains via deterministic accumulator
+    /// before being fed through fc1. Makes all connections uniform spiking synapses.
+    pub spiking_input: bool,
 }
 
 impl Network {
@@ -32,6 +35,7 @@ impl Network {
             lif1: Leaky::new(hidden_size, beta).with_spike_grad(spike_grad),
             fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new(output_size, beta).with_spike_grad(spike_grad),
+            spiking_input: false,
         }
     }
 
@@ -51,6 +55,7 @@ impl Network {
             lif1: Leaky::new_physics(hidden_size, tau_m, dt).with_spike_grad(spike_grad),
             fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new_physics(output_size, tau_m, dt).with_spike_grad(spike_grad),
+            spiking_input: false,
         }
     }
 
@@ -74,6 +79,7 @@ impl Network {
             fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new_physics_with_pulse(output_size, tau_m, dt, tau_pulse, v_peak)
                 .with_spike_grad(spike_grad),
+            spiking_input: false,
         }
     }
 
@@ -100,6 +106,7 @@ impl Network {
             lif2: Leaky::new_physics_with_threshold_adaptation(
                 output_size, tau_m, dt, tau_theta, theta_low, theta_high,
             ).with_spike_grad(spike_grad),
+            spiking_input: false,
         }
     }
 
@@ -114,11 +121,28 @@ impl Network {
         self.lif1.is_physics_mode()
     }
 
+    /// Initialize input accumulator if spiking input is enabled
+    /// Uses dithered initialization: random offsets in [0, 1) break up
+    /// deterministic quantization patterns for better spike diversity
+    fn init_input_accum(&self, batch_size: usize) -> Option<Array2<f32>> {
+        if self.spiking_input {
+            use rand::SeedableRng;
+            use rand_xoshiro::Xoshiro256PlusPlus;
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(0);
+            let input_size = self.fc1.weight.shape()[0];
+            let accum = Array2::from_shape_fn((batch_size, input_size), |_| rng.gen::<f32>());
+            Some(accum)
+        } else {
+            None
+        }
+    }
+
     /// Initialize network state for a batch
     pub fn init_state(&self, batch_size: usize) -> NetworkState {
         NetworkState {
             lif1_state: self.lif1.init_state(batch_size),
             lif2_state: self.lif2.init_state(batch_size),
+            input_accum: self.init_input_accum(batch_size),
         }
     }
 
@@ -127,6 +151,7 @@ impl Network {
         NetworkState {
             lif1_state: self.lif1.init_state_with_pulse(batch_size),
             lif2_state: self.lif2.init_state_with_pulse(batch_size),
+            input_accum: self.init_input_accum(batch_size),
         }
     }
 
@@ -135,6 +160,7 @@ impl Network {
         NetworkState {
             lif1_state: self.lif1.init_state_with_adaptation(batch_size),
             lif2_state: self.lif2.init_state_with_adaptation(batch_size),
+            input_accum: self.init_input_accum(batch_size),
         }
     }
 
@@ -143,6 +169,7 @@ impl Network {
         NetworkState {
             lif1_state: self.lif1.init_state_full(batch_size),
             lif2_state: self.lif2.init_state_full(batch_size),
+            input_accum: self.init_input_accum(batch_size),
         }
     }
 
@@ -188,16 +215,16 @@ impl Network {
         let new_state = NetworkState {
             lif1_state,
             lif2_state,
+            input_accum: None,
         };
 
-        let cache = NetworkCache {
-            encoded_input: None,
+        let cache = NetworkCache::new(
             hidden_current,
             hidden_spikes,
             output_current,
             lif1_cache,
             lif2_cache,
-        };
+        );
 
         // Return output spikes and membrane potential
         (output_spikes, new_state.lif2_state.mem.clone(), new_state, cache)
@@ -244,16 +271,16 @@ impl Network {
         let new_state = NetworkState {
             lif1_state,
             lif2_state,
+            input_accum: None,
         };
 
-        let cache = NetworkCache {
-            encoded_input: None,
+        let cache = NetworkCache::new(
             hidden_current,
             hidden_spikes,
             output_current,
             lif1_cache,
             lif2_cache,
-        };
+        );
 
         (output_spikes, new_state.lif2_state.mem.clone(), new_state, cache)
     }
@@ -273,13 +300,29 @@ impl Network {
         num_steps: usize,
         quant_bits: Option<u8>,
     ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>) {
-        use crate::layers::linear::quantize_weights;
+        self.forward_quantized_full(input, num_steps, quant_bits, false, 0)
+    }
+
+    /// Full forward pass with weight and input quantization options
+    ///
+    /// split_sign: use independent scaling for positive/negative weights (3-bit mag + 1-bit sign)
+    /// input_quant_bits: quantize input to this many bits (0 = no input quantization)
+    pub fn forward_quantized_full(
+        &self,
+        input: &Array2<f32>,
+        num_steps: usize,
+        quant_bits: Option<u8>,
+        split_sign: bool,
+        input_quant_bits: u8,
+    ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>) {
+        use crate::layers::linear::{quantize_weights, quantize_input};
 
         let batch_size = input.shape()[0];
         let mut state = self.init_state(batch_size);
         let mut caches = Vec::with_capacity(num_steps);
 
         // Pre-compute quantized weights once (not per-timestep)
+        // quantize_weights uses split-sign scaling (independent pos/neg) matching hardware
         let (fc1_weight, fc2_weight) = match quant_bits {
             Some(bits) => (
                 quantize_weights(&self.fc1.weight, bits),
@@ -287,23 +330,77 @@ impl Network {
             ),
             None => (self.fc1.weight.clone(), self.fc2.weight.clone()),
         };
+        let _ = split_sign; // split-sign is now the default in quantize_weights
+
+        // Optionally quantize input (DAC resolution)
+        let input = if input_quant_bits > 0 {
+            quantize_input(input, input_quant_bits)
+        } else {
+            input.clone()
+        };
+        let input = &input;
 
         // Accumulate spikes over time for rate-based classification
         let mut spike_count = Array2::zeros((batch_size, self.lif2.size));
         let mut final_mem = Array2::zeros((batch_size, self.lif2.size));
 
-        for _ in 0..num_steps {
+        let spike_grad = SurrogateGradient::fast_sigmoid(25.0);
+
+        // For spiking input, undo MNIST normalization to get [0,1] pixel values
+        // The accumulator needs non-negative values to generate meaningful spike rates
+        let spiking_raw_input = if self.spiking_input {
+            Some(input.mapv(|x| (x * 0.3081 + 0.1307).clamp(0.0, 1.0)))
+        } else {
+            None
+        };
+
+        for t in 0..num_steps {
+            // Spiking input: convert pixel values to spikes via deterministic accumulator
+            // Uses burst spikes (floor) for multi-level encoding like Loihi 2 graded spikes
+            let (fc1_input, input_spikes_cache, input_accum_cache) = if self.spiking_input {
+                let raw = spiking_raw_input.as_ref().unwrap();
+                let accum = state.input_accum.as_ref().unwrap();
+                let accum_pre = accum + raw;
+                // Burst spikes: emit floor(accum) spikes, allowing multi-level encoding
+                let spikes = accum_pre.mapv(|v| v.floor().max(0.0));
+                let new_accum = &accum_pre - &spikes;
+                // On the final timestep, inject residual accumulator as fractional spike
+                let fc1_in = if t == num_steps - 1 {
+                    &spikes + &new_accum
+                } else {
+                    spikes.clone()
+                };
+                state.input_accum = Some(new_accum);
+                (fc1_in, Some(spikes), Some(accum_pre))
+            } else {
+                (input.clone(), None, None)
+            };
+
             // Layer 1: FC -> LIF (using pre-quantized weights)
-            let mut hidden_current = input.dot(&fc1_weight);
+            let mut hidden_current = fc1_input.dot(&fc1_weight);
             if let Some(ref b) = self.fc1.bias {
                 for mut row in hidden_current.rows_mut() {
                     row += b;
                 }
             }
-            let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward(&hidden_current, &state.lif1_state);
+
+            // In physics mode with pulse stretching, use pulse output between layers
+            // to match physical circuit behavior. Binary spikes are kept in cache for backward pass.
+            let use_pulse = self.lif1.mode.tau_pulse() > 0.0 && self.is_physics_mode();
+            let (hidden_output, hidden_spikes, lif1_state, lif1_cache) = if use_pulse {
+                let dt = self.lif1.mode.dt().unwrap_or(0.001);
+                let (pulse, lif1_state, lif1_cache) =
+                    self.lif1.forward_with_pulse(&hidden_current, &state.lif1_state, dt);
+                let binary_spikes = lif1_cache.spikes.clone();
+                (pulse, binary_spikes, lif1_state, lif1_cache)
+            } else {
+                let (spikes, lif1_state, lif1_cache) =
+                    self.lif1.forward(&hidden_current, &state.lif1_state);
+                (spikes.clone(), spikes, lif1_state, lif1_cache)
+            };
 
             // Layer 2: FC -> LIF (using pre-quantized weights)
-            let mut output_current = hidden_spikes.dot(&fc2_weight);
+            let mut output_current = hidden_output.dot(&fc2_weight);
             if let Some(ref b) = self.fc2.bias {
                 for mut row in output_current.rows_mut() {
                     row += b;
@@ -315,16 +412,20 @@ impl Network {
             spike_count += &output_spikes;
             final_mem = lif2_state.mem.clone();
 
-            state = NetworkState { lif1_state, lif2_state };
-            caches.push(NetworkCache {
-                encoded_input: None,
+            state = NetworkState { lif1_state, lif2_state, input_accum: state.input_accum };
+            let mut cache = NetworkCache::new(
                 hidden_current,
-                hidden_spikes,
+                hidden_spikes, // Binary spikes for backward pass
                 output_current,
                 lif1_cache,
                 lif2_cache,
-            });
+            );
+            cache.input_spikes = input_spikes_cache;
+            cache.input_accum_pre = input_accum_cache;
+            caches.push(cache);
         }
+
+        let _ = spike_grad; // used by backward pass via cache
 
         (spike_count, final_mem, caches)
     }
@@ -411,16 +512,16 @@ impl Network {
         let new_state = NetworkState {
             lif1_state,
             lif2_state,
+            input_accum: None,
         };
 
-        let cache = NetworkCache {
-            encoded_input: None,
+        let cache = NetworkCache::new(
             hidden_current,
-            hidden_spikes: lif1_cache.spikes.clone(), // Binary spikes for backward
+            lif1_cache.spikes.clone(), // Binary spikes for backward
             output_current,
             lif1_cache,
             lif2_cache,
-        };
+        );
 
         (pulse2, new_state.lif2_state.mem.clone(), new_state, cache)
     }
@@ -485,16 +586,16 @@ impl Network {
         let new_state = NetworkState {
             lif1_state,
             lif2_state,
+            input_accum: None,
         };
 
-        let cache = NetworkCache {
-            encoded_input: None,
+        let cache = NetworkCache::new(
             hidden_current,
             hidden_spikes,
             output_current,
             lif1_cache,
             lif2_cache,
-        };
+        );
 
         // Return actual membrane potential (consistent with other forward_step methods)
         (output_spikes, new_state.lif2_state.mem.clone(), new_state, cache)
@@ -578,16 +679,47 @@ impl Network {
             self.fc2.weight.clone()
         };
 
-        for _ in 0..num_steps {
-            // Apply input noise
-            let noisy_input = if let Some(normal) = &input_normal {
+        // For spiking input, undo MNIST normalization to get [0,1] pixel values
+        let spiking_raw_input = if self.spiking_input {
+            Some(input.mapv(|x| (x * 0.3081 + 0.1307).clamp(0.0, 1.0)))
+        } else {
+            None
+        };
+
+        for t in 0..num_steps {
+            // Apply input noise (to raw [0,1] values for spiking, to normalized for rate-coded)
+            let noisy_input = if self.spiking_input {
+                let raw = spiking_raw_input.as_ref().unwrap();
+                if let Some(normal) = &input_normal {
+                    raw.mapv(|x| (x * (1.0 + normal.sample(rng) as f32)).clamp(0.0, 1.0))
+                } else {
+                    raw.clone()
+                }
+            } else if let Some(normal) = &input_normal {
                 input.mapv(|x| x * (1.0 + normal.sample(rng) as f32))
             } else {
                 input.clone()
             };
 
+            // Generate input spikes if spiking input mode (burst spikes + residual)
+            let (fc1_input, input_spikes_cache, input_accum_cache) = if self.spiking_input {
+                let accum = state.input_accum.as_ref().unwrap();
+                let accum_pre = accum + &noisy_input;
+                let spikes = accum_pre.mapv(|v| v.floor().max(0.0));
+                let new_accum = &accum_pre - &spikes;
+                let fc1_in = if t == num_steps - 1 {
+                    &spikes + &new_accum
+                } else {
+                    spikes.clone()
+                };
+                state.input_accum = Some(new_accum);
+                (fc1_in, Some(spikes), Some(accum_pre))
+            } else {
+                (noisy_input, None, None)
+            };
+
             // Layer 1: FC -> LIF
-            let mut hidden_current = noisy_input.dot(&fc1_weight);
+            let mut hidden_current = fc1_input.dot(&fc1_weight);
             if let Some(ref b) = self.fc1.bias {
                 for mut row in hidden_current.rows_mut() {
                     row += b;
@@ -618,15 +750,17 @@ impl Network {
 
             spike_count += &output_spikes;
 
-            state = NetworkState { lif1_state, lif2_state };
-            caches.push(NetworkCache {
-                encoded_input: None,
+            state = NetworkState { lif1_state, lif2_state, input_accum: state.input_accum };
+            let mut cache = NetworkCache::new(
                 hidden_current,
                 hidden_spikes,
                 output_current,
                 lif1_cache,
                 lif2_cache,
-            });
+            );
+            cache.input_spikes = input_spikes_cache;
+            cache.input_accum_pre = input_accum_cache;
+            caches.push(cache);
         }
 
         let final_mem = state.lif2_state.mem;
@@ -682,15 +816,15 @@ impl Network {
             state = NetworkState {
                 lif1_state,
                 lif2_state,
+                input_accum: state.input_accum,
             };
-            caches.push(NetworkCache {
-                encoded_input: None,
+            caches.push(NetworkCache::new(
                 hidden_current,
-                hidden_spikes, // Store original spikes for backward pass
+                hidden_spikes,
                 output_current,
                 lif1_cache,
                 lif2_cache,
-            });
+            ));
         }
 
         (spike_count, final_mem, caches)
@@ -740,18 +874,21 @@ impl Network {
             spike_count += &output_spikes;
             final_mem = lif2_state.mem.clone();
 
-            state = NetworkState { lif1_state, lif2_state };
+            state = NetworkState { lif1_state, lif2_state, input_accum: state.input_accum };
 
             // Store encoded_input for temporal encoding (needed for correct gradients)
             // For rate-coded, encoder returns input unchanged so this is equivalent
-            caches.push(NetworkCache {
-                encoded_input: Some(encoded_input),
-                hidden_current,
-                hidden_spikes,
-                output_current,
-                lif1_cache,
-                lif2_cache,
-            });
+            {
+                let mut cache = NetworkCache::new(
+                    hidden_current,
+                    hidden_spikes,
+                    output_current,
+                    lif1_cache,
+                    lif2_cache,
+                );
+                cache.encoded_input = Some(encoded_input);
+                caches.push(cache);
+            }
         }
 
         (spike_count, final_mem, caches)
@@ -821,9 +958,13 @@ impl Network {
             grad_hidden_membrane_next = grad_hidden_membrane_prev;
 
             // Backward through FC1
-            // Use encoded_input from cache if available (temporal encoding),
+            // Use input_spikes if spiking encoding, encoded_input if temporal,
             // otherwise use the static input (rate-coded)
-            let fc1_input = cache.encoded_input.as_ref().unwrap_or(input);
+            let fc1_input = if let Some(ref spikes) = cache.input_spikes {
+                spikes
+            } else {
+                cache.encoded_input.as_ref().unwrap_or(input)
+            };
             let (_, fc1_weight_grad, fc1_bias_grad) = self.fc1.backward(fc1_input, &grad_hidden_current);
             grad_fc1_weight = &grad_fc1_weight + &fc1_weight_grad;
             if let (Some(ref mut acc), Some(bias_grad)) = (&mut grad_fc1_bias, fc1_bias_grad) {
@@ -875,7 +1016,14 @@ impl Network {
         num_steps: usize,
     ) -> SimulationTrace {
         let batch_size = input.shape()[0];
-        let mut state = self.init_state(batch_size);
+        let use_pulse = self.lif1.mode.tau_pulse() > 0.0 && self.is_physics_mode();
+        let dt = self.lif1.mode.dt().unwrap_or(0.001);
+
+        let mut state = if use_pulse {
+            self.init_state_with_pulse(batch_size)
+        } else {
+            self.init_state(batch_size)
+        };
 
         let mut hidden_mem_history = Vec::with_capacity(num_steps);
         let mut output_mem_history = Vec::with_capacity(num_steps);
@@ -889,28 +1037,57 @@ impl Network {
         for _ in 0..num_steps {
             // Layer 1: FC -> LIF
             let hidden_current = self.fc1.forward(input);
-            let (hidden_spikes, lif1_state, _) = self.lif1.forward(&hidden_current, &state.lif1_state);
 
-            // Record hidden layer state
-            hidden_current_history.push(hidden_current);
-            hidden_mem_history.push(lif1_state.mem.clone());
-            hidden_spike_history.push(hidden_spikes.clone());
+            if use_pulse {
+                // Physics mode with pulse stretching: matches SPICE circuit behavior
+                let (pulse_output, lif1_state, lif1_cache) =
+                    self.lif1.forward_with_pulse(&hidden_current, &state.lif1_state, dt);
 
-            // Layer 2: FC -> LIF
-            let output_current = self.fc2.forward(&hidden_spikes);
-            let (output_spikes, lif2_state, _) = self.lif2.forward(&output_current, &state.lif2_state);
+                hidden_current_history.push(hidden_current);
+                hidden_mem_history.push(lif1_state.mem.clone());
+                hidden_spike_history.push(lif1_cache.spikes.clone());
 
-            // Record output layer state
-            output_current_history.push(output_current);
-            output_mem_history.push(lif2_state.mem.clone());
-            output_spike_history.push(output_spikes.clone());
+                // Layer 2: pulse output drives output synapses
+                let output_current = self.fc2.forward(&pulse_output);
+                let (output_spikes, lif2_state, _) =
+                    self.lif2.forward(&output_current, &state.lif2_state);
 
-            spike_count += &output_spikes;
+                output_current_history.push(output_current);
+                output_mem_history.push(lif2_state.mem.clone());
+                output_spike_history.push(output_spikes.clone());
 
-            state = NetworkState {
-                lif1_state,
-                lif2_state,
-            };
+                spike_count += &output_spikes;
+
+                state = NetworkState {
+                    lif1_state,
+                    lif2_state,
+                    input_accum: state.input_accum,
+                };
+            } else {
+                // Simple mode: binary spikes between layers
+                let (hidden_spikes, lif1_state, _) =
+                    self.lif1.forward(&hidden_current, &state.lif1_state);
+
+                hidden_current_history.push(hidden_current);
+                hidden_mem_history.push(lif1_state.mem.clone());
+                hidden_spike_history.push(hidden_spikes.clone());
+
+                let output_current = self.fc2.forward(&hidden_spikes);
+                let (output_spikes, lif2_state, _) =
+                    self.lif2.forward(&output_current, &state.lif2_state);
+
+                output_current_history.push(output_current);
+                output_mem_history.push(lif2_state.mem.clone());
+                output_spike_history.push(output_spikes.clone());
+
+                spike_count += &output_spikes;
+
+                state = NetworkState {
+                    lif1_state,
+                    lif2_state,
+                    input_accum: state.input_accum,
+                };
+            }
         }
 
         SimulationTrace {
@@ -962,10 +1139,10 @@ mod tests {
     fn test_network_parameter_count() {
         let net = Network::new(49, 100, 10, 0.9, 42);
 
-        // FC1: 49*100 + 100 = 5000
-        // FC2: 100*10 + 10 = 1010
-        // Total: 6010
-        assert_eq!(net.num_parameters(), 6010);
+        // FC1: 49*100 = 4900 (no bias)
+        // FC2: 100*10 = 1000 (no bias)
+        // Total: 5900
+        assert_eq!(net.num_parameters(), 5900);
     }
 
     #[test]

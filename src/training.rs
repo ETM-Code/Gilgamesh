@@ -260,6 +260,12 @@ pub struct Trainer {
     pub input_encoder: Option<InputEncoder>,
     /// Truncated BPTT steps (None = full BPTT through all timesteps)
     pub bptt_steps: Option<usize>,
+    /// Apply noise during evaluation too (not just training)
+    pub noise_during_eval: bool,
+    /// Use split-sign weight quantization (3-bit magnitude + 1-bit sign, independent scaling)
+    pub split_sign_quant: bool,
+    /// Input quantization bits (0 = no input quantization)
+    pub input_quant_bits: u8,
 }
 
 impl Trainer {
@@ -291,6 +297,9 @@ impl Trainer {
             analog_gain: 0.0, // Disabled by default
             input_encoder: None, // Rate-coded by default
             bptt_steps,
+            noise_during_eval: false,
+            split_sign_quant: false,
+            input_quant_bits: 0,
         }
     }
 
@@ -371,6 +380,12 @@ impl Trainer {
             } else if self.analog_gain > 0.0 {
                 // Use analog forward for hybrid spike+membrane transmission
                 self.network.forward_with_analog(&images, self.config.num_steps, self.analog_gain)
+            } else if self.input_quant_bits > 0 {
+                // Use full quantized forward with input quantization
+                self.network.forward_quantized_full(
+                    &images, self.config.num_steps, self.quant_bits,
+                    self.split_sign_quant, self.input_quant_bits,
+                )
             } else {
                 // Use quantized forward (handles None for no quantization)
                 self.network.forward_quantized(&images, self.config.num_steps, self.quant_bits)
@@ -406,17 +421,33 @@ impl Trainer {
     }
 
     /// Evaluate on test set
-    pub fn evaluate(&self, dataset: &MnistDataset) -> f32 {
+    pub fn evaluate(&mut self, dataset: &MnistDataset) -> f32 {
         let batch_iter = BatchIterator::new(dataset, self.config.batch_size, false, false);
 
         let mut correct = 0usize;
         let mut total = 0usize;
 
         for (images, labels) in batch_iter {
-            // Use same forward mode as training for consistent evaluation
-            let (spike_count, _, _) = if let Some(ref encoder) = self.input_encoder {
+            // Use noisy forward during eval if noise_during_eval is set
+            let (spike_count, _, _) = if self.noise_during_eval && self.noise.is_enabled() {
+                self.network.forward_noisy(
+                    &images,
+                    self.config.num_steps,
+                    self.noise.weight_std,
+                    self.noise.threshold_std,
+                    self.noise.membrane_std,
+                    self.noise.input_std,
+                    &mut self.rng,
+                )
+            } else if let Some(ref encoder) = self.input_encoder {
                 // Use encoding forward for temporal encoding
                 self.network.forward_with_encoding(&images, encoder, self.config.num_steps)
+            } else if self.input_quant_bits > 0 {
+                // Use full quantized forward with input quantization
+                self.network.forward_quantized_full(
+                    &images, self.config.num_steps, self.quant_bits,
+                    self.split_sign_quant, self.input_quant_bits,
+                )
             } else {
                 // Use quantized forward (handles None for no quantization)
                 self.network.forward_quantized(&images, self.config.num_steps, self.quant_bits)

@@ -12,30 +12,42 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-/// Quantize a single weight value to n-bit resolution
+/// Quantize weights with split-sign scaling (hardware-accurate)
 ///
-/// Uses symmetric quantization around 0, mapping [-max, +max] to n-bit levels.
-/// For 8-bit: 127 positive levels, 127 negative levels, 1 zero (255 total values).
-#[inline]
-pub fn quantize_weight(weight: f32, bits: u8, max_magnitude: f32) -> f32 {
-    if max_magnitude < 1e-8 || bits < 2 {
-        return 0.0;
-    }
-    // Clamp bits to reasonable range
-    let bits = bits.min(16);
-    // Use 2^(bits-1) - 1 for proper symmetric signed quantization
-    let levels = ((1u32 << (bits - 1)) - 1) as f32;
-    let scale = levels / max_magnitude;
-    let quantized = (weight * scale).round() / scale;
-    quantized.clamp(-max_magnitude, max_magnitude)
+/// Hardware model: each synapse has n-bit magnitude + 1-bit sign, with
+/// separate analog current scales for excitatory vs inhibitory sources.
+/// Positive and negative weights each use the full magnitude range independently.
+///
+/// For 3-bit: magnitude 0-7, so max_magnitude = 7.
+/// Positive weight = magnitude × pos_scale, Negative weight = -magnitude × neg_scale.
+///
+/// This matches the checkpoint export format in checkpoint.rs and the actual hardware.
+pub fn quantize_weights(weights: &Array2<f32>, bits: u8) -> Array2<f32> {
+    let max_magnitude = ((1i32 << bits) - 1) as f32;
+
+    // Find max separately for positive and negative weights
+    let (max_pos, max_neg) = weights.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
+        (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
+    });
+
+    let pos_scale = if max_pos > 1e-8 { max_pos / max_magnitude } else { 1.0 };
+    let neg_scale = if max_neg > 1e-8 { max_neg / max_magnitude } else { 1.0 };
+
+    weights.mapv(|w| {
+        if w >= 0.0 {
+            let q = (w / pos_scale).round().clamp(0.0, max_magnitude);
+            q * pos_scale
+        } else {
+            let q = ((-w) / neg_scale).round().clamp(0.0, max_magnitude);
+            -(q * neg_scale)
+        }
+    })
 }
 
-/// Quantize a weight array in-place (for efficiency)
-pub fn quantize_weights(weights: &Array2<f32>, bits: u8) -> Array2<f32> {
-    // Find max absolute weight for scaling
-    let max_magnitude = weights.iter().fold(0.0f32, |acc, &weight| acc.max(weight.abs()));
-
-    weights.mapv(|weight| quantize_weight(weight, bits, max_magnitude))
+/// Quantize input values to n-bit unsigned resolution (for DAC simulation)
+pub fn quantize_input(input: &Array2<f32>, bits: u8) -> Array2<f32> {
+    let levels = ((1u32 << bits) - 1) as f32;
+    input.mapv(|x| (x * levels).round() / levels)
 }
 
 /// Linear (fully connected) layer
@@ -275,30 +287,37 @@ mod tests {
     }
 
     #[test]
-    fn test_quantize_weight() {
-        // Test 8-bit quantization
-        let max_magnitude = 1.0;
+    fn test_quantize_weights_split_sign() {
+        // Test 3-bit split-sign quantization (hardware model)
+        let weights = array![[0.1, 0.5, -0.3], [0.8, -0.2, 0.4]];
+        let quantized = quantize_weights(&weights, 3);
 
-        // Zero should stay zero
-        assert_eq!(quantize_weight(0.0, 8, max_magnitude), 0.0);
+        // Shape should be preserved
+        assert_eq!(quantized.shape(), weights.shape());
 
-        // Max should stay max
-        assert!((quantize_weight(1.0, 8, max_magnitude) - 1.0).abs() < 0.01);
+        // All values should be finite
+        assert!(quantized.iter().all(|v| v.is_finite()));
 
-        // Values should be rounded to discrete levels
-        let quantized = quantize_weight(0.5, 8, max_magnitude);
-        assert!(quantized.is_finite());
+        // Max positive should be preserved (maps to magnitude 7)
+        let max_pos_orig = weights.iter().filter(|&&w| w > 0.0).fold(0.0f32, |a, &w| a.max(w));
+        let max_pos_quant = quantized.iter().filter(|&&w| w > 0.0).fold(0.0f32, |a, &w| a.max(w));
+        assert!((max_pos_orig - max_pos_quant).abs() < 1e-6, "Max positive should be exact");
+
+        // Max negative should be preserved (maps to magnitude 7)
+        let max_neg_orig = weights.iter().filter(|&&w| w < 0.0).fold(0.0f32, |a, &w| a.min(w));
+        let max_neg_quant = quantized.iter().filter(|&&w| w < 0.0).fold(0.0f32, |a, &w| a.min(w));
+        assert!((max_neg_orig - max_neg_quant).abs() < 1e-6, "Max negative should be exact");
     }
 
     #[test]
-    fn test_quantize_weights_array() {
+    fn test_quantize_weights_8bit() {
         let weights = array![[0.1, 0.5, -0.3], [0.8, -0.2, 0.4]];
         let quantized = quantize_weights(&weights, 8);
 
         // Shape should be preserved
         assert_eq!(quantized.shape(), weights.shape());
 
-        // Values should be similar (8-bit has good precision)
+        // With 8-bit (255 levels per sign), values should be close
         for (orig, quant) in weights.iter().zip(quantized.iter()) {
             assert!((orig - quant).abs() < 0.02, "orig={}, quant={}", orig, quant);
         }
