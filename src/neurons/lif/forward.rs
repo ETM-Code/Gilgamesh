@@ -4,9 +4,7 @@ use rand_distr::{Distribution, Normal};
 
 use super::cache::LeakyCache;
 use super::leaky::Leaky;
-use super::mode::{
-    default_tau_pulse, default_tau_theta, NeuronMode, ResetMechanism,
-};
+use super::mode::{default_tau_pulse, default_tau_theta, NeuronMode, ResetMechanism};
 use super::state::LeakyState;
 
 impl Leaky {
@@ -90,11 +88,14 @@ impl Leaky {
             Some(new_time_since_spike)
         } else {
             let mut time_since_spike = Array2::from_elem(spikes.raw_dim(), f32::INFINITY);
-            time_since_spike.iter_mut().zip(spikes.iter()).for_each(|(time, &spike)| {
-                if spike > 0.0 {
-                    *time = 0.0;
-                }
-            });
+            time_since_spike
+                .iter_mut()
+                .zip(spikes.iter())
+                .for_each(|(time, &spike)| {
+                    if spike > 0.0 {
+                        *time = 0.0;
+                    }
+                });
             Some(time_since_spike)
         }
     }
@@ -108,7 +109,12 @@ impl Leaky {
     /// The average over timestep n is:
     ///   v_avg = (v_peak * tau_pulse / dt) * exp(-n*dt/tau_pulse) * (1 - exp(-dt/tau_pulse))
     #[inline]
-    fn compute_pulse_output(time_since_spike: &Array2<f32>, tau_pulse: f32, v_peak: f32, dt: f32) -> Array2<f32> {
+    fn compute_pulse_output(
+        time_since_spike: &Array2<f32>,
+        tau_pulse: f32,
+        v_peak: f32,
+        dt: f32,
+    ) -> Array2<f32> {
         let cutoff = 5.0 * tau_pulse;
         // Exact average of exponential pulse over one timestep
         let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
@@ -482,11 +488,17 @@ impl Leaky {
             .and(&pending)
             .and(&hold)
             .and(&emitted_spikes)
-            .for_each(|crossing, &shifted, &pending_step, &hold_remaining, &just_emitted| {
-                if shifted > 0.0 && pending_step == 0 && hold_remaining == 0 && just_emitted == 0.0 {
-                    *crossing = 1.0;
-                }
-            });
+            .for_each(
+                |crossing, &shifted, &pending_step, &hold_remaining, &just_emitted| {
+                    if shifted > 0.0
+                        && pending_step == 0
+                        && hold_remaining == 0
+                        && just_emitted == 0.0
+                    {
+                        *crossing = 1.0;
+                    }
+                },
+            );
 
         if delay_steps > 0 {
             Zip::from(&mut pending)
@@ -510,7 +522,13 @@ impl Leaky {
                 });
         }
 
-        hold.mapv_inplace(|hold_remaining| if hold_remaining > 0 { hold_remaining - 1 } else { 0 });
+        hold.mapv_inplace(|hold_remaining| {
+            if hold_remaining > 0 {
+                hold_remaining - 1
+            } else {
+                0
+            }
+        });
 
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &emitted_spikes, dt);

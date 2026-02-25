@@ -46,7 +46,6 @@ impl Tensor2D {
             *g += grad;
         }
     }
-
 }
 
 /// A 1D tensor (vector) with optional gradient storage
@@ -93,7 +92,6 @@ impl Tensor1D {
             *g += grad;
         }
     }
-
 }
 
 /// Matrix multiplication: (batch, in) @ (in, out) -> (batch, out)
@@ -102,7 +100,11 @@ pub fn matmul(lhs: &Array2<f32>, rhs: &Array2<f32>) -> Array2<f32> {
 }
 
 /// Batched matrix-vector multiplication with bias
-pub fn linear_forward(input: &Array2<f32>, weight: &Array2<f32>, bias: Option<&Array1<f32>>) -> Array2<f32> {
+pub fn linear_forward(
+    input: &Array2<f32>,
+    weight: &Array2<f32>,
+    bias: Option<&Array1<f32>>,
+) -> Array2<f32> {
     let mut output = input.dot(weight);
     if let Some(bias_vec) = bias {
         output += bias_vec;
@@ -156,7 +158,11 @@ pub fn cross_entropy_loss(logits: &Array2<f32>, targets: &[usize]) -> (f32, Arra
 /// Heaviside step function (spike generation)
 #[inline]
 pub fn heaviside(value: f32) -> f32 {
-    if value > 0.0 { 1.0 } else { 0.0 }
+    if value > 0.0 {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 /// Element-wise heaviside for arrays

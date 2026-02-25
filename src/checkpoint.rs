@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+use crate::layers::linear::{DEFAULT_SYNAPSE_NEG_GAIN, DEFAULT_SYNAPSE_POS_GAIN};
 use crate::layers::Linear;
 use crate::network::Network;
 use crate::neurons::Leaky;
@@ -194,13 +195,8 @@ impl Checkpoint {
         };
 
         // Generate quantized weights if requested
-        let quantized = quant_bits.map(|bits| {
-            quantize_network_weights(
-                &network.fc1.weight,
-                &network.fc2.weight,
-                bits,
-            )
-        });
+        let quantized = quant_bits
+            .map(|bits| quantize_network_weights(&network.fc1.weight, &network.fc2.weight, bits));
 
         Self {
             version: CHECKPOINT_VERSION,
@@ -213,8 +209,8 @@ impl Checkpoint {
 
     /// Save checkpoint to a JSON file
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let contents = serde_json::to_string_pretty(self)
-            .with_context(|| "Failed to serialize checkpoint")?;
+        let contents =
+            serde_json::to_string_pretty(self).with_context(|| "Failed to serialize checkpoint")?;
 
         fs::write(path.as_ref(), contents)
             .with_context(|| format!("Failed to write checkpoint file: {:?}", path.as_ref()))?;
@@ -227,8 +223,8 @@ impl Checkpoint {
         let contents = fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read checkpoint file: {:?}", path.as_ref()))?;
 
-        let checkpoint: Checkpoint = serde_json::from_str(&contents)
-            .with_context(|| "Failed to parse checkpoint JSON")?;
+        let checkpoint: Checkpoint =
+            serde_json::from_str(&contents).with_context(|| "Failed to parse checkpoint JSON")?;
 
         // Version check
         if checkpoint.version > CHECKPOINT_VERSION {
@@ -258,6 +254,9 @@ impl Checkpoint {
             in_features: arch.input_size,
             out_features: arch.hidden_size,
             current_gain: None,
+            synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
+            synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
+            total_current_cap: None,
         };
 
         let fc2 = Linear {
@@ -271,6 +270,9 @@ impl Checkpoint {
             in_features: arch.hidden_size,
             out_features: arch.output_size,
             current_gain: None,
+            synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
+            synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
+            total_current_cap: None,
         };
 
         // Create LIF neurons with correct mode
@@ -289,7 +291,8 @@ impl Checkpoint {
             } else {
                 Leaky::new(size, arch.beta.unwrap_or(0.9))
             };
-            lif.with_threshold(arch.threshold).with_spike_grad(spike_grad)
+            lif.with_threshold(arch.threshold)
+                .with_spike_grad(spike_grad)
         };
 
         let lif1 = make_lif(arch.hidden_size);
@@ -308,10 +311,7 @@ impl Checkpoint {
 // Conversion helpers
 
 fn array2_to_vec(matrix: &Array2<f32>) -> Vec<Vec<f32>> {
-    matrix.rows()
-        .into_iter()
-        .map(|row| row.to_vec())
-        .collect()
+    matrix.rows().into_iter().map(|row| row.to_vec()).collect()
 }
 
 fn array1_to_vec(vector: &Array1<f32>) -> Vec<f32> {
@@ -347,11 +347,7 @@ fn vec_to_array1(vec: &[f32]) -> Result<Array1<f32>> {
 /// To reconstruct:
 ///   positive: magnitude × pos_scale
 ///   negative: -magnitude × neg_scale
-fn quantize_network_weights(
-    fc1: &Array2<f32>,
-    fc2: &Array2<f32>,
-    bits: u8,
-) -> QuantizedWeights {
+fn quantize_network_weights(fc1: &Array2<f32>, fc2: &Array2<f32>, bits: u8) -> QuantizedWeights {
     // For 3-bit magnitude: max = 7
     let max_magnitude = ((1i32 << bits) - 1) as f32;
 
@@ -360,8 +356,16 @@ fn quantize_network_weights(
         let (pos_max, neg_max) = weights.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
             (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
         });
-        let pos_scale = if pos_max > 1e-8 { pos_max / max_magnitude } else { 1.0 };
-        let neg_scale = if neg_max > 1e-8 { neg_max / max_magnitude } else { 1.0 };
+        let pos_scale = if pos_max > 1e-8 {
+            pos_max / max_magnitude
+        } else {
+            1.0
+        };
+        let neg_scale = if neg_max > 1e-8 {
+            neg_max / max_magnitude
+        } else {
+            1.0
+        };
 
         let quantized = weights
             .rows()
@@ -427,14 +431,22 @@ mod tests {
         // Reconstruct network
         let net2 = checkpoint.to_network().unwrap();
 
+        // Default mirror calibration should be preserved for inference.
+        assert!((net.fc1.synapse_pos_gain - DEFAULT_SYNAPSE_POS_GAIN).abs() < 1e-6);
+        assert!((net.fc1.synapse_neg_gain - DEFAULT_SYNAPSE_NEG_GAIN).abs() < 1e-6);
+        assert!((net.fc2.synapse_pos_gain - DEFAULT_SYNAPSE_POS_GAIN).abs() < 1e-6);
+        assert!((net.fc2.synapse_neg_gain - DEFAULT_SYNAPSE_NEG_GAIN).abs() < 1e-6);
+        assert!((net2.fc1.synapse_pos_gain - DEFAULT_SYNAPSE_POS_GAIN).abs() < 1e-6);
+        assert!((net2.fc1.synapse_neg_gain - DEFAULT_SYNAPSE_NEG_GAIN).abs() < 1e-6);
+        assert!((net2.fc2.synapse_pos_gain - DEFAULT_SYNAPSE_POS_GAIN).abs() < 1e-6);
+        assert!((net2.fc2.synapse_neg_gain - DEFAULT_SYNAPSE_NEG_GAIN).abs() < 1e-6);
+
         // Verify weights match
         assert_eq!(net.fc1.weight.shape(), net2.fc1.weight.shape());
         assert_eq!(net.fc2.weight.shape(), net2.fc2.weight.shape());
 
         // Verify weights are identical
-        let diff: f32 = (&net.fc1.weight - &net2.fc1.weight)
-            .mapv(|x| x.abs())
-            .sum();
+        let diff: f32 = (&net.fc1.weight - &net2.fc1.weight).mapv(|x| x.abs()).sum();
         assert!(diff < 1e-6, "FC1 weights should be identical");
     }
 

@@ -1,0 +1,704 @@
+* ================================================================
+* gilgamesh SNN - SPICE Simulation (Detailed Pulse-Stretch Model)
+* ================================================================
+* Architecture: 36 -> 12 -> 10
+* Simulation time: 25.00ms
+* Model dt: 1.000ms, SPICE step: 0.250us
+* Membrane: C=1.000e-8F, R=3.960e5Ω, tau=3.96ms
+* Pulse stretch: tau=0.50ms (enabled=true)
+* Threshold: Vref+1.00V, hysteresis=0.050V
+* Analog output: enabled=false
+
+* ========== LIF Neuron Detailed Subcircuit (Pulse Stretching) ==========
+* Passive membrane with comparator, reset, and pulse stretching
+* Nodes: mem vref vdd comp_pulse sum
+.subckt lif_neuron mem vref vdd comp_pulse sum
+
+* ---------- Passive membrane ----------
+Rsum mem sum 1m
+Cmem mem vref 1.000e-8 IC=0.000000
+Rleak mem vref 3.960e5
+
+* ---------- Threshold divider (GND referenced) ----------
+Rtop vdd vth_node 6.000e6
+Rbottom vth_node vref 1.500e6
+Cadapt vth_node vref 4.700e-9 IC=1.000000
+* Inject current into vth_node when comp_out is high (avoids loading divider)
+Ginj vref vth_node comp_out 0 4.545454e-7
+R3 comp_out vref 2.000e7
+
+* ---------- Comparator model (finite delay, rail output) ----------
+.param VLO=0
+.param VHI=5
+.param VSW=1.000000e-5
+Bdef vdef 0 V = V(mem) - V(vref)
+Btheta_rel vtheta_rel 0 V = V(vth_node) - V(vref)
+Bcomp comp_raw 0 V = VLO + (VHI - VLO)*(0.5*(1 + tanh( ( V(vdef) - ( V(vtheta_rel) + 0 ) ) / VSW )))
+Rcout comp_raw comp_ctrl 1.000e1
+Ccout comp_ctrl 0 4.000e-9 IC=0
+Bcomp_inv comp_inv 0 V = V(vdd) - V(comp_ctrl)
+Scomp_hi comp_out vdd comp_ctrl 0 SWCOMP_HI
+Scomp_lo comp_out vref comp_inv 0 SWCOMP_LO
+.model SWCOMP_HI SW(Ron=50 Roff=1.000e9 Vt=2.500 Vh=0.050)
+.model SWCOMP_LO SW(Ron=50 Roff=1.000e9 Vt=2.500 Vh=0.050)
+Icomp_bias vdd 0 2.000e-6
+
+* ---------- Pulse stretching circuit ----------
+* tau_pulse = 1.500e5Ω × 3.333e-9F = 500.00us
+* Diode + RC pulse stretcher (fast charge, slow discharge)
+Rpw_charge comp_out comp_pulse_charge 1.000e3
+Dpw comp_pulse_charge comp_pulse DPW
+Rpw_charge_bleed comp_pulse_charge 0 1e6
+Rpw_bleed comp_pulse 0 100e6
+Rpw comp_pulse 0 1.500e5
+Cpw comp_pulse 0 3.333e-9 IC=0
+.model DPW D(Is=1e-9 N=1 Rs=2 Cjo=0)
+
+* ---------- Reset path ----------
+Creset mem vref 7.000e-12 IC=0
+Sreset mem vref comp_pulse 0 SWMUX
+.model SWMUX SW(Ron=10 Roff=1.000e9 Vt=3.5 Vh=0.1)
+
+
+.ends lif_neuron
+
+* ========== Power Supplies ==========
+Vdd vdd 0 DC 5
+Vref vref 0 DC 0
+
+* ========== Input Voltage Sources ==========
+* Inputs scaled to voltage around Vref
+Vin_0 in_0 0 DC -0.424213
+Vin_1 in_1 0 DC -0.424213
+Vin_2 in_2 0 DC -0.424213
+Vin_3 in_3 0 DC -0.424213
+Vin_4 in_4 0 DC -0.424213
+Vin_5 in_5 0 DC -0.424213
+Vin_6 in_6 0 DC -0.424213
+Vin_7 in_7 0 DC 0.185328
+Vin_8 in_8 0 DC 0.222381
+Vin_9 in_9 0 DC 0.275840
+Vin_10 in_10 0 DC 0.277961
+Vin_11 in_11 0 DC -0.424213
+Vin_12 in_12 0 DC -0.424213
+Vin_13 in_13 0 DC 0.824851
+Vin_14 in_14 0 DC 0.349155
+Vin_15 in_15 0 DC 1.864833
+Vin_16 in_16 0 DC 0.316146
+Vin_17 in_17 0 DC -0.424213
+Vin_18 in_18 0 DC -0.424213
+Vin_19 in_19 0 DC 0.109949
+Vin_20 in_20 0 DC 1.217729
+Vin_21 in_21 0 DC 1.988042
+Vin_22 in_22 0 DC -0.330873
+Vin_23 in_23 0 DC -0.424213
+Vin_24 in_24 0 DC -0.424213
+Vin_25 in_25 0 DC -0.424213
+Vin_26 in_26 0 DC -0.424213
+Vin_27 in_27 0 DC 1.170635
+Vin_28 in_28 0 DC -0.424213
+Vin_29 in_29 0 DC -0.424213
+Vin_30 in_30 0 DC -0.424213
+Vin_31 in_31 0 DC -0.424213
+Vin_32 in_32 0 DC -0.424213
+Vin_33 in_33 0 DC 0.325225
+Vin_34 in_34 0 DC -0.424213
+Vin_35 in_35 0 DC -0.424213
+
+* ========== Hidden Layer Neurons ==========
+Xh_0 mem_h_0 vref vdd pulse_h_0 sum_h_0 lif_neuron
+Xh_1 mem_h_1 vref vdd pulse_h_1 sum_h_1 lif_neuron
+Xh_2 mem_h_2 vref vdd pulse_h_2 sum_h_2 lif_neuron
+Xh_3 mem_h_3 vref vdd pulse_h_3 sum_h_3 lif_neuron
+Xh_4 mem_h_4 vref vdd pulse_h_4 sum_h_4 lif_neuron
+Xh_5 mem_h_5 vref vdd pulse_h_5 sum_h_5 lif_neuron
+Xh_6 mem_h_6 vref vdd pulse_h_6 sum_h_6 lif_neuron
+Xh_7 mem_h_7 vref vdd pulse_h_7 sum_h_7 lif_neuron
+Xh_8 mem_h_8 vref vdd pulse_h_8 sum_h_8 lif_neuron
+Xh_9 mem_h_9 vref vdd pulse_h_9 sum_h_9 lif_neuron
+Xh_10 mem_h_10 vref vdd pulse_h_10 sum_h_10 lif_neuron
+Xh_11 mem_h_11 vref vdd pulse_h_11 sum_h_11 lif_neuron
+
+* ========== Input -> Hidden Synapses (VCCS) ==========
+* G<name> n+ n- nc+ nc- transconductance
+* Current from n+ to n- = transconductance * (V(nc+) - V(nc-))
+Gw1_0_0 0 sum_h_0 in_0 vref -3.823109e-7
+Gw1_1_0 0 sum_h_0 in_1 vref -2.737916e-7
+Gw1_2_0 0 sum_h_0 in_2 vref 8.347430e-7
+Gw1_3_0 0 sum_h_0 in_3 vref 2.929084e-7
+Gw1_4_0 0 sum_h_0 in_4 vref -1.168504e-6
+Gw1_5_0 0 sum_h_0 in_5 vref -5.401590e-7
+Gw1_6_0 0 sum_h_0 in_6 vref -1.443697e-7
+Gw1_7_0 0 sum_h_0 in_7 vref 7.793846e-7
+Gw1_8_0 0 sum_h_0 in_8 vref 5.399116e-7
+Gw1_9_0 0 sum_h_0 in_9 vref 3.748642e-7
+Gw1_10_0 0 sum_h_0 in_10 vref 1.483011e-7
+Gw1_11_0 0 sum_h_0 in_11 vref -7.416954e-7
+Gw1_12_0 0 sum_h_0 in_12 vref -3.286100e-7
+Gw1_13_0 0 sum_h_0 in_13 vref -9.814331e-7
+Gw1_14_0 0 sum_h_0 in_14 vref -8.335795e-7
+Gw1_15_0 0 sum_h_0 in_15 vref 5.225896e-7
+Gw1_16_0 0 sum_h_0 in_16 vref 4.603257e-7
+Gw1_17_0 0 sum_h_0 in_17 vref -5.247600e-7
+Gw1_18_0 0 sum_h_0 in_18 vref -6.575105e-7
+Gw1_19_0 0 sum_h_0 in_19 vref -1.883310e-6
+Gw1_20_0 0 sum_h_0 in_20 vref 1.890927e-7
+Gw1_21_0 0 sum_h_0 in_21 vref -2.702585e-7
+Gw1_22_0 0 sum_h_0 in_22 vref -1.403090e-6
+Gw1_23_0 0 sum_h_0 in_23 vref -1.017006e-6
+Gw1_24_0 0 sum_h_0 in_24 vref 4.419804e-7
+Gw1_25_0 0 sum_h_0 in_25 vref 1.402668e-6
+Gw1_26_0 0 sum_h_0 in_26 vref 4.413339e-8
+Gw1_27_0 0 sum_h_0 in_27 vref 7.232850e-7
+Gw1_28_0 0 sum_h_0 in_28 vref 1.944539e-6
+Gw1_29_0 0 sum_h_0 in_29 vref -3.981452e-8
+Gw1_30_0 0 sum_h_0 in_30 vref -2.666358e-7
+Gw1_31_0 0 sum_h_0 in_31 vref -1.107706e-7
+Gw1_32_0 0 sum_h_0 in_32 vref 7.034261e-7
+Gw1_33_0 0 sum_h_0 in_33 vref 4.073535e-7
+Gw1_34_0 0 sum_h_0 in_34 vref -5.348490e-7
+Gw1_35_0 0 sum_h_0 in_35 vref -5.574605e-7
+Gw1_0_1 0 sum_h_1 in_0 vref -3.364389e-7
+Gw1_1_1 0 sum_h_1 in_1 vref -6.500867e-7
+Gw1_2_1 0 sum_h_1 in_2 vref -8.749896e-7
+Gw1_3_1 0 sum_h_1 in_3 vref -1.555636e-7
+Gw1_4_1 0 sum_h_1 in_4 vref -5.620607e-7
+Gw1_5_1 0 sum_h_1 in_5 vref 1.410497e-7
+Gw1_6_1 0 sum_h_1 in_6 vref -4.939600e-7
+Gw1_7_1 0 sum_h_1 in_7 vref -4.509123e-7
+Gw1_8_1 0 sum_h_1 in_8 vref 9.438546e-7
+Gw1_9_1 0 sum_h_1 in_9 vref 7.297139e-7
+Gw1_10_1 0 sum_h_1 in_10 vref -5.905062e-7
+Gw1_11_1 0 sum_h_1 in_11 vref -8.578143e-7
+Gw1_12_1 0 sum_h_1 in_12 vref -3.714856e-7
+Gw1_13_1 0 sum_h_1 in_13 vref 7.175877e-7
+Gw1_14_1 0 sum_h_1 in_14 vref 4.374562e-7
+Gw1_15_1 0 sum_h_1 in_15 vref 3.724686e-8
+Gw1_16_1 0 sum_h_1 in_16 vref 1.624610e-6
+Gw1_17_1 0 sum_h_1 in_17 vref 7.267421e-7
+Gw1_18_1 0 sum_h_1 in_18 vref -5.255259e-7
+Gw1_19_1 0 sum_h_1 in_19 vref -8.507199e-8
+Gw1_20_1 0 sum_h_1 in_20 vref 8.838363e-7
+Gw1_21_1 0 sum_h_1 in_21 vref -3.186006e-7
+Gw1_22_1 0 sum_h_1 in_22 vref -3.564284e-7
+Gw1_23_1 0 sum_h_1 in_23 vref -3.614450e-7
+Gw1_24_1 0 sum_h_1 in_24 vref -6.906618e-7
+Gw1_25_1 0 sum_h_1 in_25 vref -3.640298e-7
+Gw1_26_1 0 sum_h_1 in_26 vref 7.028443e-7
+Gw1_27_1 0 sum_h_1 in_27 vref -2.952530e-7
+Gw1_28_1 0 sum_h_1 in_28 vref -7.975120e-7
+Gw1_29_1 0 sum_h_1 in_29 vref -2.713139e-7
+Gw1_30_1 0 sum_h_1 in_30 vref -1.719575e-7
+Gw1_31_1 0 sum_h_1 in_31 vref -9.693241e-7
+Gw1_32_1 0 sum_h_1 in_32 vref 8.895081e-7
+Gw1_33_1 0 sum_h_1 in_33 vref 1.605195e-6
+Gw1_34_1 0 sum_h_1 in_34 vref 1.609283e-7
+Gw1_35_1 0 sum_h_1 in_35 vref -9.163013e-9
+Gw1_0_2 0 sum_h_2 in_0 vref -2.796164e-7
+Gw1_1_2 0 sum_h_2 in_1 vref -3.634618e-7
+Gw1_2_2 0 sum_h_2 in_2 vref 1.121841e-6
+Gw1_3_2 0 sum_h_2 in_3 vref 7.638492e-7
+Gw1_4_2 0 sum_h_2 in_4 vref -8.795877e-8
+Gw1_5_2 0 sum_h_2 in_5 vref -3.936202e-7
+Gw1_6_2 0 sum_h_2 in_6 vref -6.543913e-7
+Gw1_7_2 0 sum_h_2 in_7 vref 1.155197e-6
+Gw1_8_2 0 sum_h_2 in_8 vref 5.055579e-7
+Gw1_9_2 0 sum_h_2 in_9 vref -1.719616e-7
+Gw1_10_2 0 sum_h_2 in_10 vref -1.004769e-6
+Gw1_11_2 0 sum_h_2 in_11 vref -1.493287e-6
+Gw1_12_2 0 sum_h_2 in_12 vref -4.750436e-7
+Gw1_13_2 0 sum_h_2 in_13 vref -1.650769e-6
+Gw1_14_2 0 sum_h_2 in_14 vref -1.059216e-6
+Gw1_15_2 0 sum_h_2 in_15 vref 2.163213e-7
+Gw1_16_2 0 sum_h_2 in_16 vref -8.882787e-7
+Gw1_17_2 0 sum_h_2 in_17 vref -4.067300e-7
+Gw1_18_2 0 sum_h_2 in_18 vref -2.322739e-7
+Gw1_19_2 0 sum_h_2 in_19 vref -5.286055e-7
+Gw1_20_2 0 sum_h_2 in_20 vref 8.159037e-7
+Gw1_21_2 0 sum_h_2 in_21 vref 3.468562e-7
+Gw1_22_2 0 sum_h_2 in_22 vref 9.637052e-7
+Gw1_23_2 0 sum_h_2 in_23 vref 8.203281e-7
+Gw1_24_2 0 sum_h_2 in_24 vref -1.129136e-7
+Gw1_25_2 0 sum_h_2 in_25 vref 8.962917e-7
+Gw1_26_2 0 sum_h_2 in_26 vref 1.254084e-6
+Gw1_27_2 0 sum_h_2 in_27 vref 7.697756e-7
+Gw1_28_2 0 sum_h_2 in_28 vref 3.271248e-7
+Gw1_29_2 0 sum_h_2 in_29 vref 4.102621e-7
+Gw1_30_2 0 sum_h_2 in_30 vref -3.537640e-7
+Gw1_31_2 0 sum_h_2 in_31 vref -8.072055e-7
+Gw1_32_2 0 sum_h_2 in_32 vref -1.393267e-6
+Gw1_33_2 0 sum_h_2 in_33 vref -1.405660e-6
+Gw1_34_2 0 sum_h_2 in_34 vref -1.712928e-6
+Gw1_35_2 0 sum_h_2 in_35 vref -6.650967e-7
+Gw1_0_3 0 sum_h_3 in_0 vref -3.253462e-7
+Gw1_1_3 0 sum_h_3 in_1 vref -1.913925e-7
+Gw1_2_3 0 sum_h_3 in_2 vref 9.012020e-7
+Gw1_3_3 0 sum_h_3 in_3 vref 4.626995e-8
+Gw1_4_3 0 sum_h_3 in_4 vref -3.712243e-7
+Gw1_5_3 0 sum_h_3 in_5 vref -1.398067e-7
+Gw1_6_3 0 sum_h_3 in_6 vref -4.097723e-7
+Gw1_7_3 0 sum_h_3 in_7 vref -5.212700e-7
+Gw1_8_3 0 sum_h_3 in_8 vref -3.748221e-7
+Gw1_9_3 0 sum_h_3 in_9 vref 1.248168e-6
+Gw1_10_3 0 sum_h_3 in_10 vref -3.563666e-7
+Gw1_11_3 0 sum_h_3 in_11 vref -1.317494e-6
+Gw1_12_3 0 sum_h_3 in_12 vref -8.642626e-7
+Gw1_13_3 0 sum_h_3 in_13 vref -9.186223e-7
+Gw1_14_3 0 sum_h_3 in_14 vref 1.121156e-7
+Gw1_15_3 0 sum_h_3 in_15 vref -2.469698e-7
+Gw1_16_3 0 sum_h_3 in_16 vref 1.253430e-6
+Gw1_17_3 0 sum_h_3 in_17 vref -9.671624e-7
+Gw1_18_3 0 sum_h_3 in_18 vref -2.442405e-7
+Gw1_19_3 0 sum_h_3 in_19 vref 1.707681e-6
+Gw1_20_3 0 sum_h_3 in_20 vref -2.562996e-7
+Gw1_21_3 0 sum_h_3 in_21 vref -1.074925e-7
+Gw1_22_3 0 sum_h_3 in_22 vref 1.761442e-6
+Gw1_23_3 0 sum_h_3 in_23 vref -9.038548e-7
+Gw1_24_3 0 sum_h_3 in_24 vref -1.348041e-7
+Gw1_25_3 0 sum_h_3 in_25 vref -3.946334e-7
+Gw1_26_3 0 sum_h_3 in_26 vref -1.531411e-7
+Gw1_27_3 0 sum_h_3 in_27 vref 5.595468e-7
+Gw1_28_3 0 sum_h_3 in_28 vref -5.026774e-8
+Gw1_29_3 0 sum_h_3 in_29 vref -1.091636e-6
+Gw1_30_3 0 sum_h_3 in_30 vref -7.132500e-7
+Gw1_31_3 0 sum_h_3 in_31 vref 2.269685e-7
+Gw1_32_3 0 sum_h_3 in_32 vref -1.327400e-7
+Gw1_33_3 0 sum_h_3 in_33 vref -9.869377e-7
+Gw1_34_3 0 sum_h_3 in_34 vref -5.476746e-7
+Gw1_35_3 0 sum_h_3 in_35 vref -4.195111e-7
+Gw1_0_4 0 sum_h_4 in_0 vref -9.503886e-8
+Gw1_1_4 0 sum_h_4 in_1 vref -7.145291e-7
+Gw1_2_4 0 sum_h_4 in_2 vref -1.329034e-6
+Gw1_3_4 0 sum_h_4 in_3 vref -1.286275e-6
+Gw1_4_4 0 sum_h_4 in_4 vref -4.622954e-7
+Gw1_5_4 0 sum_h_4 in_5 vref 4.478568e-8
+Gw1_6_4 0 sum_h_4 in_6 vref -2.789832e-7
+Gw1_7_4 0 sum_h_4 in_7 vref 7.551974e-7
+Gw1_8_4 0 sum_h_4 in_8 vref 8.287130e-7
+Gw1_9_4 0 sum_h_4 in_9 vref 3.603746e-7
+Gw1_10_4 0 sum_h_4 in_10 vref -4.859109e-7
+Gw1_11_4 0 sum_h_4 in_11 vref -8.227076e-7
+Gw1_12_4 0 sum_h_4 in_12 vref 4.338898e-7
+Gw1_13_4 0 sum_h_4 in_13 vref 1.014955e-6
+Gw1_14_4 0 sum_h_4 in_14 vref 1.446376e-7
+Gw1_15_4 0 sum_h_4 in_15 vref 7.388956e-7
+Gw1_16_4 0 sum_h_4 in_16 vref 4.843541e-7
+Gw1_17_4 0 sum_h_4 in_17 vref -1.227132e-6
+Gw1_18_4 0 sum_h_4 in_18 vref -3.201010e-7
+Gw1_19_4 0 sum_h_4 in_19 vref 2.429626e-7
+Gw1_20_4 0 sum_h_4 in_20 vref -7.608640e-7
+Gw1_21_4 0 sum_h_4 in_21 vref 1.025902e-6
+Gw1_22_4 0 sum_h_4 in_22 vref 5.562866e-7
+Gw1_23_4 0 sum_h_4 in_23 vref -1.204760e-6
+Gw1_24_4 0 sum_h_4 in_24 vref -3.009336e-7
+Gw1_25_4 0 sum_h_4 in_25 vref -2.024483e-6
+Gw1_26_4 0 sum_h_4 in_26 vref -1.389419e-6
+Gw1_27_4 0 sum_h_4 in_27 vref -1.300319e-6
+Gw1_28_4 0 sum_h_4 in_28 vref -1.793770e-6
+Gw1_29_4 0 sum_h_4 in_29 vref -5.048095e-7
+Gw1_30_4 0 sum_h_4 in_30 vref -7.207510e-7
+Gw1_31_4 0 sum_h_4 in_31 vref 7.397990e-7
+Gw1_32_4 0 sum_h_4 in_32 vref 1.050389e-8
+Gw1_33_4 0 sum_h_4 in_33 vref 3.545917e-7
+Gw1_34_4 0 sum_h_4 in_34 vref 8.736119e-8
+Gw1_35_4 0 sum_h_4 in_35 vref -1.226092e-7
+Gw1_0_5 0 sum_h_5 in_0 vref -9.483531e-7
+Gw1_1_5 0 sum_h_5 in_1 vref -1.299138e-6
+Gw1_2_5 0 sum_h_5 in_2 vref -4.722606e-7
+Gw1_3_5 0 sum_h_5 in_3 vref -1.005792e-6
+Gw1_4_5 0 sum_h_5 in_4 vref -1.527114e-6
+Gw1_5_5 0 sum_h_5 in_5 vref -9.798622e-7
+Gw1_6_5 0 sum_h_5 in_6 vref -9.738635e-7
+Gw1_7_5 0 sum_h_5 in_7 vref 9.654968e-7
+Gw1_8_5 0 sum_h_5 in_8 vref 6.289651e-7
+Gw1_9_5 0 sum_h_5 in_9 vref 1.073642e-6
+Gw1_10_5 0 sum_h_5 in_10 vref 1.297901e-6
+Gw1_11_5 0 sum_h_5 in_11 vref 5.763554e-7
+Gw1_12_5 0 sum_h_5 in_12 vref -3.825280e-7
+Gw1_13_5 0 sum_h_5 in_13 vref 9.525304e-8
+Gw1_14_5 0 sum_h_5 in_14 vref 6.784636e-7
+Gw1_15_5 0 sum_h_5 in_15 vref -4.177489e-7
+Gw1_16_5 0 sum_h_5 in_16 vref 3.512833e-7
+Gw1_17_5 0 sum_h_5 in_17 vref 7.582368e-7
+Gw1_18_5 0 sum_h_5 in_18 vref -1.076838e-6
+Gw1_19_5 0 sum_h_5 in_19 vref -4.925873e-7
+Gw1_20_5 0 sum_h_5 in_20 vref -1.401707e-6
+Gw1_21_5 0 sum_h_5 in_21 vref -1.117056e-6
+Gw1_22_5 0 sum_h_5 in_22 vref 1.263454e-6
+Gw1_23_5 0 sum_h_5 in_23 vref -8.209014e-7
+Gw1_24_5 0 sum_h_5 in_24 vref -7.415815e-7
+Gw1_25_5 0 sum_h_5 in_25 vref 1.350724e-6
+Gw1_26_5 0 sum_h_5 in_26 vref 1.889013e-8
+Gw1_27_5 0 sum_h_5 in_27 vref 3.568439e-7
+Gw1_28_5 0 sum_h_5 in_28 vref 8.384804e-8
+Gw1_29_5 0 sum_h_5 in_29 vref -8.789287e-7
+Gw1_30_5 0 sum_h_5 in_30 vref -9.637924e-7
+Gw1_31_5 0 sum_h_5 in_31 vref -3.545456e-7
+Gw1_32_5 0 sum_h_5 in_32 vref 1.604011e-6
+Gw1_33_5 0 sum_h_5 in_33 vref 6.960677e-7
+Gw1_34_5 0 sum_h_5 in_34 vref -1.239439e-6
+Gw1_35_5 0 sum_h_5 in_35 vref -7.374355e-7
+Gw1_0_6 0 sum_h_6 in_0 vref -5.363701e-7
+Gw1_1_6 0 sum_h_6 in_1 vref -1.908306e-7
+Gw1_2_6 0 sum_h_6 in_2 vref -1.019159e-6
+Gw1_3_6 0 sum_h_6 in_3 vref -1.261171e-6
+Gw1_4_6 0 sum_h_6 in_4 vref -8.405720e-7
+Gw1_5_6 0 sum_h_6 in_5 vref -2.197282e-7
+Gw1_6_6 0 sum_h_6 in_6 vref 1.666876e-7
+Gw1_7_6 0 sum_h_6 in_7 vref -2.947034e-7
+Gw1_8_6 0 sum_h_6 in_8 vref 1.260418e-6
+Gw1_9_6 0 sum_h_6 in_9 vref 7.977609e-7
+Gw1_10_6 0 sum_h_6 in_10 vref -1.135648e-6
+Gw1_11_6 0 sum_h_6 in_11 vref -6.733241e-7
+Gw1_12_6 0 sum_h_6 in_12 vref 5.005232e-8
+Gw1_13_6 0 sum_h_6 in_13 vref -1.914286e-8
+Gw1_14_6 0 sum_h_6 in_14 vref -3.321279e-7
+Gw1_15_6 0 sum_h_6 in_15 vref 3.417958e-7
+Gw1_16_6 0 sum_h_6 in_16 vref 1.697110e-7
+Gw1_17_6 0 sum_h_6 in_17 vref -3.397555e-7
+Gw1_18_6 0 sum_h_6 in_18 vref 9.337072e-8
+Gw1_19_6 0 sum_h_6 in_19 vref -5.164462e-7
+Gw1_20_6 0 sum_h_6 in_20 vref 9.441929e-7
+Gw1_21_6 0 sum_h_6 in_21 vref -4.088891e-8
+Gw1_22_6 0 sum_h_6 in_22 vref -4.506362e-7
+Gw1_23_6 0 sum_h_6 in_23 vref -6.254583e-7
+Gw1_24_6 0 sum_h_6 in_24 vref -1.576384e-7
+Gw1_25_6 0 sum_h_6 in_25 vref -1.064487e-6
+Gw1_26_6 0 sum_h_6 in_26 vref -1.705590e-6
+Gw1_27_6 0 sum_h_6 in_27 vref -6.930198e-7
+Gw1_28_6 0 sum_h_6 in_28 vref 1.110609e-6
+Gw1_29_6 0 sum_h_6 in_29 vref -2.291903e-7
+Gw1_30_6 0 sum_h_6 in_30 vref 1.527717e-7
+Gw1_31_6 0 sum_h_6 in_31 vref 1.436984e-6
+Gw1_32_6 0 sum_h_6 in_32 vref 2.715361e-6
+Gw1_33_6 0 sum_h_6 in_33 vref 1.144877e-6
+Gw1_34_6 0 sum_h_6 in_34 vref 6.324306e-7
+Gw1_35_6 0 sum_h_6 in_35 vref -1.021919e-7
+Gw1_0_7 0 sum_h_7 in_0 vref -4.667903e-7
+Gw1_1_7 0 sum_h_7 in_1 vref -5.667957e-7
+Gw1_2_7 0 sum_h_7 in_2 vref -1.843461e-7
+Gw1_3_7 0 sum_h_7 in_3 vref -4.774857e-7
+Gw1_4_7 0 sum_h_7 in_4 vref -2.533540e-7
+Gw1_5_7 0 sum_h_7 in_5 vref -2.903551e-7
+Gw1_6_7 0 sum_h_7 in_6 vref -8.017531e-7
+Gw1_7_7 0 sum_h_7 in_7 vref -1.359187e-6
+Gw1_8_7 0 sum_h_7 in_8 vref -5.349834e-7
+Gw1_9_7 0 sum_h_7 in_9 vref 4.395926e-7
+Gw1_10_7 0 sum_h_7 in_10 vref -6.915413e-7
+Gw1_11_7 0 sum_h_7 in_11 vref -2.577134e-7
+Gw1_12_7 0 sum_h_7 in_12 vref -3.661802e-7
+Gw1_13_7 0 sum_h_7 in_13 vref 8.936922e-8
+Gw1_14_7 0 sum_h_7 in_14 vref 1.264591e-7
+Gw1_15_7 0 sum_h_7 in_15 vref -7.909906e-7
+Gw1_16_7 0 sum_h_7 in_16 vref -2.798917e-7
+Gw1_17_7 0 sum_h_7 in_17 vref 8.343312e-7
+Gw1_18_7 0 sum_h_7 in_18 vref -1.326468e-6
+Gw1_19_7 0 sum_h_7 in_19 vref -7.503870e-8
+Gw1_20_7 0 sum_h_7 in_20 vref 2.175806e-7
+Gw1_21_7 0 sum_h_7 in_21 vref -1.400835e-6
+Gw1_22_7 0 sum_h_7 in_22 vref -3.093838e-7
+Gw1_23_7 0 sum_h_7 in_23 vref 1.280648e-7
+Gw1_24_7 0 sum_h_7 in_24 vref -8.430038e-7
+Gw1_25_7 0 sum_h_7 in_25 vref 2.766440e-7
+Gw1_26_7 0 sum_h_7 in_26 vref 1.490952e-6
+Gw1_27_7 0 sum_h_7 in_27 vref 1.227351e-6
+Gw1_28_7 0 sum_h_7 in_28 vref -2.525584e-7
+Gw1_29_7 0 sum_h_7 in_29 vref -3.701410e-7
+Gw1_30_7 0 sum_h_7 in_30 vref -2.123691e-7
+Gw1_31_7 0 sum_h_7 in_31 vref -9.500935e-7
+Gw1_32_7 0 sum_h_7 in_32 vref -1.494531e-6
+Gw1_33_7 0 sum_h_7 in_33 vref -7.799823e-7
+Gw1_34_7 0 sum_h_7 in_34 vref -1.036464e-6
+Gw1_35_7 0 sum_h_7 in_35 vref -1.918055e-7
+Gw1_0_8 0 sum_h_8 in_0 vref -1.096844e-6
+Gw1_1_8 0 sum_h_8 in_1 vref -1.111321e-6
+Gw1_2_8 0 sum_h_8 in_2 vref -4.817725e-7
+Gw1_3_8 0 sum_h_8 in_3 vref 1.056489e-7
+Gw1_4_8 0 sum_h_8 in_4 vref -3.490922e-7
+Gw1_5_8 0 sum_h_8 in_5 vref -1.049173e-6
+Gw1_6_8 0 sum_h_8 in_6 vref -1.070796e-6
+Gw1_7_8 0 sum_h_8 in_7 vref -6.217255e-7
+Gw1_8_8 0 sum_h_8 in_8 vref 7.008485e-7
+Gw1_9_8 0 sum_h_8 in_9 vref 2.701877e-8
+Gw1_10_8 0 sum_h_8 in_10 vref 3.851787e-7
+Gw1_11_8 0 sum_h_8 in_11 vref 4.706092e-7
+Gw1_12_8 0 sum_h_8 in_12 vref -1.500105e-6
+Gw1_13_8 0 sum_h_8 in_13 vref 4.337018e-8
+Gw1_14_8 0 sum_h_8 in_14 vref 9.751182e-7
+Gw1_15_8 0 sum_h_8 in_15 vref -1.453771e-6
+Gw1_16_8 0 sum_h_8 in_16 vref -5.909823e-7
+Gw1_17_8 0 sum_h_8 in_17 vref 2.918414e-7
+Gw1_18_8 0 sum_h_8 in_18 vref -9.535229e-7
+Gw1_19_8 0 sum_h_8 in_19 vref 2.914910e-7
+Gw1_20_8 0 sum_h_8 in_20 vref 1.686642e-6
+Gw1_21_8 0 sum_h_8 in_21 vref 7.809128e-8
+Gw1_22_8 0 sum_h_8 in_22 vref -4.254405e-7
+Gw1_23_8 0 sum_h_8 in_23 vref -2.892166e-7
+Gw1_24_8 0 sum_h_8 in_24 vref -1.145395e-6
+Gw1_25_8 0 sum_h_8 in_25 vref 1.292587e-6
+Gw1_26_8 0 sum_h_8 in_26 vref 7.236624e-7
+Gw1_27_8 0 sum_h_8 in_27 vref 7.755550e-7
+Gw1_28_8 0 sum_h_8 in_28 vref 2.271285e-6
+Gw1_29_8 0 sum_h_8 in_29 vref -1.392423e-7
+Gw1_30_8 0 sum_h_8 in_30 vref -1.165503e-6
+Gw1_31_8 0 sum_h_8 in_31 vref -1.917091e-6
+Gw1_32_8 0 sum_h_8 in_32 vref -4.462201e-7
+Gw1_33_8 0 sum_h_8 in_33 vref -5.102348e-7
+Gw1_34_8 0 sum_h_8 in_34 vref -8.491306e-7
+Gw1_35_8 0 sum_h_8 in_35 vref -6.933077e-7
+Gw1_0_9 0 sum_h_9 in_0 vref 5.308409e-9
+Gw1_1_9 0 sum_h_9 in_1 vref -9.955461e-8
+Gw1_2_9 0 sum_h_9 in_2 vref -4.846322e-7
+Gw1_3_9 0 sum_h_9 in_3 vref -7.157326e-7
+Gw1_4_9 0 sum_h_9 in_4 vref -1.490880e-6
+Gw1_5_9 0 sum_h_9 in_5 vref -7.612489e-7
+Gw1_6_9 0 sum_h_9 in_6 vref -3.618203e-7
+Gw1_7_9 0 sum_h_9 in_7 vref -3.263685e-7
+Gw1_8_9 0 sum_h_9 in_8 vref 1.145113e-6
+Gw1_9_9 0 sum_h_9 in_9 vref 1.671450e-6
+Gw1_10_9 0 sum_h_9 in_10 vref 2.221941e-8
+Gw1_11_9 0 sum_h_9 in_11 vref -1.541264e-6
+Gw1_12_9 0 sum_h_9 in_12 vref -3.540204e-7
+Gw1_13_9 0 sum_h_9 in_13 vref -8.088781e-7
+Gw1_14_9 0 sum_h_9 in_14 vref -1.194150e-6
+Gw1_15_9 0 sum_h_9 in_15 vref -4.986667e-7
+Gw1_16_9 0 sum_h_9 in_16 vref 1.409057e-6
+Gw1_17_9 0 sum_h_9 in_17 vref -1.469213e-6
+Gw1_18_9 0 sum_h_9 in_18 vref -1.097641e-7
+Gw1_19_9 0 sum_h_9 in_19 vref 5.357071e-7
+Gw1_20_9 0 sum_h_9 in_20 vref 1.855288e-7
+Gw1_21_9 0 sum_h_9 in_21 vref 1.251616e-7
+Gw1_22_9 0 sum_h_9 in_22 vref -6.895623e-7
+Gw1_23_9 0 sum_h_9 in_23 vref 3.714063e-7
+Gw1_24_9 0 sum_h_9 in_24 vref 9.418416e-8
+Gw1_25_9 0 sum_h_9 in_25 vref 4.639496e-7
+Gw1_26_9 0 sum_h_9 in_26 vref 1.573953e-7
+Gw1_27_9 0 sum_h_9 in_27 vref -8.117706e-7
+Gw1_28_9 0 sum_h_9 in_28 vref -1.701121e-7
+Gw1_29_9 0 sum_h_9 in_29 vref 5.155165e-7
+Gw1_30_9 0 sum_h_9 in_30 vref -2.320989e-7
+Gw1_31_9 0 sum_h_9 in_31 vref -1.754393e-7
+Gw1_32_9 0 sum_h_9 in_32 vref -5.304790e-8
+Gw1_33_9 0 sum_h_9 in_33 vref 1.563628e-7
+Gw1_34_9 0 sum_h_9 in_34 vref 7.730105e-9
+Gw1_35_9 0 sum_h_9 in_35 vref -3.795958e-8
+Gw1_0_10 0 sum_h_10 in_0 vref -7.978826e-7
+Gw1_1_10 0 sum_h_10 in_1 vref -7.917280e-7
+Gw1_2_10 0 sum_h_10 in_2 vref -7.923385e-7
+Gw1_3_10 0 sum_h_10 in_3 vref -9.694518e-7
+Gw1_4_10 0 sum_h_10 in_4 vref -1.101394e-6
+Gw1_5_10 0 sum_h_10 in_5 vref -1.197335e-6
+Gw1_6_10 0 sum_h_10 in_6 vref -1.097718e-6
+Gw1_7_10 0 sum_h_10 in_7 vref -1.623989e-6
+Gw1_8_10 0 sum_h_10 in_8 vref 5.278497e-7
+Gw1_9_10 0 sum_h_10 in_9 vref 5.382082e-7
+Gw1_10_10 0 sum_h_10 in_10 vref 2.334502e-7
+Gw1_11_10 0 sum_h_10 in_11 vref -6.609703e-7
+Gw1_12_10 0 sum_h_10 in_12 vref -9.839497e-7
+Gw1_13_10 0 sum_h_10 in_13 vref -6.293531e-7
+Gw1_14_10 0 sum_h_10 in_14 vref 2.172348e-7
+Gw1_15_10 0 sum_h_10 in_15 vref 1.607711e-6
+Gw1_16_10 0 sum_h_10 in_16 vref -1.062295e-6
+Gw1_17_10 0 sum_h_10 in_17 vref -6.722444e-7
+Gw1_18_10 0 sum_h_10 in_18 vref -4.048596e-7
+Gw1_19_10 0 sum_h_10 in_19 vref -1.955630e-6
+Gw1_20_10 0 sum_h_10 in_20 vref 1.828521e-7
+Gw1_21_10 0 sum_h_10 in_21 vref 1.759109e-7
+Gw1_22_10 0 sum_h_10 in_22 vref -1.249385e-6
+Gw1_23_10 0 sum_h_10 in_23 vref -1.130319e-6
+Gw1_24_10 0 sum_h_10 in_24 vref -3.616658e-7
+Gw1_25_10 0 sum_h_10 in_25 vref 5.307934e-7
+Gw1_26_10 0 sum_h_10 in_26 vref -8.440861e-7
+Gw1_27_10 0 sum_h_10 in_27 vref -2.130068e-7
+Gw1_28_10 0 sum_h_10 in_28 vref -2.036547e-7
+Gw1_29_10 0 sum_h_10 in_29 vref -1.434884e-6
+Gw1_30_10 0 sum_h_10 in_30 vref -1.064712e-6
+Gw1_31_10 0 sum_h_10 in_31 vref -4.075899e-8
+Gw1_32_10 0 sum_h_10 in_32 vref 2.543178e-7
+Gw1_33_10 0 sum_h_10 in_33 vref 5.054567e-7
+Gw1_34_10 0 sum_h_10 in_34 vref -5.058520e-7
+Gw1_35_10 0 sum_h_10 in_35 vref -8.347877e-7
+Gw1_0_11 0 sum_h_11 in_0 vref -2.440507e-7
+Gw1_1_11 0 sum_h_11 in_1 vref -5.029100e-7
+Gw1_2_11 0 sum_h_11 in_2 vref -2.426818e-7
+Gw1_3_11 0 sum_h_11 in_3 vref 6.445424e-7
+Gw1_4_11 0 sum_h_11 in_4 vref 3.139550e-7
+Gw1_5_11 0 sum_h_11 in_5 vref -8.367464e-8
+Gw1_6_11 0 sum_h_11 in_6 vref -7.824062e-7
+Gw1_7_11 0 sum_h_11 in_7 vref 2.071359e-7
+Gw1_8_11 0 sum_h_11 in_8 vref -3.278417e-7
+Gw1_9_11 0 sum_h_11 in_9 vref -1.274250e-6
+Gw1_10_11 0 sum_h_11 in_10 vref -1.259903e-7
+Gw1_11_11 0 sum_h_11 in_11 vref -1.251119e-6
+Gw1_12_11 0 sum_h_11 in_12 vref -9.853189e-7
+Gw1_13_11 0 sum_h_11 in_13 vref 8.058735e-7
+Gw1_14_11 0 sum_h_11 in_14 vref 5.442359e-7
+Gw1_15_11 0 sum_h_11 in_15 vref 2.288973e-8
+Gw1_16_11 0 sum_h_11 in_16 vref 1.579138e-7
+Gw1_17_11 0 sum_h_11 in_17 vref -1.037855e-6
+Gw1_18_11 0 sum_h_11 in_18 vref -1.170296e-6
+Gw1_19_11 0 sum_h_11 in_19 vref 7.400518e-7
+Gw1_20_11 0 sum_h_11 in_20 vref 1.549854e-6
+Gw1_21_11 0 sum_h_11 in_21 vref 1.357062e-6
+Gw1_22_11 0 sum_h_11 in_22 vref -2.058671e-9
+Gw1_23_11 0 sum_h_11 in_23 vref -1.188936e-6
+Gw1_24_11 0 sum_h_11 in_24 vref -9.648754e-7
+Gw1_25_11 0 sum_h_11 in_25 vref -1.377469e-6
+Gw1_26_11 0 sum_h_11 in_26 vref 7.364380e-7
+Gw1_27_11 0 sum_h_11 in_27 vref 2.750125e-7
+Gw1_28_11 0 sum_h_11 in_28 vref -1.999905e-7
+Gw1_29_11 0 sum_h_11 in_29 vref -1.075240e-6
+Gw1_30_11 0 sum_h_11 in_30 vref -8.815986e-7
+Gw1_31_11 0 sum_h_11 in_31 vref -9.156064e-7
+Gw1_32_11 0 sum_h_11 in_32 vref -1.199017e-6
+Gw1_33_11 0 sum_h_11 in_33 vref -1.070117e-6
+Gw1_34_11 0 sum_h_11 in_34 vref -1.013029e-6
+Gw1_35_11 0 sum_h_11 in_35 vref -8.578592e-7
+
+* ========== Output Layer Neurons ==========
+Xo_0 mem_o_0 vref vdd pulse_o_0 sum_o_0 lif_neuron
+Xo_1 mem_o_1 vref vdd pulse_o_1 sum_o_1 lif_neuron
+Xo_2 mem_o_2 vref vdd pulse_o_2 sum_o_2 lif_neuron
+Xo_3 mem_o_3 vref vdd pulse_o_3 sum_o_3 lif_neuron
+Xo_4 mem_o_4 vref vdd pulse_o_4 sum_o_4 lif_neuron
+Xo_5 mem_o_5 vref vdd pulse_o_5 sum_o_5 lif_neuron
+Xo_6 mem_o_6 vref vdd pulse_o_6 sum_o_6 lif_neuron
+Xo_7 mem_o_7 vref vdd pulse_o_7 sum_o_7 lif_neuron
+Xo_8 mem_o_8 vref vdd pulse_o_8 sum_o_8 lif_neuron
+Xo_9 mem_o_9 vref vdd pulse_o_9 sum_o_9 lif_neuron
+
+* ========== Hidden -> Output Synapses (VCCS) ==========
+* Pulse-driven: same gm = w/R as input layer (physics-correct)
+Gw2_0_0 0 sum_o_0 pulse_h_0 0 -1.339975e-6
+Gw2_1_0 0 sum_o_0 pulse_h_1 0 9.819614e-7
+Gw2_2_0 0 sum_o_0 pulse_h_2 0 -7.101722e-7
+Gw2_3_0 0 sum_o_0 pulse_h_3 0 1.353092e-6
+Gw2_4_0 0 sum_o_0 pulse_h_4 0 -1.645480e-6
+Gw2_5_0 0 sum_o_0 pulse_h_5 0 1.243845e-6
+Gw2_6_0 0 sum_o_0 pulse_h_6 0 -1.354147e-7
+Gw2_7_0 0 sum_o_0 pulse_h_7 0 1.932791e-6
+Gw2_8_0 0 sum_o_0 pulse_h_8 0 7.288157e-7
+Gw2_9_0 0 sum_o_0 pulse_h_9 0 4.422348e-7
+Gw2_10_0 0 sum_o_0 pulse_h_10 0 -1.379547e-7
+Gw2_11_0 0 sum_o_0 pulse_h_11 0 -4.307015e-7
+Gw2_0_1 0 sum_o_1 pulse_h_0 0 7.093396e-7
+Gw2_1_1 0 sum_o_1 pulse_h_1 0 -3.507991e-7
+Gw2_2_1 0 sum_o_1 pulse_h_2 0 5.573825e-7
+Gw2_3_1 0 sum_o_1 pulse_h_3 0 -1.293366e-6
+Gw2_4_1 0 sum_o_1 pulse_h_4 0 -3.672379e-7
+Gw2_5_1 0 sum_o_1 pulse_h_5 0 -1.525526e-6
+Gw2_6_1 0 sum_o_1 pulse_h_6 0 -2.069157e-6
+Gw2_7_1 0 sum_o_1 pulse_h_7 0 1.335110e-6
+Gw2_8_1 0 sum_o_1 pulse_h_8 0 -3.652783e-7
+Gw2_9_1 0 sum_o_1 pulse_h_9 0 2.207813e-7
+Gw2_10_1 0 sum_o_1 pulse_h_10 0 2.508014e-6
+Gw2_11_1 0 sum_o_1 pulse_h_11 0 3.217542e-8
+Gw2_0_2 0 sum_o_2 pulse_h_0 0 1.010523e-6
+Gw2_1_2 0 sum_o_2 pulse_h_1 0 -8.510071e-7
+Gw2_2_2 0 sum_o_2 pulse_h_2 0 1.616405e-6
+Gw2_3_2 0 sum_o_2 pulse_h_3 0 2.549441e-8
+Gw2_4_2 0 sum_o_2 pulse_h_4 0 1.371929e-7
+Gw2_5_2 0 sum_o_2 pulse_h_5 0 -2.973471e-7
+Gw2_6_2 0 sum_o_2 pulse_h_6 0 -2.974236e-7
+Gw2_7_2 0 sum_o_2 pulse_h_7 0 1.074899e-7
+Gw2_8_2 0 sum_o_2 pulse_h_8 0 1.316882e-6
+Gw2_9_2 0 sum_o_2 pulse_h_9 0 2.014421e-6
+Gw2_10_2 0 sum_o_2 pulse_h_10 0 -3.532373e-7
+Gw2_11_2 0 sum_o_2 pulse_h_11 0 4.039264e-7
+Gw2_0_3 0 sum_o_3 pulse_h_0 0 1.053103e-6
+Gw2_1_3 0 sum_o_3 pulse_h_1 0 -8.851391e-7
+Gw2_2_3 0 sum_o_3 pulse_h_2 0 1.141147e-6
+Gw2_3_3 0 sum_o_3 pulse_h_3 0 1.486701e-6
+Gw2_4_3 0 sum_o_3 pulse_h_4 0 -3.417136e-7
+Gw2_5_3 0 sum_o_3 pulse_h_5 0 1.151577e-6
+Gw2_6_3 0 sum_o_3 pulse_h_6 0 1.225574e-6
+Gw2_7_3 0 sum_o_3 pulse_h_7 0 -7.148694e-7
+Gw2_8_3 0 sum_o_3 pulse_h_8 0 9.960671e-8
+Gw2_9_3 0 sum_o_3 pulse_h_9 0 -8.189672e-8
+Gw2_10_3 0 sum_o_3 pulse_h_10 0 1.218688e-6
+Gw2_11_3 0 sum_o_3 pulse_h_11 0 1.235475e-8
+Gw2_0_4 0 sum_o_4 pulse_h_0 0 -1.186937e-6
+Gw2_1_4 0 sum_o_4 pulse_h_1 0 9.943209e-8
+Gw2_2_4 0 sum_o_4 pulse_h_2 0 -1.651016e-6
+Gw2_3_4 0 sum_o_4 pulse_h_3 0 7.875738e-7
+Gw2_4_4 0 sum_o_4 pulse_h_4 0 1.103829e-7
+Gw2_5_4 0 sum_o_4 pulse_h_5 0 -1.433026e-6
+Gw2_6_4 0 sum_o_4 pulse_h_6 0 -2.203230e-6
+Gw2_7_4 0 sum_o_4 pulse_h_7 0 -1.701773e-6
+Gw2_8_4 0 sum_o_4 pulse_h_8 0 9.072045e-7
+Gw2_9_4 0 sum_o_4 pulse_h_9 0 -1.263487e-6
+Gw2_10_4 0 sum_o_4 pulse_h_10 0 8.208463e-7
+Gw2_11_4 0 sum_o_4 pulse_h_11 0 2.288804e-6
+Gw2_0_5 0 sum_o_5 pulse_h_0 0 -9.005451e-7
+Gw2_1_5 0 sum_o_5 pulse_h_1 0 -3.644972e-7
+Gw2_2_5 0 sum_o_5 pulse_h_2 0 -6.498939e-7
+Gw2_3_5 0 sum_o_5 pulse_h_3 0 -2.010070e-7
+Gw2_4_5 0 sum_o_5 pulse_h_4 0 -1.311026e-6
+Gw2_5_5 0 sum_o_5 pulse_h_5 0 1.673145e-6
+Gw2_6_5 0 sum_o_5 pulse_h_6 0 6.174741e-7
+Gw2_7_5 0 sum_o_5 pulse_h_7 0 5.087100e-7
+Gw2_8_5 0 sum_o_5 pulse_h_8 0 1.860903e-6
+Gw2_9_5 0 sum_o_5 pulse_h_9 0 -1.660948e-6
+Gw2_10_5 0 sum_o_5 pulse_h_10 0 1.059409e-6
+Gw2_11_5 0 sum_o_5 pulse_h_11 0 3.041469e-7
+Gw2_0_6 0 sum_o_6 pulse_h_0 0 -2.023132e-6
+Gw2_1_6 0 sum_o_6 pulse_h_1 0 1.362141e-7
+Gw2_2_6 0 sum_o_6 pulse_h_2 0 1.143463e-6
+Gw2_3_6 0 sum_o_6 pulse_h_3 0 6.590191e-7
+Gw2_4_6 0 sum_o_6 pulse_h_4 0 -1.210907e-6
+Gw2_5_6 0 sum_o_6 pulse_h_5 0 -6.920214e-7
+Gw2_6_6 0 sum_o_6 pulse_h_6 0 -1.528039e-6
+Gw2_7_6 0 sum_o_6 pulse_h_7 0 1.550438e-6
+Gw2_8_6 0 sum_o_6 pulse_h_8 0 8.961175e-7
+Gw2_9_6 0 sum_o_6 pulse_h_9 0 -1.727498e-6
+Gw2_10_6 0 sum_o_6 pulse_h_10 0 -6.259136e-7
+Gw2_11_6 0 sum_o_6 pulse_h_11 0 1.376924e-6
+Gw2_0_7 0 sum_o_7 pulse_h_0 0 -7.020953e-7
+Gw2_1_7 0 sum_o_7 pulse_h_1 0 7.693482e-7
+Gw2_2_7 0 sum_o_7 pulse_h_2 0 9.097166e-7
+Gw2_3_7 0 sum_o_7 pulse_h_3 0 2.444063e-7
+Gw2_4_7 0 sum_o_7 pulse_h_4 0 1.685913e-6
+Gw2_5_7 0 sum_o_7 pulse_h_5 0 1.235328e-6
+Gw2_6_7 0 sum_o_7 pulse_h_6 0 -7.963010e-7
+Gw2_7_7 0 sum_o_7 pulse_h_7 0 -1.230865e-6
+Gw2_8_7 0 sum_o_7 pulse_h_8 0 -1.575833e-6
+Gw2_9_7 0 sum_o_7 pulse_h_9 0 1.222770e-6
+Gw2_10_7 0 sum_o_7 pulse_h_10 0 8.611690e-7
+Gw2_11_7 0 sum_o_7 pulse_h_11 0 8.287699e-7
+Gw2_0_8 0 sum_o_8 pulse_h_0 0 4.130086e-7
+Gw2_1_8 0 sum_o_8 pulse_h_1 0 1.534717e-6
+Gw2_2_8 0 sum_o_8 pulse_h_2 0 -2.865301e-7
+Gw2_3_8 0 sum_o_8 pulse_h_3 0 -4.071698e-7
+Gw2_4_8 0 sum_o_8 pulse_h_4 0 -1.132071e-6
+Gw2_5_8 0 sum_o_8 pulse_h_5 0 4.134340e-7
+Gw2_6_8 0 sum_o_8 pulse_h_6 0 -5.915134e-7
+Gw2_7_8 0 sum_o_8 pulse_h_7 0 -3.793524e-7
+Gw2_8_8 0 sum_o_8 pulse_h_8 0 1.298007e-6
+Gw2_9_8 0 sum_o_8 pulse_h_9 0 8.973986e-8
+Gw2_10_8 0 sum_o_8 pulse_h_10 0 9.069414e-7
+Gw2_11_8 0 sum_o_8 pulse_h_11 0 6.974217e-7
+Gw2_0_9 0 sum_o_9 pulse_h_0 0 -1.863002e-6
+Gw2_1_9 0 sum_o_9 pulse_h_1 0 9.794484e-7
+Gw2_2_9 0 sum_o_9 pulse_h_2 0 -2.295492e-6
+Gw2_3_9 0 sum_o_9 pulse_h_3 0 1.033242e-6
+Gw2_4_9 0 sum_o_9 pulse_h_4 0 7.152207e-7
+Gw2_5_9 0 sum_o_9 pulse_h_5 0 -6.538253e-7
+Gw2_6_9 0 sum_o_9 pulse_h_6 0 3.798903e-7
+Gw2_7_9 0 sum_o_9 pulse_h_7 0 -7.972224e-7
+Gw2_8_9 0 sum_o_9 pulse_h_8 0 3.945974e-7
+Gw2_9_9 0 sum_o_9 pulse_h_9 0 1.111085e-6
+Gw2_10_9 0 sum_o_9 pulse_h_10 0 1.428750e-6
+Gw2_11_9 0 sum_o_9 pulse_h_11 0 6.039458e-7
+
+* ========== Simulation ==========
+.options reltol=1e-2 abstol=1e-9 vntol=1e-4
+.tran 2.500000e-7 2.500000e-2 uic
+
+.control
+run
+set filetype=ascii
+wrdata gilgamesh_output.txt v(pulse_o_0) v(pulse_o_1) v(pulse_o_2) v(pulse_o_3) v(pulse_o_4) v(pulse_o_5) v(pulse_o_6) v(pulse_o_7) v(pulse_o_8) v(pulse_o_9) v(mem_o_0) v(mem_o_1) v(mem_o_2) v(mem_o_3) v(mem_o_4) v(mem_o_5) v(mem_o_6) v(mem_o_7) v(mem_o_8) v(mem_o_9) v(pulse_h_0) v(mem_h_0) v(pulse_h_1) v(mem_h_1) v(pulse_h_2) v(mem_h_2) v(pulse_h_3) v(mem_h_3) v(pulse_h_4) v(mem_h_4) v(pulse_h_5) v(mem_h_5) v(pulse_h_6) v(mem_h_6) v(pulse_h_7) v(mem_h_7) v(pulse_h_8) v(mem_h_8) v(pulse_h_9) v(mem_h_9) v(xh_0.comp_out) v(xh_0.vth_node) v(xh_3.comp_raw) v(xh_3.comp_ctrl) v(xh_3.comp_out) v(xh_3.vth_node) v(xo_0.comp_out) v(xo_0.vth_node)
+quit
+.endc
+
+.end

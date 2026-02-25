@@ -3,8 +3,8 @@ mod tests {
     use super::super::leaky::Leaky;
     use super::super::mode::{default_tau_pulse, default_v_peak, NeuronMode};
     use super::super::ResetMechanism;
-    use ndarray::Array2;
     use ndarray::array;
+    use ndarray::Array2;
 
     #[test]
     fn test_leaky_forward_no_spike() {
@@ -18,7 +18,8 @@ mod tests {
 
     #[test]
     fn test_leaky_forward_with_spike() {
-        let lif = Leaky::new(2, 0.9);
+        // Explicit simple mode: this test checks discrete-time snnTorch-style behavior.
+        let lif = Leaky::new_simple(2, 0.9);
         let state = lif.init_state(1);
         let input = array![[2.0, 0.5]];
         let (spikes, _new_state, _) = lif.forward(&input, &state);
@@ -94,20 +95,27 @@ mod tests {
         let beta = 0.9f32;
         let dt = 0.001f32;
         let tau_m = -dt / beta.ln();
-        let lif_simple = Leaky::new(1, beta);
+        let lif_simple = Leaky::new_simple(1, beta);
         let lif_physics = Leaky::new_physics(1, tau_m, dt);
         let state = lif_simple.init_state(1);
         let input = array![[0.5]];
         let (_, state_simple, _) = lif_simple.forward(&input, &state);
         let (_, state_physics, _) = lif_physics.forward(&input, &state);
-        let diff = (state_simple.mem[[0, 0]] - state_physics.mem[[0, 0]]).abs();
-        assert!(diff < 1e-3, "Membrane diff too large: {}", diff);
+        // Correct RC physics: with mem_prev=0, V(t+dt)=input*(1-exp(-dt/tau)).
+        let expected_physics = input[[0, 0]] * (1.0 - (-dt / tau_m).exp());
+        assert!((state_physics.mem[[0, 0]] - expected_physics).abs() < 1e-6);
+        // Simple mode uses mem = beta*mem + input, so it should differ materially.
+        assert!(state_simple.mem[[0, 0]] > state_physics.mem[[0, 0]]);
     }
 
     #[test]
     fn test_with_mode_builder() {
-        let lif = Leaky::new(2, 0.9)
-            .with_mode(NeuronMode::physics(0.01, 0.001, default_tau_pulse(), default_v_peak()));
+        let lif = Leaky::new(2, 0.9).with_mode(NeuronMode::physics(
+            0.01,
+            0.001,
+            default_tau_pulse(),
+            default_v_peak(),
+        ));
         assert!(lif.is_physics_mode());
         let expected_beta = (-0.001f32 / 0.01).exp();
         assert!((lif.beta - expected_beta).abs() < 1e-5);
@@ -126,8 +134,9 @@ mod tests {
         let (_, state1b, _) = lif.forward(&input, &state1);
         let (_, state2b, _) = lif.forward_with_dt(&input, &state2, dt_stored * 2.0);
         let (_, state3b, _) = lif.forward_with_dt(&input, &state3, dt_stored * 0.5);
-        assert!(state2b.mem[[0, 0]] < state1b.mem[[0, 0]]);
-        assert!(state1b.mem[[0, 0]] < state3b.mem[[0, 0]]);
+        // Larger dt advances farther toward steady-state input per step.
+        assert!(state2b.mem[[0, 0]] > state1b.mem[[0, 0]]);
+        assert!(state1b.mem[[0, 0]] > state3b.mem[[0, 0]]);
     }
 
     #[test]
@@ -138,16 +147,18 @@ mod tests {
         let v_peak = 4.42f32;
         let lif = Leaky::new_physics_with_pulse(1, tau_m, dt, tau_pulse, v_peak);
         let mut state = lif.init_state_with_pulse(1);
-        let input = array![[1.5]];
+        let input = array![[15.0]];
         let (pulse1, new_state, cache1) = lif.forward_with_pulse(&input, &state, dt);
         state = new_state;
         assert_eq!(cache1.spikes[[0, 0]], 1.0);
-        assert!((pulse1[[0, 0]] - v_peak).abs() < 0.01);
+        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
+        let expected_pulse1 = v_peak * charge_scale;
+        assert!((pulse1[[0, 0]] - expected_pulse1).abs() < 0.01);
         let zero_input = array![[0.0]];
         let (pulse2, new_state, cache2) = lif.forward_with_pulse(&zero_input, &state, dt);
         state = new_state;
         assert_eq!(cache2.spikes[[0, 0]], 0.0);
-        let expected_decay = v_peak * (-dt / tau_pulse).exp();
+        let expected_decay = v_peak * charge_scale * (-dt / tau_pulse).exp();
         assert!((pulse2[[0, 0]] - expected_decay).abs() < 0.1);
         let (pulse3, _, _) = lif.forward_with_pulse(&zero_input, &state, dt);
         assert!(pulse3[[0, 0]] < pulse2[[0, 0]]);
@@ -177,7 +188,7 @@ mod tests {
         let mut state = lif.init_state_with_adaptation(1);
         let initial_thresh = state.adaptive_threshold.as_ref().unwrap()[[0, 0]];
         assert!((initial_thresh - theta_low).abs() < 1e-6);
-        let strong_input = Array2::from_elem((1, 2), 3.0);
+        let strong_input = Array2::from_elem((1, 2), 20.0);
         let (spikes, new_state, _) = lif.forward_with_adaptation(&strong_input, &state, dt);
         assert!(spikes[[0, 0]] > 0.0);
         let thresh_after_spike = new_state.adaptive_threshold.as_ref().unwrap()[[0, 0]];
@@ -213,7 +224,7 @@ mod tests {
         state = new_state;
         assert!(state.mem[[0, 0]] <= 5.0);
         state = lif.init_state(1);
-        let spike_input = array![[2.0]];
+        let spike_input = array![[20.0]];
         let (spikes, new_state, _) = lif.forward(&spike_input, &state);
         state = new_state;
         assert_eq!(spikes[[0, 0]], 1.0);
@@ -233,4 +244,3 @@ mod tests {
         assert!(new_state.mem[[0, 0]] > 5.0);
     }
 }
-

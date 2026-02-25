@@ -99,10 +99,7 @@ pub(crate) fn run_neuron_test(
         input_per_step,
         input_per_step * 1e3
     );
-    println!(
-        "  Steady-state     = {:.4} V (I×R)",
-        input_current * r_leak
-    );
+    println!("  Steady-state     = {:.4} V (I×R)", input_current * r_leak);
     println!();
 
     let input = ndarray::array![[input_per_step]];

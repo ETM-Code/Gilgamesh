@@ -90,7 +90,8 @@ impl InspectorApp {
         let checkpoint = Checkpoint::load(checkpoint_path)
             .with_context(|| format!("Failed to load checkpoint from {}", checkpoint_path))?;
 
-        let network = checkpoint.to_network()
+        let network = checkpoint
+            .to_network()
             .with_context(|| "Failed to reconstruct network from checkpoint")?;
 
         let dataset = MnistDataset::load(data_dir)
@@ -128,7 +129,6 @@ impl InspectorApp {
 
     /// Inspect a specific sample
     fn inspect_sample(&mut self, sample_index: usize) {
-
         // Get sample from dataset
         let (images, labels) = self.dataset.get_test_batch(&[sample_index]);
         let input = images.row(0).to_owned();
@@ -288,9 +288,7 @@ impl eframe::App for InspectorApp {
                                     egui::Color32::from_rgb(128, 128, 128)
                                 };
 
-                                Bar::new(i as f64, count as f64)
-                                    .width(0.8)
-                                    .fill(color)
+                                Bar::new(i as f64, count as f64).width(0.8).fill(color)
                             })
                             .collect();
 
@@ -299,19 +297,23 @@ impl eframe::App for InspectorApp {
                         // Custom grid spacer to show marks at each digit 0-9
                         let x_grid_spacer = |_input: egui_plot::GridInput| {
                             (0..=9)
-                                .map(|i| GridMark { value: i as f64, step_size: 1.0 })
+                                .map(|i| GridMark {
+                                    value: i as f64,
+                                    step_size: 1.0,
+                                })
                                 .collect()
                         };
 
                         // Custom formatter to show digit labels
-                        let x_formatter = |mark: GridMark, _range: &std::ops::RangeInclusive<f64>| {
-                            let digit = mark.value.round() as i32;
-                            if digit >= 0 && digit <= 9 {
-                                format!("{}", digit)
-                            } else {
-                                String::new()
-                            }
-                        };
+                        let x_formatter =
+                            |mark: GridMark, _range: &std::ops::RangeInclusive<f64>| {
+                                let digit = mark.value.round() as i32;
+                                if digit >= 0 && digit <= 9 {
+                                    format!("{}", digit)
+                                } else {
+                                    String::new()
+                                }
+                            };
 
                         Plot::new("spike_counts")
                             .height(280.0)
@@ -393,7 +395,9 @@ impl InspectorApp {
         _num_steps: usize,
         _seed: u64,
     ) -> anyhow::Result<Self> {
-        anyhow::bail!("Inspector requires the 'dashboard' feature. Rebuild with --features dashboard")
+        anyhow::bail!(
+            "Inspector requires the 'dashboard' feature. Rebuild with --features dashboard"
+        )
     }
 
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {

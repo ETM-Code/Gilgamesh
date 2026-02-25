@@ -25,7 +25,8 @@ pub(crate) fn run_dashboard(config: Option<String>, epochs: usize, data_dir: &st
     cfg.training.epochs = epochs;
 
     println!("Loading MNIST dataset...");
-    let dataset = gilgamesh::data::MnistDataset::load(data_dir).context("Failed to load MNIST dataset")?;
+    let dataset =
+        gilgamesh::data::MnistDataset::load(data_dir).context("Failed to load MNIST dataset")?;
 
     let input_size = dataset.feature_dim();
     let hidden_size = cfg.network.hidden_size;
@@ -94,13 +95,20 @@ fn run_training_for_dashboard(
     }
 
     for epoch in 1..=cfg.training.epochs {
-        let lr = trainer.update_lr_for_epoch(epoch).unwrap_or(cfg.training.lr);
+        let lr = trainer
+            .update_lr_for_epoch(epoch)
+            .unwrap_or(cfg.training.lr);
         let (train_loss, train_acc) = trainer.train_epoch(&dataset);
         let test_acc = trainer.evaluate(&dataset);
 
         {
             let mut metrics_guard = metrics.lock().unwrap();
-            metrics_guard.record_epoch(train_loss as f64, train_acc as f64, test_acc as f64, lr as f64);
+            metrics_guard.record_epoch(
+                train_loss as f64,
+                train_acc as f64,
+                test_acc as f64,
+                lr as f64,
+            );
         }
 
         println!(
@@ -119,7 +127,11 @@ fn run_training_for_dashboard(
 }
 
 #[cfg(not(feature = "dashboard"))]
-pub(crate) fn run_dashboard(_config: Option<String>, _epochs: usize, _data_dir: &str) -> Result<()> {
+pub(crate) fn run_dashboard(
+    _config: Option<String>,
+    _epochs: usize,
+    _data_dir: &str,
+) -> Result<()> {
     println!("Dashboard feature not enabled. Rebuild with --features dashboard");
     Ok(())
 }

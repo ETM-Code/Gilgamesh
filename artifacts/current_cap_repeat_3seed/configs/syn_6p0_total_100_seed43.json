@@ -1,0 +1,48 @@
+{
+  "mode": "physics",
+  "network": {
+    "input_size": 36,
+    "hidden_size": 12,
+    "output_size": 10,
+    "image_size": 6
+  },
+  "neuron": {
+    "beta": 0.9,
+    "threshold": 1.0,
+    "reset_mechanism": "subtract",
+    "slope": 25.0
+  },
+  "physics": {
+    "enabled": true,
+    "tau_m": 0.00396,
+    "tau_pulse": 0.0005,
+    "tau_theta": 0.001,
+    "dt": 0.001
+  },
+  "hardware": {
+    "v_rail": 5.0,
+    "comp_rail_drop": 0.21,
+    "diode_drop": 0.37,
+    "v_min": 0.0,
+    "v_max": 5.0,
+    "enable_current_caps": true,
+    "synapse_current_max_ua": 6.0,
+    "total_current_max_ua": 100.0
+  },
+  "training": {
+    "lr": 0.001,
+    "epochs": 10,
+    "batch_size": 128,
+    "num_steps": 10,
+    "seed": 43
+  },
+  "quantization": {
+    "enabled": false
+  },
+  "noise": {
+    "enabled": false
+  },
+  "output": {
+    "mode": "spike_count"
+  }
+}

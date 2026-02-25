@@ -91,4 +91,3 @@ pub(crate) fn test_implementation(quick: bool) -> Result<()> {
 
     Ok(())
 }
-

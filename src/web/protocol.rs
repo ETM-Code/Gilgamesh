@@ -124,23 +124,35 @@ pub enum ClientMessage {
     /// Navigation commands
     NextSample,
     PrevSample,
-    JumpToSample { index: usize },
+    JumpToSample {
+        index: usize,
+    },
     RandomSample,
 
     /// Playback control
     Pause,
     Resume,
-    SetSpeed { speed: f32 },
-    SetEndOfSampleBehavior { behavior: EndOfSampleBehavior },
+    SetSpeed {
+        speed: f32,
+    },
+    SetEndOfSampleBehavior {
+        behavior: EndOfSampleBehavior,
+    },
     RestartSample,
 
     /// Training control
-    StartTraining { config: Config },
+    StartTraining {
+        config: Config,
+    },
     StopTraining,
 
     /// Configuration
-    LoadCheckpoint { path: String },
-    UpdateConfig { config: Config },
+    LoadCheckpoint {
+        path: String,
+    },
+    UpdateConfig {
+        config: Config,
+    },
 
     /// Request weight matrices
     GetWeights,

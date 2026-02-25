@@ -156,7 +156,10 @@ impl eframe::App for DashboardApp {
                         ui.end_row();
 
                         ui.label("Current Epoch:");
-                        ui.label(format!("{}/{}", metrics.current_epoch, metrics.total_epochs));
+                        ui.label(format!(
+                            "{}/{}",
+                            metrics.current_epoch, metrics.total_epochs
+                        ));
                         ui.end_row();
 
                         if let Some(&loss) = metrics.losses.last() {
@@ -358,16 +361,22 @@ pub struct TrainingMetrics;
 
 #[cfg(not(feature = "dashboard"))]
 impl TrainingMetrics {
-    pub fn new(_total_epochs: usize, _architecture: String) -> Self { Self }
+    pub fn new(_total_epochs: usize, _architecture: String) -> Self {
+        Self
+    }
     pub fn record_epoch(&mut self, _loss: f64, _train_acc: f64, _test_acc: f64, _lr: f64) {}
 }
 
 #[cfg(not(feature = "dashboard"))]
 impl Default for TrainingMetrics {
-    fn default() -> Self { Self }
+    fn default() -> Self {
+        Self
+    }
 }
 
 #[cfg(not(feature = "dashboard"))]
 impl Clone for TrainingMetrics {
-    fn clone(&self) -> Self { Self }
+    fn clone(&self) -> Self {
+        Self
+    }
 }

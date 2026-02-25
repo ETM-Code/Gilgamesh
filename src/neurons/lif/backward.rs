@@ -11,7 +11,9 @@ impl Leaky {
         grad_mem_next: &Array2<f32>,
         cache: &LeakyCache,
     ) -> (Array2<f32>, Array2<f32>) {
-        let surrogate_grad = cache.mem_shifted.mapv(|shifted_potential| self.spike_grad.backward(shifted_potential));
+        let surrogate_grad = cache
+            .mem_shifted
+            .mapv(|shifted_potential| self.spike_grad.backward(shifted_potential));
         let grad_mem_from_spikes = grad_spikes * &surrogate_grad;
         let grad_mem = &grad_mem_from_spikes + grad_mem_next;
         let grad_input = grad_mem.clone();
@@ -19,4 +21,3 @@ impl Leaky {
         (grad_input, grad_mem_prev)
     }
 }
-

@@ -8,28 +8,28 @@
 #[cfg(any(feature = "blas-accelerate", feature = "blas-openblas"))]
 extern crate blas_src;
 
-pub mod config;
-pub mod surrogate;
-pub mod neurons;
-pub mod layers;
-pub mod network;
-pub mod training;
-pub mod data;
-pub mod tensor;
-pub mod visualization;
-pub mod dashboard;
 pub mod animation;
 pub mod checkpoint;
-pub mod inspector;
-pub mod spice;
+pub mod config;
+pub mod dashboard;
+pub mod data;
 pub mod hardware;
+pub mod inspector;
+pub mod layers;
+pub mod network;
+pub mod neurons;
+pub mod spice;
+pub mod surrogate;
+pub mod tensor;
+pub mod training;
+pub mod visualization;
 pub mod web;
 
 pub use config::Config;
 pub use data::{InputEncoder, InputEncodingType};
-pub use neurons::Leaky;
+pub use hardware::{HardwareConfig, HardwareMapping};
 pub use layers::linear::Linear;
 pub use network::Network;
+pub use neurons::Leaky;
 pub use surrogate::SurrogateGradient;
 pub use visualization::TrainingRecorder;
-pub use hardware::{HardwareConfig, HardwareMapping};

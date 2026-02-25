@@ -79,16 +79,16 @@ impl Config {
         let contents = fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read config file: {:?}", path.as_ref()))?;
 
-        let config: Config = serde_json::from_str(&contents)
-            .with_context(|| "Failed to parse config JSON")?;
+        let config: Config =
+            serde_json::from_str(&contents).with_context(|| "Failed to parse config JSON")?;
 
         Ok(config)
     }
 
     /// Save configuration to a JSON file
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let contents = serde_json::to_string_pretty(self)
-            .with_context(|| "Failed to serialize config")?;
+        let contents =
+            serde_json::to_string_pretty(self).with_context(|| "Failed to serialize config")?;
 
         fs::write(path.as_ref(), contents)
             .with_context(|| format!("Failed to write config file: {:?}", path.as_ref()))?;
@@ -236,6 +236,14 @@ pub struct HardwareConfig {
     pub v_min: f32,
     /// Maximum membrane voltage
     pub v_max: f32,
+    /// Enable current-limit calibration in training/inference.
+    /// When enabled, synapse gains are scaled from a 3uA baseline and
+    /// layer outputs can be capped by total-current budget.
+    pub enable_current_caps: bool,
+    /// Per-synapse current cap in microamps (used as relative scale vs 3uA baseline).
+    pub synapse_current_max_ua: f32,
+    /// Per-neuron total current cap in microamps.
+    pub total_current_max_ua: f32,
 }
 
 impl Default for HardwareConfig {
@@ -246,6 +254,9 @@ impl Default for HardwareConfig {
             diode_drop: 0.37,
             v_min: 0.0,
             v_max: 5.0,
+            enable_current_caps: false,
+            synapse_current_max_ua: 3.0,
+            total_current_max_ua: 50.0,
         }
     }
 }
@@ -254,6 +265,24 @@ impl HardwareConfig {
     /// Compute effective pulse peak voltage
     pub fn pulse_peak(&self) -> f32 {
         self.v_rail - self.comp_rail_drop - self.diode_drop
+    }
+
+    /// Scale factor relative to a 3uA per-synapse baseline.
+    pub fn synapse_scale_from_baseline(&self) -> f32 {
+        const BASELINE_SYN_UA: f32 = 3.0;
+        (self.synapse_current_max_ua / BASELINE_SYN_UA).max(0.0)
+    }
+
+    /// Total-current cap expressed in "equivalent synapse units".
+    pub fn total_cap_units(&self) -> Option<f32> {
+        if !self.enable_current_caps {
+            return None;
+        }
+        let denom = self.synapse_current_max_ua;
+        if denom <= 0.0 {
+            return None;
+        }
+        Some((self.total_current_max_ua / denom).max(0.0))
     }
 }
 
@@ -376,7 +405,8 @@ impl QuantizationConfig {
                 return 0.0;
             }
             let quantization_scale = (quantization_levels / 2.0) / max_magnitude;
-            ((weight * quantization_scale).round() / quantization_scale).clamp(-max_magnitude, max_magnitude)
+            ((weight * quantization_scale).round() / quantization_scale)
+                .clamp(-max_magnitude, max_magnitude)
         } else {
             // Asymmetric: just round to nearest level
             (weight * quantization_levels).round() / quantization_levels
@@ -470,7 +500,9 @@ impl OutputConfig {
         match self.mode {
             OutputModeType::AnalogFinal => OutputMode::AnalogFinal,
             OutputModeType::AnalogMax => OutputMode::AnalogMax,
-            OutputModeType::AnalogFiltered => OutputMode::AnalogFiltered { tau_filter: self.filter_tau },
+            OutputModeType::AnalogFiltered => OutputMode::AnalogFiltered {
+                tau_filter: self.filter_tau,
+            },
             OutputModeType::SpikeCount => OutputMode::SpikeCount,
         }
     }
@@ -487,7 +519,7 @@ mod tests {
         assert_eq!(config.network.input_size, 36);
         assert_eq!(config.neuron.beta, 0.9);
         assert!(!config.quantization.enabled);
-        assert!(!config.noise.enabled);
+        assert!(config.noise.enabled);
     }
 
     #[test]

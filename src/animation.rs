@@ -275,7 +275,9 @@ impl NetworkAnimation {
                         self.neurons[idx].spike_count += 1;
 
                         // Track output layer spikes
-                        if layer_idx == membranes.len() - 1 && neuron_idx < self.viewer.output_spikes.len() {
+                        if layer_idx == membranes.len() - 1
+                            && neuron_idx < self.viewer.output_spikes.len()
+                        {
                             self.viewer.output_spikes[neuron_idx] += 1;
                         }
                     } else {
@@ -300,8 +302,13 @@ impl NetworkAnimation {
         }
 
         // Update prediction based on spike counts
-        if let Some((pred, _)) = self.viewer.output_spikes.iter().enumerate()
-            .max_by_key(|(_, &count)| count) {
+        if let Some((pred, _)) = self
+            .viewer
+            .output_spikes
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, &count)| count)
+        {
             self.viewer.prediction = pred;
             self.viewer.correct = pred == self.viewer.label as usize;
         }
@@ -371,13 +378,20 @@ pub fn run_animation(animation: SharedAnimation) {
 
 #[cfg(feature = "animation")]
 fn model(_app: &App) -> Model {
-    let animation = ANIMATION_STATE.get().expect("Animation state not set").clone();
+    let animation = ANIMATION_STATE
+        .get()
+        .expect("Animation state not set")
+        .clone();
     Model { animation }
 }
 
 #[cfg(feature = "animation")]
 fn event(_app: &App, model: &mut Model, event: Event) {
-    if let Event::WindowEvent { simple: Some(event), .. } = event {
+    if let Event::WindowEvent {
+        simple: Some(event),
+        ..
+    } = event
+    {
         match event {
             KeyPressed(Key::Left) | KeyPressed(Key::A) => {
                 let mut anim = model.animation.lock().unwrap();
@@ -447,10 +461,14 @@ fn view(app: &App, model: &Model, frame: Frame) {
     let info_y = img_center_y - img_size / 2.0 - 40.0;
 
     // Sample info
-    draw.text(&format!("Sample: {}/{}", anim.viewer.current_sample + 1, anim.viewer.total_samples))
-        .x_y(img_center_x, info_y + 60.0)
-        .color(rgb(0.7, 0.7, 0.8))
-        .font_size(14);
+    draw.text(&format!(
+        "Sample: {}/{}",
+        anim.viewer.current_sample + 1,
+        anim.viewer.total_samples
+    ))
+    .x_y(img_center_x, info_y + 60.0)
+    .color(rgb(0.7, 0.7, 0.8))
+    .font_size(14);
 
     draw.text(&format!("Label: {}", anim.viewer.label))
         .x_y(img_center_x, info_y + 30.0)
@@ -477,15 +495,21 @@ fn view(app: &App, model: &Model, frame: Frame) {
         .w_h(bar_width, 8.0)
         .color(rgb(0.2, 0.2, 0.25));
     draw.rect()
-        .x_y(img_center_x - bar_width / 2.0 + (bar_width * progress) / 2.0, bar_y)
+        .x_y(
+            img_center_x - bar_width / 2.0 + (bar_width * progress) / 2.0,
+            bar_y,
+        )
         .w_h(bar_width * progress, 8.0)
         .color(rgb(0.3, 0.6, 0.9));
 
     // Step counter above progress bar
-    draw.text(&format!("Step {}/{}", anim.viewer.current_step, anim.viewer.total_steps))
-        .x_y(img_center_x, bar_y + 20.0)
-        .color(rgb(0.6, 0.6, 0.7))
-        .font_size(12);
+    draw.text(&format!(
+        "Step {}/{}",
+        anim.viewer.current_step, anim.viewer.total_steps
+    ))
+    .x_y(img_center_x, bar_y + 20.0)
+    .color(rgb(0.6, 0.6, 0.7))
+    .font_size(12);
 
     // Controls help - at very bottom
     draw.text("← → prev/next  Space: pause  R: restart")
@@ -506,7 +530,11 @@ fn view(app: &App, model: &Model, frame: Frame) {
         if from.pos.1 < -400.0 || to.pos.1 < -400.0 {
             continue;
         }
-        if !from.pos.0.is_finite() || !from.pos.1.is_finite() || !to.pos.0.is_finite() || !to.pos.1.is_finite() {
+        if !from.pos.0.is_finite()
+            || !from.pos.1.is_finite()
+            || !to.pos.0.is_finite()
+            || !to.pos.1.is_finite()
+        {
             continue;
         }
 
@@ -523,20 +551,28 @@ fn view(app: &App, model: &Model, frame: Frame) {
             .start(pt2(from.pos.0, from.pos.1))
             .end(pt2(to.pos.0, to.pos.1))
             .weight(thickness)
-            .color(rgba(base_color.red, base_color.green, base_color.blue, alpha));
+            .color(rgba(
+                base_color.red,
+                base_color.green,
+                base_color.blue,
+                alpha,
+            ));
 
         // Propagation pulse
-        if synapse.propagation.is_finite() && synapse.propagation < 1.0 && synapse.propagation > 0.0 {
+        if synapse.propagation.is_finite() && synapse.propagation < 1.0 && synapse.propagation > 0.0
+        {
             let t = synapse.propagation;
             let pulse_x = from.pos.0 + (to.pos.0 - from.pos.0) * t;
             let pulse_y = from.pos.1 + (to.pos.1 - from.pos.1) * t;
 
             if pulse_x.is_finite() && pulse_y.is_finite() {
                 let pulse_alpha = (1.0 - t) * 0.8;
-                draw.ellipse()
-                    .x_y(pulse_x, pulse_y)
-                    .radius(3.0)
-                    .color(rgba(1.0, 1.0, 0.5, pulse_alpha));
+                draw.ellipse().x_y(pulse_x, pulse_y).radius(3.0).color(rgba(
+                    1.0,
+                    1.0,
+                    0.5,
+                    pulse_alpha,
+                ));
             }
         }
     }
@@ -650,7 +686,9 @@ pub struct NetworkAnimation;
 
 #[cfg(not(feature = "animation"))]
 impl NetworkAnimation {
-    pub fn new(_layer_sizes: &[usize]) -> Self { Self }
+    pub fn new(_layer_sizes: &[usize]) -> Self {
+        Self
+    }
     pub fn layout(&mut self, _width: f32, _height: f32) {}
     pub fn set_weights(&mut self, _weights: &[Vec<Vec<f32>>]) {}
     pub fn update_neurons(&mut self, _membranes: &[Vec<f32>], _spikes: &[Vec<bool>], _dt: f32) {}

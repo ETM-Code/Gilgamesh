@@ -9,7 +9,9 @@ use std::time::Duration;
 use ndarray::{Array2, Axis};
 use tokio::time::sleep;
 
-use super::protocol::{EndOfSampleBehavior, NetworkTopology, NeuronState, ServerMessage, SimulationMode, SynapseInfo};
+use super::protocol::{
+    EndOfSampleBehavior, NetworkTopology, NeuronState, ServerMessage, SimulationMode, SynapseInfo,
+};
 use super::server::AppState;
 use crate::checkpoint::Checkpoint;
 use crate::config::Config;
@@ -300,7 +302,9 @@ async fn run_inference_step(state: &Arc<AppState>) {
     // Handle sample change requests
     if let Some(request) = sim.sample_request.take() {
         let new_sample = match request {
-            SampleRequest::Next => (sim.current_sample + 1).min(sim.total_samples.saturating_sub(1)),
+            SampleRequest::Next => {
+                (sim.current_sample + 1).min(sim.total_samples.saturating_sub(1))
+            }
             SampleRequest::Prev => sim.current_sample.saturating_sub(1),
             SampleRequest::Jump(idx) => idx.min(sim.total_samples.saturating_sub(1)),
             SampleRequest::Random => {
@@ -391,7 +395,10 @@ async fn run_inference_step(state: &Arc<AppState>) {
 
         // Handle based on end-of-sample behavior (read fresh value after sleep)
         let mut sim = state.simulation.write().await;
-        println!("End of sample reached. Behavior: {:?}", sim.end_of_sample_behavior);
+        println!(
+            "End of sample reached. Behavior: {:?}",
+            sim.end_of_sample_behavior
+        );
         match sim.end_of_sample_behavior {
             EndOfSampleBehavior::AutoAdvance => {
                 let next = (current_sample + 1) % total_samples.max(1);

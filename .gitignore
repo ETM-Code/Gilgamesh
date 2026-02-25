@@ -1,2 +1,4 @@
 *.rrd
 assistant.md
+tmp*
+artifacts/training_bench*

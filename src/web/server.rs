@@ -77,7 +77,10 @@ pub async fn run_server(
         if frontend.exists() {
             app.fallback_service(ServeDir::new(frontend))
         } else {
-            println!("Warning: Frontend directory not found: {}", frontend.display());
+            println!(
+                "Warning: Frontend directory not found: {}",
+                frontend.display()
+            );
             app
         }
     } else {
@@ -113,10 +116,7 @@ pub async fn run_server(
 }
 
 /// Handle WebSocket upgrade
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 

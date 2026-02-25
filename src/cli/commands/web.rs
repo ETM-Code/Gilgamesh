@@ -43,9 +43,7 @@ pub(crate) fn run_web_server(
 
     // Run the server (blocking)
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        run_server(port, data_path, checkpoint_path, None).await
-    })?;
+    rt.block_on(async { run_server(port, data_path, checkpoint_path, None).await })?;
 
     Ok(())
 }

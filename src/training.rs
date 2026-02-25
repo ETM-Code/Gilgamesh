@@ -115,34 +115,74 @@ impl AdamOptimizer {
 
         // Update FC1 weight
         adam_update_weight(
-            &mut net.fc1.weight, &grads.fc1_weight,
-            &mut self.first_moment_fc1_weight, &mut self.second_moment_fc1_weight,
-            self.lr, self.beta1, self.beta2, self.eps, self.weight_decay,
-            beta1_correction, beta2_correction,
+            &mut net.fc1.weight,
+            &grads.fc1_weight,
+            &mut self.first_moment_fc1_weight,
+            &mut self.second_moment_fc1_weight,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            self.weight_decay,
+            beta1_correction,
+            beta2_correction,
         );
 
         // Update FC1 bias
         if let (Some(ref mut fm), Some(ref mut sm), Some(ref g), Some(ref mut b)) = (
-            &mut self.first_moment_fc1_bias, &mut self.second_moment_fc1_bias,
-            &grads.fc1_bias, &mut net.fc1.bias,
+            &mut self.first_moment_fc1_bias,
+            &mut self.second_moment_fc1_bias,
+            &grads.fc1_bias,
+            &mut net.fc1.bias,
         ) {
-            adam_update_bias(b, g, fm, sm, self.lr, self.beta1, self.beta2, self.eps, beta1_correction, beta2_correction);
+            adam_update_bias(
+                b,
+                g,
+                fm,
+                sm,
+                self.lr,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                beta1_correction,
+                beta2_correction,
+            );
         }
 
         // Update FC2 weight
         adam_update_weight(
-            &mut net.fc2.weight, &grads.fc2_weight,
-            &mut self.first_moment_fc2_weight, &mut self.second_moment_fc2_weight,
-            self.lr, self.beta1, self.beta2, self.eps, self.weight_decay,
-            beta1_correction, beta2_correction,
+            &mut net.fc2.weight,
+            &grads.fc2_weight,
+            &mut self.first_moment_fc2_weight,
+            &mut self.second_moment_fc2_weight,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            self.weight_decay,
+            beta1_correction,
+            beta2_correction,
         );
 
         // Update FC2 bias
         if let (Some(ref mut fm), Some(ref mut sm), Some(ref g), Some(ref mut b)) = (
-            &mut self.first_moment_fc2_bias, &mut self.second_moment_fc2_bias,
-            &grads.fc2_bias, &mut net.fc2.bias,
+            &mut self.first_moment_fc2_bias,
+            &mut self.second_moment_fc2_bias,
+            &grads.fc2_bias,
+            &mut net.fc2.bias,
         ) {
-            adam_update_bias(b, g, fm, sm, self.lr, self.beta1, self.beta2, self.eps, beta1_correction, beta2_correction);
+            adam_update_bias(
+                b,
+                g,
+                fm,
+                sm,
+                self.lr,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                beta1_correction,
+                beta2_correction,
+            );
         }
     }
 }
@@ -294,7 +334,7 @@ impl Trainer {
             lr_scheduler: None,
             current_epoch: 0,
             max_grad_norm: None,
-            analog_gain: 0.0, // Disabled by default
+            analog_gain: 0.0,    // Disabled by default
             input_encoder: None, // Rate-coded by default
             bptt_steps,
             noise_during_eval: false,
@@ -373,29 +413,38 @@ impl Trainer {
                 )
             } else if self.adaptation_enabled {
                 // Use adaptation forward for threshold adaptation
-                self.network.forward_with_adaptation(&images, self.config.num_steps, self.dt)
+                self.network
+                    .forward_with_adaptation(&images, self.config.num_steps, self.dt)
             } else if let Some(ref encoder) = self.input_encoder {
                 // Use encoding forward for temporal or custom input encoding
-                self.network.forward_with_encoding(&images, encoder, self.config.num_steps)
+                self.network
+                    .forward_with_encoding(&images, encoder, self.config.num_steps)
             } else if self.analog_gain > 0.0 {
                 // Use analog forward for hybrid spike+membrane transmission
-                self.network.forward_with_analog(&images, self.config.num_steps, self.analog_gain)
+                self.network
+                    .forward_with_analog(&images, self.config.num_steps, self.analog_gain)
             } else if self.input_quant_bits > 0 {
                 // Use full quantized forward with input quantization
                 self.network.forward_quantized_full(
-                    &images, self.config.num_steps, self.quant_bits,
-                    self.split_sign_quant, self.input_quant_bits,
+                    &images,
+                    self.config.num_steps,
+                    self.quant_bits,
+                    self.split_sign_quant,
+                    self.input_quant_bits,
                 )
             } else {
                 // Use quantized forward (handles None for no quantization)
-                self.network.forward_quantized(&images, self.config.num_steps, self.quant_bits)
+                self.network
+                    .forward_quantized(&images, self.config.num_steps, self.quant_bits)
             };
 
             // Compute loss and gradient
             let (loss, grad_output) = cross_entropy_loss(&spike_count, &labels);
 
             // Backward pass
-            let mut grads = self.network.backward_truncated(&images, &caches, &grad_output, self.bptt_steps);
+            let mut grads =
+                self.network
+                    .backward_truncated(&images, &caches, &grad_output, self.bptt_steps);
 
             // Gradient clipping (if enabled)
             if let Some(max_norm) = self.max_grad_norm {
@@ -441,16 +490,21 @@ impl Trainer {
                 )
             } else if let Some(ref encoder) = self.input_encoder {
                 // Use encoding forward for temporal encoding
-                self.network.forward_with_encoding(&images, encoder, self.config.num_steps)
+                self.network
+                    .forward_with_encoding(&images, encoder, self.config.num_steps)
             } else if self.input_quant_bits > 0 {
                 // Use full quantized forward with input quantization
                 self.network.forward_quantized_full(
-                    &images, self.config.num_steps, self.quant_bits,
-                    self.split_sign_quant, self.input_quant_bits,
+                    &images,
+                    self.config.num_steps,
+                    self.quant_bits,
+                    self.split_sign_quant,
+                    self.input_quant_bits,
                 )
             } else {
                 // Use quantized forward (handles None for no quantization)
-                self.network.forward_quantized(&images, self.config.num_steps, self.quant_bits)
+                self.network
+                    .forward_quantized(&images, self.config.num_steps, self.quant_bits)
             };
 
             let (batch_correct, batch_total) = count_correct(&spike_count, &labels);
@@ -462,7 +516,11 @@ impl Trainer {
     }
 
     /// Full training loop
-    pub fn train(&mut self, dataset: &MnistDataset, callback: Option<&dyn Fn(&EpochResult)>) -> Vec<EpochResult> {
+    pub fn train(
+        &mut self,
+        dataset: &MnistDataset,
+        callback: Option<&dyn Fn(&EpochResult)>,
+    ) -> Vec<EpochResult> {
         let mut results = Vec::with_capacity(self.config.epochs);
 
         for epoch in 1..=self.config.epochs {

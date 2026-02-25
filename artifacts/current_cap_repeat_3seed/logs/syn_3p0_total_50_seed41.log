@@ -1,0 +1,44 @@
+Loaded config from: /Users/eoghancollins/Tarskii/gilgamesh/artifacts/current_cap_repeat_3seed/configs/syn_3p0_total_50_seed41.json
+=== gilgamesh Training ===
+Mode:           physics
+Learning rate:  0.001
+Epochs:         10
+Batch size:     128
+Timesteps:      10
+Hidden size:    12
+Beta:           0.9
+Seed:           41
+Slope:          25
+
+Loading MNIST dataset...
+Loaded 60000 training samples, 10000 test samples
+Image size: 6x6 = 36 features
+
+Using Physics mode: tau_m=0.0040s, dt=0.0010s, tau_pulse=5.0000e-4s, v_peak=4.42V
+Current caps:   enabled (I_syn_max=3.00uA, I_total_max=50.00uA, syn_scale=1.000, total_cap_units=16.67)
+Network architecture:
+  Input:  36
+  Hidden: 12 (LIF, physics mode)
+  Output: 10 (LIF, physics mode)
+  Total parameters: 552
+
+LR schedule:    cosine annealing (0.001000 -> 0.000010)
+Grad clipping:  max_norm=1.0
+Weight decay:   0.01 (AdamW)
+Training...
+------------------------------------------------------------
+Epoch   1 | Loss: 1.7043 | Train Acc: 40.56% | Test Acc: 68.59% | LR: 0.000976
+Epoch   2 | Loss: 0.8166 | Train Acc: 73.75% | Test Acc: 77.23% | LR: 0.000905
+Epoch   3 | Loss: 0.6811 | Train Acc: 78.52% | Test Acc: 79.68% | LR: 0.000796
+Epoch   4 | Loss: 0.6233 | Train Acc: 80.41% | Test Acc: 81.41% | LR: 0.000658
+Epoch   5 | Loss: 0.5912 | Train Acc: 81.46% | Test Acc: 82.33% | LR: 0.000505
+Epoch   6 | Loss: 0.5720 | Train Acc: 82.10% | Test Acc: 83.09% | LR: 0.000352
+Epoch   7 | Loss: 0.5602 | Train Acc: 82.55% | Test Acc: 83.24% | LR: 0.000214
+Epoch   8 | Loss: 0.5535 | Train Acc: 82.65% | Test Acc: 83.37% | LR: 0.000105
+Epoch   9 | Loss: 0.5503 | Train Acc: 82.75% | Test Acc: 83.41% | LR: 0.000034
+Epoch  10 | Loss: 0.5493 | Train Acc: 82.80% | Test Acc: 83.38% | LR: 0.000010
+------------------------------------------------------------
+
+=== Training Complete ===
+Best Test Accuracy: 83.41%
+Final Test Accuracy: 83.38%

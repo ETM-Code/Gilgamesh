@@ -12,6 +12,12 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
+/// Default sign-aware synapse gains from the latest 9x mirror bench calibration.
+/// These are cheap static gains that preserve the 3-bit+sign structure while
+/// matching measured mirror-vs-ideal current ratios more closely than a single scalar.
+pub const DEFAULT_SYNAPSE_POS_GAIN: f32 = 1.07;
+pub const DEFAULT_SYNAPSE_NEG_GAIN: f32 = 1.06;
+
 /// Quantize weights with split-sign scaling (hardware-accurate)
 ///
 /// Hardware model: each synapse has n-bit magnitude + 1-bit sign, with
@@ -30,8 +36,16 @@ pub fn quantize_weights(weights: &Array2<f32>, bits: u8) -> Array2<f32> {
         (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
     });
 
-    let pos_scale = if max_pos > 1e-8 { max_pos / max_magnitude } else { 1.0 };
-    let neg_scale = if max_neg > 1e-8 { max_neg / max_magnitude } else { 1.0 };
+    let pos_scale = if max_pos > 1e-8 {
+        max_pos / max_magnitude
+    } else {
+        1.0
+    };
+    let neg_scale = if max_neg > 1e-8 {
+        max_neg / max_magnitude
+    } else {
+        1.0
+    };
 
     weights.mapv(|w| {
         if w >= 0.0 {
@@ -65,6 +79,11 @@ pub struct Linear {
     /// When set, output is scaled by this factor to produce physical current values.
     /// Use HardwareConfig::compute_current_gain() to get appropriate value.
     pub current_gain: Option<f32>,
+    /// Sign-aware synapse gains for weighted-sum paths (applied before bias).
+    pub synapse_pos_gain: f32,
+    pub synapse_neg_gain: f32,
+    /// Optional absolute cap on total output current per neuron (post-bias/gain), in model units.
+    pub total_current_cap: Option<f32>,
 }
 
 impl Linear {
@@ -102,6 +121,9 @@ impl Linear {
             in_features,
             out_features,
             current_gain: None,
+            synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
+            synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
+            total_current_cap: None,
         }
     }
 
@@ -130,8 +152,52 @@ impl Linear {
         self
     }
 
-    /// Apply bias addition and current gain scaling to a raw dot product
+    /// Set sign-aware synapse gains for weighted-sum paths.
+    pub fn with_synapse_gains(mut self, pos_gain: f32, neg_gain: f32) -> Self {
+        self.synapse_pos_gain = pos_gain.max(0.0);
+        self.synapse_neg_gain = neg_gain.max(0.0);
+        self
+    }
+
+    /// Backward-compatible helper: set a single synapse gain for both signs.
+    pub fn with_synapse_efficiency(mut self, efficiency: f32) -> Self {
+        let gain = efficiency.max(0.0);
+        self.synapse_pos_gain = gain;
+        self.synapse_neg_gain = gain;
+        self
+    }
+
+    /// Set optional cap on total output current per neuron (post-bias/gain).
+    pub fn with_total_current_cap(mut self, cap: Option<f32>) -> Self {
+        self.total_current_cap = cap.filter(|v| *v > 0.0);
+        self
+    }
+
+    /// Gain to apply for a single synaptic branch weight sign.
+    pub fn synapse_gain_for_weight(&self, weight: f32) -> f32 {
+        if weight >= 0.0 {
+            self.synapse_pos_gain
+        } else {
+            self.synapse_neg_gain
+        }
+    }
+
+    /// Apply sign-aware synapse gain to weighted-sum currents in place (before bias).
+    pub fn apply_synapse_drive_model_inplace(&self, output: &mut Array2<f32>) {
+        if (self.synapse_pos_gain - 1.0).abs() <= f32::EPSILON
+            && (self.synapse_neg_gain - 1.0).abs() <= f32::EPSILON
+        {
+            return;
+        }
+        let gp = self.synapse_pos_gain;
+        let gn = self.synapse_neg_gain;
+        output.mapv_inplace(|v| if v >= 0.0 { v * gp } else { v * gn });
+    }
+
+    /// Apply synapse gains, bias addition, and current gain scaling to a raw dot product.
+    /// Synapse gains are applied to the weighted sum only (bias path is separate).
     fn apply_bias_and_gain(&self, mut output: Array2<f32>) -> Array2<f32> {
+        self.apply_synapse_drive_model_inplace(&mut output);
         if let Some(ref bias) = self.bias {
             for mut row in output.rows_mut() {
                 row += bias;
@@ -139,6 +205,9 @@ impl Linear {
         }
         if let Some(gain) = self.current_gain {
             output *= gain;
+        }
+        if let Some(cap) = self.total_current_cap {
+            output.mapv_inplace(|v| v.clamp(-cap, cap));
         }
         output
     }
@@ -194,15 +263,37 @@ impl Linear {
         input: &Array2<f32>,
         grad_output: &Array2<f32>,
     ) -> (Array2<f32>, Array2<f32>, Option<Array1<f32>>) {
-        // grad_input = grad_output @ W^T
-        let grad_input = grad_output.dot(&self.weight.t());
+        let gain = self.current_gain.unwrap_or(1.0);
 
-        // grad_weight = input^T @ grad_output
-        let grad_weight = input.t().dot(grad_output);
+        // y = gain * (f(x @ W) + b), where f is sign-aware gain mapping.
+        // grad wrt (f(x@W)+b) includes gain.
+        let mut grad_pre_bias = grad_output.clone();
+        if (gain - 1.0).abs() > f32::EPSILON {
+            grad_pre_bias *= gain;
+        }
+
+        // grad wrt linear weighted sum includes sign-aware synapse gain.
+        let mut grad_linear = grad_pre_bias.clone();
+        if (self.synapse_pos_gain - 1.0).abs() > f32::EPSILON
+            || (self.synapse_neg_gain - 1.0).abs() > f32::EPSILON
+        {
+            let pre_sum = input.dot(&self.weight);
+            let gp = self.synapse_pos_gain;
+            let gn = self.synapse_neg_gain;
+            for (g, s) in grad_linear.iter_mut().zip(pre_sum.iter()) {
+                *g *= if *s >= 0.0 { gp } else { gn };
+            }
+        }
+
+        // grad_input = grad_linear @ W^T
+        let grad_input = grad_linear.dot(&self.weight.t());
+
+        // grad_weight = input^T @ grad_linear
+        let grad_weight = input.t().dot(&grad_linear);
 
         // grad_bias = sum(grad_output, axis=0)
         let grad_bias = if self.bias.is_some() {
-            Some(grad_output.sum_axis(ndarray::Axis(0)))
+            Some(grad_pre_bias.sum_axis(ndarray::Axis(0)))
         } else {
             None
         };
@@ -211,7 +302,12 @@ impl Linear {
     }
 
     /// Apply gradient update with learning rate
-    pub fn apply_gradient(&mut self, grad_weight: &Array2<f32>, grad_bias: Option<&Array1<f32>>, lr: f32) {
+    pub fn apply_gradient(
+        &mut self,
+        grad_weight: &Array2<f32>,
+        grad_bias: Option<&Array1<f32>>,
+        lr: f32,
+    ) {
         self.weight = &self.weight - &(grad_weight * lr);
         if let (Some(ref mut bias), Some(bias_grad)) = (&mut self.bias, grad_bias) {
             *bias = &*bias - &(bias_grad * lr);
@@ -221,7 +317,11 @@ impl Linear {
     /// Get total number of parameters
     pub fn num_parameters(&self) -> usize {
         let weight_params = self.in_features * self.out_features;
-        let bias_params = if self.bias.is_some() { self.out_features } else { 0 };
+        let bias_params = if self.bias.is_some() {
+            self.out_features
+        } else {
+            0
+        };
         weight_params + bias_params
     }
 }
@@ -299,14 +399,32 @@ mod tests {
         assert!(quantized.iter().all(|v| v.is_finite()));
 
         // Max positive should be preserved (maps to magnitude 7)
-        let max_pos_orig = weights.iter().filter(|&&w| w > 0.0).fold(0.0f32, |a, &w| a.max(w));
-        let max_pos_quant = quantized.iter().filter(|&&w| w > 0.0).fold(0.0f32, |a, &w| a.max(w));
-        assert!((max_pos_orig - max_pos_quant).abs() < 1e-6, "Max positive should be exact");
+        let max_pos_orig = weights
+            .iter()
+            .filter(|&&w| w > 0.0)
+            .fold(0.0f32, |a, &w| a.max(w));
+        let max_pos_quant = quantized
+            .iter()
+            .filter(|&&w| w > 0.0)
+            .fold(0.0f32, |a, &w| a.max(w));
+        assert!(
+            (max_pos_orig - max_pos_quant).abs() < 1e-6,
+            "Max positive should be exact"
+        );
 
         // Max negative should be preserved (maps to magnitude 7)
-        let max_neg_orig = weights.iter().filter(|&&w| w < 0.0).fold(0.0f32, |a, &w| a.min(w));
-        let max_neg_quant = quantized.iter().filter(|&&w| w < 0.0).fold(0.0f32, |a, &w| a.min(w));
-        assert!((max_neg_orig - max_neg_quant).abs() < 1e-6, "Max negative should be exact");
+        let max_neg_orig = weights
+            .iter()
+            .filter(|&&w| w < 0.0)
+            .fold(0.0f32, |a, &w| a.min(w));
+        let max_neg_quant = quantized
+            .iter()
+            .filter(|&&w| w < 0.0)
+            .fold(0.0f32, |a, &w| a.min(w));
+        assert!(
+            (max_neg_orig - max_neg_quant).abs() < 1e-6,
+            "Max negative should be exact"
+        );
     }
 
     #[test]
@@ -319,7 +437,12 @@ mod tests {
 
         // With 8-bit (255 levels per sign), values should be close
         for (orig, quant) in weights.iter().zip(quantized.iter()) {
-            assert!((orig - quant).abs() < 0.02, "orig={}, quant={}", orig, quant);
+            assert!(
+                (orig - quant).abs() < 0.02,
+                "orig={}, quant={}",
+                orig,
+                quant
+            );
         }
     }
 
@@ -337,7 +460,12 @@ mod tests {
 
         // With 8-bit quantization, outputs should be very similar
         for (normal, quant) in output_normal.iter().zip(output_quantized.iter()) {
-            assert!((normal - quant).abs() < 0.1, "normal={}, quant={}", normal, quant);
+            assert!(
+                (normal - quant).abs() < 0.1,
+                "normal={}, quant={}",
+                normal,
+                quant
+            );
         }
     }
 
@@ -413,5 +541,15 @@ mod tests {
 
         // Should NOT be in µA range
         assert!(output.iter().any(|&v| v.abs() > 0.01));
+    }
+
+    #[test]
+    fn test_synapse_sign_gains_scaling() {
+        let mut layer = Linear::with_seed(2, 2, false, 42).with_synapse_gains(1.1, 0.9);
+        layer.weight = array![[1.0, -1.0], [0.0, 0.0]];
+        let input = array![[1.0, 1.0]];
+        let out = layer.forward(&input);
+        assert!((out[[0, 0]] - 1.1).abs() < 1e-6);
+        assert!((out[[0, 1]] + 0.9).abs() < 1e-6);
     }
 }

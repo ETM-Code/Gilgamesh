@@ -105,7 +105,7 @@ pub fn default_v_max() -> f32 {
 
 pub fn default_comparator_delay() -> f32 {
     0.0 // Default: no delay (instant, for backwards compatibility)
-    // Set to 50e-9 (50ns) for realistic NCS2250 behavior
+        // Set to 50e-9 (50ns) for realistic NCS2250 behavior
 }
 
 pub fn default_reset_hold() -> f32 {
@@ -117,8 +117,8 @@ impl Default for NeuronMode {
         // Default to Physics mode for hardware-accurate simulation
         // Use sensible defaults matching typical passive RC neuron circuits
         NeuronMode::Physics {
-            tau_m: 0.00396,      // 3.96ms (matches SPICE: 120kΩ * 33nF)
-            dt: 1e-6,            // 1µs timestep
+            tau_m: 0.00396, // 3.96ms (matches SPICE: 120kΩ * 33nF)
+            dt: 1e-6,       // 1µs timestep
             tau_pulse: default_tau_pulse(),
             v_peak: default_v_peak(), // ~4.44V (VDD - diode drop)
             tau_theta: default_tau_theta(),
@@ -126,7 +126,7 @@ impl Default for NeuronMode {
             theta_high: default_theta_high(),
             v_min: default_v_min(),
             v_max: default_v_max(),
-            comparator_delay_s: 50e-9,  // 50ns comparator delay
+            comparator_delay_s: 50e-9, // 50ns comparator delay
             reset_hold_s: default_reset_hold(),
         }
     }
@@ -197,12 +197,24 @@ impl NeuronMode {
         } else {
             dt * 10.0 // Fallback: 10x dt if beta is invalid
         };
-        PhysicsParams { tau_m, dt, ..Default::default() }.into()
+        PhysicsParams {
+            tau_m,
+            dt,
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Create physics mode with pulse parameters (no threshold adaptation)
     pub fn physics(tau_m: f32, dt: f32, tau_pulse: f32, v_peak: f32) -> Self {
-        PhysicsParams { tau_m, dt, tau_pulse, v_peak, ..Default::default() }.into()
+        PhysicsParams {
+            tau_m,
+            dt,
+            tau_pulse,
+            v_peak,
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Create physics mode with full parameters including threshold adaptation
@@ -215,7 +227,17 @@ impl NeuronMode {
         theta_low: f32,
         theta_high: f32,
     ) -> Self {
-        PhysicsParams { tau_m, dt, tau_pulse, v_peak, tau_theta, theta_low, theta_high, ..Default::default() }.into()
+        PhysicsParams {
+            tau_m,
+            dt,
+            tau_pulse,
+            v_peak,
+            tau_theta,
+            theta_low,
+            theta_high,
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Create physics mode with hardware timing parameters
@@ -227,7 +249,16 @@ impl NeuronMode {
         comparator_delay_s: f32,
         reset_hold_s: f32,
     ) -> Self {
-        PhysicsParams { tau_m, dt, tau_pulse, v_peak, comparator_delay_s, reset_hold_s, ..Default::default() }.into()
+        PhysicsParams {
+            tau_m,
+            dt,
+            tau_pulse,
+            v_peak,
+            comparator_delay_s,
+            reset_hold_s,
+            ..Default::default()
+        }
+        .into()
     }
 
     /// Get effective beta for this mode
@@ -298,9 +329,11 @@ impl NeuronMode {
     pub fn has_threshold_adaptation(&self) -> bool {
         match self {
             NeuronMode::Simple => false,
-            NeuronMode::Physics { theta_low, theta_high, .. } => {
-                (theta_high - theta_low).abs() > 1e-6
-            }
+            NeuronMode::Physics {
+                theta_low,
+                theta_high,
+                ..
+            } => (theta_high - theta_low).abs() > 1e-6,
         }
     }
 
@@ -324,7 +357,9 @@ impl NeuronMode {
     pub fn comparator_delay(&self) -> f32 {
         match self {
             NeuronMode::Simple => 0.0,
-            NeuronMode::Physics { comparator_delay_s, .. } => *comparator_delay_s,
+            NeuronMode::Physics {
+                comparator_delay_s, ..
+            } => *comparator_delay_s,
         }
     }
 

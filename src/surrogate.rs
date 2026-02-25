@@ -58,7 +58,11 @@ impl SurrogateGradient {
     /// Returns 1.0 if shifted_potential > 0, else 0.0
     #[inline]
     pub fn forward(&self, shifted_potential: f32) -> f32 {
-        if shifted_potential > 0.0 { 1.0 } else { 0.0 }
+        if shifted_potential > 0.0 {
+            1.0
+        } else {
+            0.0
+        }
     }
 
     /// Backward pass: Surrogate gradient
@@ -96,12 +100,18 @@ impl SurrogateGradient {
 
     /// Vectorized forward pass
     pub fn forward_batch(&self, shifted_potentials: &[f32]) -> Vec<f32> {
-        shifted_potentials.iter().map(|&v| self.forward(v)).collect()
+        shifted_potentials
+            .iter()
+            .map(|&v| self.forward(v))
+            .collect()
     }
 
     /// Vectorized backward pass
     pub fn backward_batch(&self, shifted_potentials: &[f32]) -> Vec<f32> {
-        shifted_potentials.iter().map(|&v| self.backward(v)).collect()
+        shifted_potentials
+            .iter()
+            .map(|&v| self.backward(v))
+            .collect()
     }
 
     /// Get the slope/sharpness parameter for this surrogate gradient
@@ -126,7 +136,10 @@ pub struct SpikeFunction {
 
 impl SpikeFunction {
     pub fn new(surrogate: SurrogateGradient, threshold: f32) -> Self {
-        Self { surrogate, threshold }
+        Self {
+            surrogate,
+            threshold,
+        }
     }
 
     /// Generate spike and compute gradient

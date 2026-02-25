@@ -36,7 +36,8 @@ pub(crate) fn run_spice(
 
     let network = if let Some(ref path) = checkpoint_path {
         println!("Loading checkpoint: {}", path);
-        let cp = Checkpoint::load(path).with_context(|| format!("Failed to load checkpoint from {}", path))?;
+        let cp = Checkpoint::load(path)
+            .with_context(|| format!("Failed to load checkpoint from {}", path))?;
         cp.to_network()
             .with_context(|| "Failed to reconstruct network from checkpoint")?
     } else {
@@ -131,7 +132,10 @@ pub(crate) fn run_spice(
     );
     println!();
 
-    println!("Running gilgamesh simulation ({} steps)...", effective_num_steps);
+    println!(
+        "Running gilgamesh simulation ({} steps)...",
+        effective_num_steps
+    );
     let input_batch = input.clone().insert_axis(ndarray::Axis(0));
     let trace = network.forward_traced(&input_batch, effective_num_steps);
 
@@ -156,7 +160,8 @@ pub(crate) fn run_spice(
 
     println!();
     println!("Generating SPICE netlist (detailed pulse-stretch model)...");
-    let netlist = SpiceNetlist::from_network(&network, input.as_slice().unwrap(), sim_duration_s, &params);
+    let netlist =
+        SpiceNetlist::from_network(&network, input.as_slice().unwrap(), sim_duration_s, &params);
 
     let netlist_path = output_path.join("gilgamesh.cir");
     netlist.write(&netlist_path)?;

@@ -4,11 +4,11 @@
 //! - Simple: `mem[t+1] = beta * mem[t] + input` (snnTorch-compatible)
 //! - Physics: `mem[t+1] = u_inf + (mem[t] - u_inf) * exp(-dt/tau)` (RC circuit)
 
-mod cache;
-mod leaky;
 mod backward;
 mod builder;
+mod cache;
 mod forward;
+mod leaky;
 mod mode;
 mod state;
 

@@ -60,7 +60,8 @@ pub(crate) fn run_animation(
     }
 
     println!("Loading MNIST dataset...");
-    let dataset = gilgamesh::data::MnistDataset::load(data_dir).context("Failed to load MNIST dataset")?;
+    let dataset =
+        gilgamesh::data::MnistDataset::load(data_dir).context("Failed to load MNIST dataset")?;
 
     let test_images = dataset.test_images.clone();
     let test_labels = dataset.test_labels.clone();
@@ -87,8 +88,18 @@ pub(crate) fn run_animation(
         anim.reset_for_sample(initial_sample, test_labels[initial_sample] as u8, &image);
     }
 
-    let fc1_weights: Vec<Vec<f32>> = network.fc1.weight.outer_iter().map(|row| row.to_vec()).collect();
-    let fc2_weights: Vec<Vec<f32>> = network.fc2.weight.outer_iter().map(|row| row.to_vec()).collect();
+    let fc1_weights: Vec<Vec<f32>> = network
+        .fc1
+        .weight
+        .outer_iter()
+        .map(|row| row.to_vec())
+        .collect();
+    let fc2_weights: Vec<Vec<f32>> = network
+        .fc2
+        .weight
+        .outer_iter()
+        .map(|row| row.to_vec())
+        .collect();
 
     {
         let mut anim = animation.lock().unwrap();
@@ -155,11 +166,13 @@ pub(crate) fn run_animation(
                 }
 
                 let fc1_out = network.fc1.forward(&sample_batch);
-                let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
+                let (hidden_spikes, new_hidden_state, _) =
+                    network.lif1.forward(&fc1_out, &hidden_state);
                 hidden_state = new_hidden_state;
 
                 let fc2_out = network.fc2.forward(&hidden_spikes);
-                let (output_spikes, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
+                let (output_spikes, new_output_state, _) =
+                    network.lif2.forward(&fc2_out, &output_state);
                 output_state = new_output_state;
 
                 {
@@ -170,7 +183,8 @@ pub(crate) fn run_animation(
                     let hidden_mem: Vec<f32> = hidden_state.mem.row(0).to_vec();
                     let output_mem: Vec<f32> = output_state.mem.row(0).to_vec();
 
-                    let input_spikes: Vec<bool> = sample_batch.row(0).iter().map(|&v| v > 0.5).collect();
+                    let input_spikes: Vec<bool> =
+                        sample_batch.row(0).iter().map(|&v| v > 0.5).collect();
                     let hidden_spikes_bool: Vec<bool> =
                         hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
                     let output_spikes_bool: Vec<bool> =
@@ -211,4 +225,3 @@ pub(crate) fn run_animation(
     println!("Animation feature not enabled. Rebuild with --features animation");
     Ok(())
 }
-

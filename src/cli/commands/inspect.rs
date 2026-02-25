@@ -40,7 +40,8 @@ pub(crate) fn run_inspector(
     let app = InspectorApp::from_checkpoint(&checkpoint_path, data_dir, num_steps, seed)
         .context("Failed to initialize inspector")?;
 
-    app.run().map_err(|e| anyhow::anyhow!("Inspector error: {}", e))
+    app.run()
+        .map_err(|e| anyhow::anyhow!("Inspector error: {}", e))
 }
 
 #[cfg(not(feature = "dashboard"))]
@@ -53,4 +54,3 @@ pub(crate) fn run_inspector(
     println!("Inspector feature not enabled. Rebuild with --features dashboard");
     Ok(())
 }
-

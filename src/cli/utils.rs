@@ -17,7 +17,9 @@ pub(crate) fn find_latest_checkpoint() -> Option<String> {
                 if let Ok(metadata) = fs::metadata(&entry) {
                     if let Ok(modified) = metadata.modified() {
                         if let Ok(contents) = fs::read_to_string(&entry) {
-                            if contents.contains("\"architecture\"") && contents.contains("\"weights\"") {
+                            if contents.contains("\"architecture\"")
+                                && contents.contains("\"weights\"")
+                            {
                                 candidates.push((entry.to_string_lossy().to_string(), modified));
                             }
                         }
@@ -34,7 +36,9 @@ pub(crate) fn find_latest_checkpoint() -> Option<String> {
                 if let Ok(metadata) = fs::metadata(&path) {
                     if let Ok(modified) = metadata.modified() {
                         if let Ok(contents) = fs::read_to_string(&path) {
-                            if contents.contains("\"architecture\"") && contents.contains("\"weights\"") {
+                            if contents.contains("\"architecture\"")
+                                && contents.contains("\"weights\"")
+                            {
                                 let path_str = path.to_string_lossy().to_string();
                                 if !candidates.iter().any(|(p, _)| p == &path_str) {
                                     candidates.push((path_str, modified));
@@ -50,4 +54,3 @@ pub(crate) fn find_latest_checkpoint() -> Option<String> {
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
     candidates.into_iter().next().map(|(path, _)| path)
 }
-

@@ -52,7 +52,12 @@ impl TrainingRecorder {
     }
 
     /// Create a recorder that saves to a file instead of spawning viewer
-    pub fn to_file(app_name: &str, path: &str, log_batches: bool, spike_stride: usize) -> anyhow::Result<Self> {
+    pub fn to_file(
+        app_name: &str,
+        path: &str,
+        log_batches: bool,
+        spike_stride: usize,
+    ) -> anyhow::Result<Self> {
         let rec = RecordingStreamBuilder::new(app_name)
             .save(path)
             .map_err(|e| anyhow::anyhow!("Failed to create Rerun file: {}", e))?;
@@ -83,7 +88,8 @@ impl TrainingRecorder {
         let global_step = self.epoch * 1000 + self.batch; // Rough global step
         self.rec.set_time_sequence("batch", global_step as i64);
 
-        self.rec.log("training/batch_loss", &rerun::Scalar::new(loss as f64))
+        self.rec
+            .log("training/batch_loss", &rerun::Scalar::new(loss as f64))
             .map_err(|e| anyhow::anyhow!("Failed to log batch loss: {}", e))?;
 
         Ok(())
@@ -99,16 +105,29 @@ impl TrainingRecorder {
     ) -> anyhow::Result<()> {
         self.rec.set_time_sequence("epoch", self.epoch as i64);
 
-        self.rec.log("training/loss", &rerun::Scalar::new(train_loss as f64))
+        self.rec
+            .log("training/loss", &rerun::Scalar::new(train_loss as f64))
             .map_err(|e| anyhow::anyhow!("Failed to log loss: {}", e))?;
 
-        self.rec.log("training/train_accuracy", &rerun::Scalar::new(train_acc as f64))
+        self.rec
+            .log(
+                "training/train_accuracy",
+                &rerun::Scalar::new(train_acc as f64),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to log train acc: {}", e))?;
 
-        self.rec.log("training/test_accuracy", &rerun::Scalar::new(test_acc as f64))
+        self.rec
+            .log(
+                "training/test_accuracy",
+                &rerun::Scalar::new(test_acc as f64),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to log test acc: {}", e))?;
 
-        self.rec.log("training/learning_rate", &rerun::Scalar::new(learning_rate as f64))
+        self.rec
+            .log(
+                "training/learning_rate",
+                &rerun::Scalar::new(learning_rate as f64),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to log lr: {}", e))?;
 
         Ok(())
@@ -138,26 +157,35 @@ impl TrainingRecorder {
             rerun::TensorBuffer::U8(pixels.into()),
         );
 
-        self.rec.log(format!("weights/{}", name), &rerun::Tensor::new(tensor))
+        self.rec
+            .log(format!("weights/{}", name), &rerun::Tensor::new(tensor))
             .map_err(|e| anyhow::anyhow!("Failed to log weights: {}", e))?;
 
         // Also log weight statistics
-        self.rec.log(
-            format!("weights/{}/mean", name),
-            &rerun::Scalar::new(weights.mean().unwrap_or(0.0) as f64),
-        ).ok();
-        self.rec.log(
-            format!("weights/{}/std", name),
-            &rerun::Scalar::new(weights.std(0.0) as f64),
-        ).ok();
-        self.rec.log(
-            format!("weights/{}/max", name),
-            &rerun::Scalar::new(max_w as f64),
-        ).ok();
-        self.rec.log(
-            format!("weights/{}/min", name),
-            &rerun::Scalar::new(min_w as f64),
-        ).ok();
+        self.rec
+            .log(
+                format!("weights/{}/mean", name),
+                &rerun::Scalar::new(weights.mean().unwrap_or(0.0) as f64),
+            )
+            .ok();
+        self.rec
+            .log(
+                format!("weights/{}/std", name),
+                &rerun::Scalar::new(weights.std(0.0) as f64),
+            )
+            .ok();
+        self.rec
+            .log(
+                format!("weights/{}/max", name),
+                &rerun::Scalar::new(max_w as f64),
+            )
+            .ok();
+        self.rec
+            .log(
+                format!("weights/{}/min", name),
+                &rerun::Scalar::new(min_w as f64),
+            )
+            .ok();
 
         Ok(())
     }
@@ -168,7 +196,12 @@ impl TrainingRecorder {
     /// * `name` - Layer name (e.g., "hidden", "output")
     /// * `spikes` - Spike tensor [batch, neurons] accumulated over timesteps
     /// * `sample_idx` - Which sample in the batch to visualize (default 0)
-    pub fn log_spike_counts(&self, name: &str, spikes: &Array2<f32>, sample_idx: usize) -> anyhow::Result<()> {
+    pub fn log_spike_counts(
+        &self,
+        name: &str,
+        spikes: &Array2<f32>,
+        sample_idx: usize,
+    ) -> anyhow::Result<()> {
         if sample_idx >= spikes.shape()[0] {
             return Ok(());
         }
@@ -177,10 +210,12 @@ impl TrainingRecorder {
 
         // Log as bar chart (using individual scalars per neuron)
         for (i, &count) in spike_counts.iter().enumerate() {
-            self.rec.log(
-                format!("spikes/{}/neuron_{:03}", name, i),
-                &rerun::Scalar::new(count),
-            ).ok();
+            self.rec
+                .log(
+                    format!("spikes/{}/neuron_{:03}", name, i),
+                    &rerun::Scalar::new(count),
+                )
+                .ok();
         }
 
         Ok(())
@@ -232,7 +267,11 @@ impl TrainingRecorder {
             rerun::TensorBuffer::U8(raster.into()),
         );
 
-        self.rec.log(format!("spikes/{}_raster", name), &rerun::Tensor::new(tensor))
+        self.rec
+            .log(
+                format!("spikes/{}_raster", name),
+                &rerun::Tensor::new(tensor),
+            )
             .map_err(|e| anyhow::anyhow!("Failed to log spike raster: {}", e))?;
 
         Ok(())
@@ -247,17 +286,20 @@ impl TrainingRecorder {
     ) -> anyhow::Result<()> {
         for (t, &mem) in membrane_history.iter().enumerate() {
             self.rec.set_time_sequence("timestep", t as i64);
-            self.rec.log(
-                format!("membrane/{}/neuron_{:03}", name, neuron_idx),
-                &rerun::Scalar::new(mem as f64),
-            ).ok();
+            self.rec
+                .log(
+                    format!("membrane/{}/neuron_{:03}", name, neuron_idx),
+                    &rerun::Scalar::new(mem as f64),
+                )
+                .ok();
         }
         Ok(())
     }
 
     /// Log a text annotation (useful for marking events)
     pub fn log_text(&self, path: &str, text: &str) -> anyhow::Result<()> {
-        self.rec.log(path, &rerun::TextLog::new(text))
+        self.rec
+            .log(path, &rerun::TextLog::new(text))
             .map_err(|e| anyhow::anyhow!("Failed to log text: {}", e))?;
         Ok(())
     }
@@ -287,18 +329,66 @@ impl TrainingRecorder {
     pub fn new(_app_name: &str, _log_batches: bool, _spike_stride: usize) -> anyhow::Result<Self> {
         Ok(Self)
     }
-    pub fn to_file(_app_name: &str, _path: &str, _log_batches: bool, _spike_stride: usize) -> anyhow::Result<Self> {
+    pub fn to_file(
+        _app_name: &str,
+        _path: &str,
+        _log_batches: bool,
+        _spike_stride: usize,
+    ) -> anyhow::Result<Self> {
         Ok(Self)
     }
     pub fn set_epoch(&mut self, _epoch: usize) {}
-    pub fn log_batch_loss(&mut self, _loss: f32) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_epoch_metrics(&mut self, _train_loss: f32, _train_acc: f32, _test_acc: f32, _learning_rate: f32) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_weights(&self, _name: &str, _weights: &ndarray::Array2<f32>) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_spike_counts(&self, _name: &str, _spikes: &ndarray::Array2<f32>, _sample_idx: usize) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_spike_raster(&self, _name: &str, _spike_history: &[ndarray::Array2<f32>], _sample_idx: usize) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_membrane_trace(&self, _name: &str, _membrane_history: &[f32], _neuron_idx: usize) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_text(&self, _path: &str, _text: &str) -> anyhow::Result<()> { Ok(()) }
-    pub fn log_architecture(&self, _input_size: usize, _hidden_size: usize, _output_size: usize, _mode: &str) -> anyhow::Result<()> { Ok(()) }
+    pub fn log_batch_loss(&mut self, _loss: f32) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_epoch_metrics(
+        &mut self,
+        _train_loss: f32,
+        _train_acc: f32,
+        _test_acc: f32,
+        _learning_rate: f32,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_weights(&self, _name: &str, _weights: &ndarray::Array2<f32>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_spike_counts(
+        &self,
+        _name: &str,
+        _spikes: &ndarray::Array2<f32>,
+        _sample_idx: usize,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_spike_raster(
+        &self,
+        _name: &str,
+        _spike_history: &[ndarray::Array2<f32>],
+        _sample_idx: usize,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_membrane_trace(
+        &self,
+        _name: &str,
+        _membrane_history: &[f32],
+        _neuron_idx: usize,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_text(&self, _path: &str, _text: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    pub fn log_architecture(
+        &self,
+        _input_size: usize,
+        _hidden_size: usize,
+        _output_size: usize,
+        _mode: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -310,11 +400,9 @@ mod tests {
     #[test]
     fn test_weight_normalization() {
         // Test that weight normalization works correctly
-        let weights = Array2::from_shape_vec((3, 3), vec![
-            -1.0, 0.0, 1.0,
-            -0.5, 0.5, 0.0,
-            0.0, 0.0, 0.0,
-        ]).unwrap();
+        let weights =
+            Array2::from_shape_vec((3, 3), vec![-1.0, 0.0, 1.0, -0.5, 0.5, 0.0, 0.0, 0.0, 0.0])
+                .unwrap();
 
         let min_w = weights.iter().cloned().fold(f32::INFINITY, f32::min);
         let max_w = weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);

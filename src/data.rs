@@ -102,7 +102,11 @@ impl MnistDataset {
 
                     let pixel_idx = target_y * target_width + target_x;
                     // Normalize to [0, 1] then apply MNIST normalization
-                    let normalized = if count > 0 { (sum / count as f32) / 255.0 } else { 0.0 };
+                    let normalized = if count > 0 {
+                        (sum / count as f32) / 255.0
+                    } else {
+                        0.0
+                    };
                     // MNIST normalization: (x - 0.1307) / 0.3081
                     images[[i, pixel_idx]] = (normalized - 0.1307) / 0.3081;
                 }
@@ -175,8 +179,17 @@ pub struct BatchIterator<'a> {
 }
 
 impl<'a> BatchIterator<'a> {
-    pub fn new(dataset: &'a MnistDataset, batch_size: usize, shuffle: bool, is_train: bool) -> Self {
-        let len = if is_train { dataset.train_len() } else { dataset.test_len() };
+    pub fn new(
+        dataset: &'a MnistDataset,
+        batch_size: usize,
+        shuffle: bool,
+        is_train: bool,
+    ) -> Self {
+        let len = if is_train {
+            dataset.train_len()
+        } else {
+            dataset.test_len()
+        };
         let mut indices: Vec<usize> = (0..len).collect();
 
         if shuffle {
@@ -272,7 +285,10 @@ impl InputEncoder {
     /// Create a temporal encoder with row-by-row presentation
     pub fn temporal(image_size: usize, row_spacing: f32, pulse_width: f32, dt: f32) -> Self {
         Self::new(
-            InputEncodingType::Temporal { row_spacing, pulse_width },
+            InputEncodingType::Temporal {
+                row_spacing,
+                pulse_width,
+            },
             image_size,
             dt,
         )
@@ -320,7 +336,10 @@ impl InputEncoder {
                 // Same input at every timestep
                 input.clone()
             }
-            InputEncodingType::Temporal { row_spacing, pulse_width } => {
+            InputEncodingType::Temporal {
+                row_spacing,
+                pulse_width,
+            } => {
                 // Determine which row is active at this timestep
                 let current_time = timestep as f32 * self.dt;
                 let row_idx = (current_time / row_spacing).floor() as usize;
@@ -417,7 +436,11 @@ mod tests {
         let encoder = InputEncoder::temporal(3, 0.002, 0.9, 0.001);
 
         // Verify output dimension is 3 (one row at a time)
-        assert_eq!(encoder.output_dim(), 3, "Temporal encoder should output 3 values (one row)");
+        assert_eq!(
+            encoder.output_dim(),
+            3,
+            "Temporal encoder should output 3 values (one row)"
+        );
 
         // Create a test input [batch=1, features=9]
         // Row 0: [1, 2, 3], Row 1: [4, 5, 6], Row 2: [7, 8, 9]
@@ -451,7 +474,10 @@ mod tests {
 
         // Timestep 6: all rows done (time=6ms, row=3 > image_size)
         let t6 = encoder.encode_timestep(&input, 6);
-        assert!(t6.iter().all(|&v| v == 0.0), "All should be zero after all rows");
+        assert!(
+            t6.iter().all(|&v| v == 0.0),
+            "All should be zero after all rows"
+        );
     }
 
     #[test]
@@ -461,6 +487,9 @@ mod tests {
 
         // Total time = 7 rows * 1.5ms = 10.5ms = 11 timesteps at dt=1ms
         let steps = encoder.timesteps_needed(5);
-        assert!(steps >= 11, "Should need at least 11 steps for temporal encoding");
+        assert!(
+            steps >= 11,
+            "Should need at least 11 steps for temporal encoding"
+        );
     }
 }

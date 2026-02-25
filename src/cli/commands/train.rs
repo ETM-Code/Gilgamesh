@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use gilgamesh::config::Config;
 use gilgamesh::data::MnistDataset;
+use gilgamesh::layers::linear::{DEFAULT_SYNAPSE_NEG_GAIN, DEFAULT_SYNAPSE_POS_GAIN};
 use gilgamesh::network::Network;
 use gilgamesh::surrogate::SurrogateGradient;
 use gilgamesh::training::{NoiseParams, Trainer, TrainingConfig};
@@ -39,10 +40,19 @@ pub(crate) fn train_with_config(
         println!("Quantization:   {}-bit", cfg.quantization.bits);
     }
     if cfg.noise.enabled {
-        let scope = if cfg.noise.training_only { "train only" } else { "train+eval" };
-        println!("Noise:          weight={:.2}% thresh={:.1}% membrane={:.3} input={:.1}% ({})",
-            cfg.noise.weight_std * 100.0, cfg.noise.threshold_std * 100.0,
-            cfg.noise.membrane_std, cfg.noise.input_std * 100.0, scope);
+        let scope = if cfg.noise.training_only {
+            "train only"
+        } else {
+            "train+eval"
+        };
+        println!(
+            "Noise:          weight={:.2}% thresh={:.1}% membrane={:.3} input={:.1}% ({})",
+            cfg.noise.weight_std * 100.0,
+            cfg.noise.threshold_std * 100.0,
+            cfg.noise.membrane_std,
+            cfg.noise.input_std * 100.0,
+            scope
+        );
     }
     println!();
 
@@ -56,11 +66,16 @@ pub(crate) fn train_with_config(
         dataset.train_len(),
         dataset.test_len()
     );
-    println!("Image size: {}x{} = {} features", image_width, image_height, dataset.feature_dim());
+    println!(
+        "Image size: {}x{} = {} features",
+        image_width,
+        image_height,
+        dataset.feature_dim()
+    );
     println!();
 
-    use gilgamesh::data::InputEncoder;
     use gilgamesh::config::EncodingType;
+    use gilgamesh::data::InputEncoder;
     let input_encoder = if cfg.input_encoding.encoding_type == EncodingType::Temporal {
         // Temporal encoding uses image_height for row-by-row presentation
         Some(InputEncoder::temporal(
@@ -110,7 +125,14 @@ pub(crate) fn train_with_config(
                 tau_m, dt, tau_pulse, v_peak
             );
             Network::new_physics_with_pulse(
-                input_size, hidden_size, output_size, tau_m, dt, tau_pulse, v_peak, seed,
+                input_size,
+                hidden_size,
+                output_size,
+                tau_m,
+                dt,
+                tau_pulse,
+                v_peak,
+                seed,
             )
         }
     } else {
@@ -119,6 +141,31 @@ pub(crate) fn train_with_config(
 
     network.lif1.spike_grad = SurrogateGradient::fast_sigmoid(slope);
     network.lif2.spike_grad = SurrogateGradient::fast_sigmoid(slope);
+
+    if cfg.hardware.enable_current_caps {
+        let syn_scale = cfg.hardware.synapse_scale_from_baseline();
+        let pos_gain = DEFAULT_SYNAPSE_POS_GAIN * syn_scale;
+        let neg_gain = DEFAULT_SYNAPSE_NEG_GAIN * syn_scale;
+        let total_cap = cfg.hardware.total_cap_units();
+
+        network.fc1.synapse_pos_gain = pos_gain;
+        network.fc1.synapse_neg_gain = neg_gain;
+        network.fc2.synapse_pos_gain = pos_gain;
+        network.fc2.synapse_neg_gain = neg_gain;
+        network.fc1.total_current_cap = total_cap;
+        network.fc2.total_current_cap = total_cap;
+
+        let total_cap_text = total_cap
+            .map(|v| format!("{:.2}", v))
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "Current caps:   enabled (I_syn_max={:.2}uA, I_total_max={:.2}uA, syn_scale={:.3}, total_cap_units={})",
+            cfg.hardware.synapse_current_max_ua,
+            cfg.hardware.total_current_max_ua,
+            syn_scale,
+            total_cap_text
+        );
+    }
 
     if cfg.input_encoding.encoding_type == EncodingType::Spiking {
         network.spiking_input = true;
@@ -248,7 +295,9 @@ pub(crate) fn train_with_config(
     let mut best_test_acc = 0.0f32;
 
     for epoch in 1..=cfg.training.epochs {
-        let lr = trainer.update_lr_for_epoch(epoch).unwrap_or(cfg.training.lr);
+        let lr = trainer
+            .update_lr_for_epoch(epoch)
+            .unwrap_or(cfg.training.lr);
 
         let (train_loss, train_acc) = trainer.train_epoch(&dataset);
         let test_acc = trainer.evaluate(&dataset);
@@ -316,4 +365,3 @@ pub(crate) fn train_with_config(
 
     Ok(())
 }
-

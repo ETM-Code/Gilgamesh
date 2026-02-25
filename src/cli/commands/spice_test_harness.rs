@@ -8,7 +8,6 @@ use ndarray::array;
 
 use std::path::Path;
 
-
 pub(crate) fn run_spice_test_harness(
     output_dir: &str,
     run_ngspice: bool,
@@ -55,7 +54,14 @@ pub(crate) fn run_spice_test_harness(
 
     println!("=== SPICE Mini Harness ===");
     println!();
-    println!("Mode:            {}", if two_neurons { "two-neuron" } else { "single-neuron" });
+    println!(
+        "Mode:            {}",
+        if two_neurons {
+            "two-neuron"
+        } else {
+            "single-neuron"
+        }
+    );
     println!(
         "Membrane:        C={:.1} nF, R={:.1} kΩ, tau={:.3} ms",
         params.membrane.c_mem * 1e9,
@@ -73,7 +79,10 @@ pub(crate) fn run_spice_test_harness(
     println!("Duration:        {:.3} ms", duration * 1e3);
     println!("dt:              {:.3} µs", dt * 1e6);
     println!("SPICE netlist:   {}", netlist_path.display());
-    println!("SPICE output:    {}", output_path.join(spice_output).display());
+    println!(
+        "SPICE output:    {}",
+        output_path.join(spice_output).display()
+    );
     println!();
 
     if run_ngspice {
@@ -290,7 +299,11 @@ fn simulate_single_neuron(
 
     let neuron = Leaky::new(1, (-dt / tau_m).exp())
         .with_mode(mode)
-        .with_threshold(if enable_inject { theta_low } else { v_threshold });
+        .with_threshold(if enable_inject {
+            theta_low
+        } else {
+            v_threshold
+        });
 
     let mut state = if enable_inject {
         LeakyState::new_full_physics(ndarray::Array2::zeros((1, 1)), theta_low)
@@ -392,10 +405,18 @@ fn simulate_two_neurons(
 
     let neuron_a = Leaky::new(1, (-dt / tau_m).exp())
         .with_mode(mode_a)
-        .with_threshold(if enable_inject { theta_low } else { v_threshold });
+        .with_threshold(if enable_inject {
+            theta_low
+        } else {
+            v_threshold
+        });
     let neuron_b = Leaky::new(1, (-dt / tau_m).exp())
         .with_mode(mode_b)
-        .with_threshold(if enable_inject { theta_low } else { v_threshold });
+        .with_threshold(if enable_inject {
+            theta_low
+        } else {
+            v_threshold
+        });
 
     let mut state_a = if enable_inject {
         LeakyState::new_full_physics(ndarray::Array2::zeros((1, 1)), theta_low)

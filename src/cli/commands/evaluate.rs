@@ -28,7 +28,12 @@ fn find_image_dimensions(input_size: usize) -> Result<(usize, usize)> {
     )
 }
 
-pub(crate) fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch_size: usize) -> Result<()> {
+pub(crate) fn evaluate(
+    checkpoint: &str,
+    data_dir: &str,
+    num_steps: usize,
+    batch_size: usize,
+) -> Result<()> {
     use gilgamesh::checkpoint::Checkpoint;
 
     println!("=== gilgamesh Evaluation ===");
@@ -51,7 +56,10 @@ pub(crate) fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch
 
     // Get image dimensions from checkpoint if available, otherwise infer
     let input_size = loaded_checkpoint.architecture.input_size;
-    let (width, height) = match (loaded_checkpoint.architecture.image_width, loaded_checkpoint.architecture.image_height) {
+    let (width, height) = match (
+        loaded_checkpoint.architecture.image_width,
+        loaded_checkpoint.architecture.image_height,
+    ) {
         (Some(width), Some(height)) => {
             println!("Using checkpoint dimensions: {}x{}", width, height);
             (width, height)
@@ -84,4 +92,3 @@ pub(crate) fn evaluate(checkpoint: &str, data_dir: &str, num_steps: usize, batch
     println!("Test Accuracy: {:.2}%", accuracy);
     Ok(())
 }
-

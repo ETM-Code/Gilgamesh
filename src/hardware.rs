@@ -56,19 +56,19 @@ impl Default for HardwareConfig {
     fn default() -> Self {
         Self {
             // Membrane: τ = 3.96ms
-            c_mem: 33e-9,      // 33 nF
-            r_leak: 120e3,     // 120 kΩ
+            c_mem: 33e-9,  // 33 nF
+            r_leak: 120e3, // 120 kΩ
 
             // Voltages
             vdd: 5.0,
             vref: 0.0,
-            v_threshold: 0.8,  // Fixed threshold above Vref
+            v_threshold: 0.8, // Fixed threshold above Vref
 
             // Timing
-            dt: 1e-6,          // 1 µs
+            dt: 1e-6, // 1 µs
 
             // Current limits (from assistant recommendations)
-            i_syn_max: 3e-6,   // 3 µA per synapse max
+            i_syn_max: 3e-6,    // 3 µA per synapse max
             i_total_max: 50e-6, // 50 µA total per neuron max
         }
     }
@@ -171,16 +171,28 @@ impl HardwareConfig {
         println!("  V_th       = {:.2} V (above Vref)", self.v_threshold);
         println!();
         println!("Currents:");
-        println!("  I_threshold = {:.2} µA (steady-state)", self.i_threshold() * 1e6);
-        println!("  I_syn_max   = {:.1} µA (per synapse)", self.i_syn_max * 1e6);
-        println!("  I_total_max = {:.1} µA (per neuron)", self.i_total_max * 1e6);
+        println!(
+            "  I_threshold = {:.2} µA (steady-state)",
+            self.i_threshold() * 1e6
+        );
+        println!(
+            "  I_syn_max   = {:.1} µA (per synapse)",
+            self.i_syn_max * 1e6
+        );
+        println!(
+            "  I_total_max = {:.1} µA (per neuron)",
+            self.i_total_max * 1e6
+        );
         println!();
         println!("Timing:");
         println!("  dt         = {:.1} µs", self.dt * 1e6);
         println!();
         let gain = self.compute_current_gain();
         println!("Mapping:");
-        println!("  Current gain = {:.2} µA (for threshold in τ/4)", gain * 1e6);
+        println!(
+            "  Current gain = {:.2} µA (for threshold in τ/4)",
+            gain * 1e6
+        );
         println!("  dV/step at gain = {:.4} V", self.dv_per_step(gain));
     }
 }
@@ -198,12 +210,18 @@ impl HardwareMapping {
     /// Create a new hardware mapping with default current gain.
     pub fn new(config: HardwareConfig) -> Self {
         let current_gain = config.compute_current_gain();
-        Self { config, current_gain }
+        Self {
+            config,
+            current_gain,
+        }
     }
 
     /// Create with custom current gain.
     pub fn with_gain(config: HardwareConfig, current_gain: f32) -> Self {
-        Self { config, current_gain }
+        Self {
+            config,
+            current_gain,
+        }
     }
 
     /// Convert normalized layer output to physical voltage increment.
