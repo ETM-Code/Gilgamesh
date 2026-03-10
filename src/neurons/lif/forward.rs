@@ -481,16 +481,21 @@ impl Leaky {
             .adaptive_threshold
             .clone()
             .unwrap_or_else(|| Array2::from_elem(shape, self.threshold));
+        let prev_mem_shifted = &state.mem - &current_threshold;
         let mem_shifted = &mem_new - &current_threshold;
         let mut new_crossings = Array2::zeros(shape);
         Zip::from(&mut new_crossings)
             .and(&mem_shifted)
+            .and(&prev_mem_shifted)
             .and(&pending)
             .and(&hold)
             .and(&emitted_spikes)
             .for_each(
-                |crossing, &shifted, &pending_step, &hold_remaining, &just_emitted| {
+                |crossing, &shifted, &prev_shifted, &pending_step, &hold_remaining, &just_emitted| {
+                    // Trigger only on upward threshold crossings (comparator edge behavior),
+                    // not continuously while membrane remains above threshold.
                     if shifted > 0.0
+                        && prev_shifted <= 0.0
                         && pending_step == 0
                         && hold_remaining == 0
                         && just_emitted == 0.0
@@ -517,18 +522,15 @@ impl Leaky {
                 .and(&emitted_spikes)
                 .for_each(|hold_remaining, &spike| {
                     if spike > 0.0 {
+                        // Start hold for future timesteps; do not decrement immediately.
                         *hold_remaining = hold_steps;
+                    } else if *hold_remaining > 0 {
+                        *hold_remaining -= 1;
                     }
                 });
+        } else {
+            hold.fill(0);
         }
-
-        hold.mapv_inplace(|hold_remaining| {
-            if hold_remaining > 0 {
-                hold_remaining - 1
-            } else {
-                0
-            }
-        });
 
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &emitted_spikes, dt);
