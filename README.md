@@ -1,5 +1,6 @@
 # gilgamesh
-![gilgamesh logo](logo.png)
+
+
 A Rust implementation of hardware-accurate spiking neural networks (SNNs). Features dual-mode operation: a simple beta-decay model (snnTorch-compatible) for fast prototyping and a physics-accurate RC membrane model for chip deployment.
 
 ## Features
@@ -19,6 +20,7 @@ A Rust implementation of hardware-accurate spiking neural networks (SNNs). Featu
 ## Building
 
 ### Standard build (portable)
+
 ```bash
 cargo build --release
 ```
@@ -26,11 +28,13 @@ cargo build --release
 ### With BLAS acceleration (recommended, 2-5x faster)
 
 **macOS** (Apple Accelerate):
+
 ```bash
 cargo build --release --features blas-accelerate
 ```
 
 **Linux** (OpenBLAS):
+
 ```bash
 # Install: sudo apt install libopenblas-dev
 cargo build --release --features blas-openblas
@@ -68,11 +72,13 @@ cargo build --release --features animation
 ```
 
 **Controls:**
+
 - `←` / `→` : Previous / Next sample
 - `Space` : Pause / Resume
 - `R` : Restart current sample
 
 The visualizer shows:
+
 - MNIST image on the left with true label and prediction
 - Network activity with neurons colored by membrane potential
 - Spike propagation through synapses
@@ -95,6 +101,7 @@ rerun training.rrd
 ```
 
 Logged data includes:
+
 - `training/loss`, `training/train_accuracy`, `training/test_accuracy`
 - `training/learning_rate` schedule
 - `weights/fc1`, `weights/fc2` as heatmaps (every 5 epochs)
@@ -160,23 +167,27 @@ Input (36) → Linear → LIF (12) → Linear → LIF (10) → Spike Count → P
 
 ### Architecture Comparison
 
-| Architecture | Image | Synapses | Test Accuracy |
-|--------------|-------|----------|---------------|
-| 24-6-10 | 3x8 | 204 | 80.06% |
-| 25-9-10 | 5x5 | 315 | 85.33% |
-| 36-6-10 | 6x6 | 276 | 85.05% |
-| 36-9-10 | 6x6 | 414 | 89.34% |
-| **36-12-10** | **6x6** | **552** | **91.38%** |
-| 49-9-10 | 7x7 | 531 | 90.14% |
+
+| Architecture | Image   | Synapses | Test Accuracy |
+| ------------ | ------- | -------- | ------------- |
+| 24-6-10      | 3x8     | 204      | 80.06%        |
+| 25-9-10      | 5x5     | 315      | 85.33%        |
+| 36-6-10      | 6x6     | 276      | 85.05%        |
+| 36-9-10      | 6x6     | 414      | 89.34%        |
+| **36-12-10** | **6x6** | **552**  | **91.38%**    |
+| 49-9-10      | 7x7     | 531      | 90.14%        |
+
 
 ### Minimum Synapses by Target Accuracy
 
 Results from automated synapse search across non-square image dimensions:
 
+
 | Target | Architecture | Image | Synapses | Achieved |
-|--------|-------------|-------|----------|----------|
-| 85% | 25-9-10 | 5x5 | 315 | 85.33% |
-| 80% | 24-6-10 | 3x8 | 204 | 80.06% |
+| ------ | ------------ | ----- | -------- | -------- |
+| 85%    | 25-9-10      | 5x5   | 315      | 85.33%   |
+| 80%    | 24-6-10      | 3x8   | 204      | 80.06%   |
+
 
 Non-square images (e.g. 3x8) can outperform square ones by capturing more vertical structure from MNIST digits with fewer total pixels.
 
@@ -188,52 +199,59 @@ Input pixels are quantized to 12-bit DAC resolution during training.
 
 **QAT results without noise** (rate-coded, 6x6, physics mode, 3-bit split-sign weights, 12-bit input):
 
-| Architecture | Synapses | Best Accuracy | Notes |
-|--------------|----------|---------------|-------|
-| 36-5-10 | 230 | 75.6% avg | High seed variance (±3%) |
-| 36-6-10 | 276 | 77.2% avg | High seed variance |
-| 36-7-10 | 322 | 83.2% avg | ±2.2% across seeds |
-| **36-8-10** | **368** | **84.6% avg** | **±1.0%, most efficient for ~85%** |
-| 36-9-10 | 414 | 85.7% avg | Stable across seeds |
-| 36-12-10 | 552 | 87.0% | 3-bit ceiling |
+
+| Architecture | Synapses | Best Accuracy | Notes                              |
+| ------------ | -------- | ------------- | ---------------------------------- |
+| 36-5-10      | 230      | 75.6% avg     | High seed variance (±3%)           |
+| 36-6-10      | 276      | 77.2% avg     | High seed variance                 |
+| 36-7-10      | 322      | 83.2% avg     | ±2.2% across seeds                 |
+| **36-8-10**  | **368**  | **84.6% avg** | **±1.0%, most efficient for ~85%** |
+| 36-9-10      | 414      | 85.7% avg     | Stable across seeds                |
+| 36-12-10     | 552      | 87.0%         | 3-bit ceiling                      |
+
 
 **With noise injection** (weight=5%, threshold=2%, membrane=0.01, input=10%, enabled by default):
 
 Noise improves robustness to hardware variation. 7x7 input captures more spatial structure and raises the 3-bit accuracy ceiling from ~87% to ~90%.
 
-| Architecture | Image | Synapses | Accuracy | Notes |
-|--------------|-------|----------|----------|-------|
-| 49-5-10 | 7x7 | 295 | 83.66% | |
-| 49-6-10 | 7x7 | 354 | 84.75% | |
-| 49-7-10 | 7x7 | 413 | 84.78% | |
-| **49-8-10** | **7x7** | **472** | **87.47%** | |
-| 49-9-10 | 7x7 | 531 | 89.83% | Near 3-bit ceiling |
-| 36-7-10 | 6x6 | 322 | 84.66% | |
-| 36-8-10 | 6x6 | 368 | 84.07% | |
-| 36-9-10 | 6x6 | 414 | 87.39% | |
+
+| Architecture | Image   | Synapses | Accuracy   | Notes              |
+| ------------ | ------- | -------- | ---------- | ------------------ |
+| 49-5-10      | 7x7     | 295      | 83.66%     | &nbsp;             |
+| 49-6-10      | 7x7     | 354      | 84.75%     | &nbsp;             |
+| 49-7-10      | 7x7     | 413      | 84.78%     | &nbsp;             |
+| **49-8-10**  | **7x7** | **472**  | **87.47%** | &nbsp;             |
+| 49-9-10      | 7x7     | 531      | 89.83%     | Near 3-bit ceiling |
+| 36-7-10      | 6x6     | 322      | 84.66%     | &nbsp;             |
+| 36-8-10      | 6x6     | 368      | 84.07%     | &nbsp;             |
+| 36-9-10      | 6x6     | 414      | 87.39%     | &nbsp;             |
+
 
 **4-bit QAT results** (rate-coded, physics mode, 4-bit split-sign weights, 12-bit input, noise enabled):
 
-| Architecture | Image | Synapses | Accuracy |
-|--------------|-------|----------|----------|
-| 64-5-10 | 8x8 | 370 | 75.63% |
-| 64-6-10 | 8x8 | 444 | 85.81% |
-| 64-7-10 | 8x8 | 518 | 86.36% |
-| 64-8-10 | 8x8 | 592 | 88.39% |
-| 64-9-10 | 8x8 | 666 | 89.24% |
-| 64-10-10 | 8x8 | 740 | 89.72% |
-| 81-5-10 | 9x9 | 455 | 84.72% |
-| 81-6-10 | 9x9 | 546 | 87.61% |
-| 81-7-10 | 9x9 | 637 | 89.36% |
-| 81-8-10 | 9x9 | 728 | 89.47% |
-| **81-9-10** | **9x9** | **819** | **91.32%** |
-| 100-5-10 | 10x10 | 550 | 78.03% |
-| 100-6-10 | 10x10 | 660 | 87.65% |
-| 100-7-10 | 10x10 | 770 | 88.55% |
-| 100-8-10 | 10x10 | 880 | 90.45% |
-| **100-9-10** | **10x10** | **990** | **92.03%** |
+
+| Architecture | Image     | Synapses | Accuracy   |
+| ------------ | --------- | -------- | ---------- |
+| 64-5-10      | 8x8       | 370      | 75.63%     |
+| 64-6-10      | 8x8       | 444      | 85.81%     |
+| 64-7-10      | 8x8       | 518      | 86.36%     |
+| 64-8-10      | 8x8       | 592      | 88.39%     |
+| 64-9-10      | 8x8       | 666      | 89.24%     |
+| 64-10-10     | 8x8       | 740      | 89.72%     |
+| 81-5-10      | 9x9       | 455      | 84.72%     |
+| 81-6-10      | 9x9       | 546      | 87.61%     |
+| 81-7-10      | 9x9       | 637      | 89.36%     |
+| 81-8-10      | 9x9       | 728      | 89.47%     |
+| **81-9-10**  | **9x9**   | **819**  | **91.32%** |
+| 100-5-10     | 10x10     | 550      | 78.03%     |
+| 100-6-10     | 10x10     | 660      | 87.65%     |
+| 100-7-10     | 10x10     | 770      | 88.55%     |
+| 100-8-10     | 10x10     | 880      | 90.45%     |
+| **100-9-10** | **10x10** | **990**  | **92.03%** |
+
 
 **Key findings:**
+
 - **4-bit weights raise the accuracy ceiling** to ~92% (vs ~90% for 3-bit at 7x7)
 - With 3-bit weights, accuracy saturates around **87% for 6x6** and **90% for 7x7** — weight precision is the bottleneck, not network capacity
 - **9x9 is the most efficient** for 90%+ accuracy: 81-9-10 hits 91.32% at 819 synapses vs 100-9-10 at 92.03% with 990 synapses
@@ -244,15 +262,18 @@ Saved model: `models/rate_quant_3bit_6x6_h8.json`
 
 **Post-training quantization** (for comparison — quantizing after full-precision training):
 
-| Network | Bits | Original | Quantized | Accuracy Drop |
-|---------|------|----------|-----------|---------------|
-| 36-6-10 | 3 | 85.68% | 78.32% | 7.4% |
-| 36-12-10 | 3 | 91.80% | 82.82% | 9.0% |
-| **36-12-10** | **4** | **92.05%** | **91.11%** | **0.9%** |
+
+| Network      | Bits  | Original   | Quantized  | Accuracy Drop |
+| ------------ | ----- | ---------- | ---------- | ------------- |
+| 36-6-10      | 3     | 85.68%     | 78.32%     | 7.4%          |
+| 36-12-10     | 3     | 91.80%     | 82.82%     | 9.0%          |
+| **36-12-10** | **4** | **92.05%** | **91.11%** | **0.9%**      |
+
 
 QAT with 3-bit weights significantly closes the gap vs post-training quantization (84.6% QAT vs 78.3% post-training at similar network size).
 
 Checkpoint format includes both f32 weights and quantized integer weights:
+
 ```json
 {
   "quantized": {
@@ -275,6 +296,7 @@ To reconstruct analog weights: `weight = magnitude × (pos_scale if positive els
 ### Simple Mode (snnTorch-compatible)
 
 Uses discrete beta-decay membrane dynamics:
+
 ```
 mem[t+1] = beta * mem[t] + input - spike * threshold
 ```
@@ -284,12 +306,14 @@ Where beta = 0.9 provides exponential decay. This matches snnTorch's Leaky neuro
 ### Physics Mode
 
 Uses continuous RC membrane dynamics derived from circuit physics:
+
 ```
 decay = exp(-dt / tau_m)
 mem[t+1] = input * tau_m + (mem[t] - input * tau_m) * decay
 ```
 
 Parameters:
+
 - `tau_m`: Membrane time constant (~9.5ms)
 - `dt`: Integration timestep (1ms default)
 - `v_min/v_max`: Hardware voltage rails (0-5V)
@@ -299,12 +323,15 @@ The equivalence: `beta = exp(-dt / tau_m)`, so `tau_m = -dt / ln(beta)`
 ## Input Encoding Modes
 
 ### Rate-Coded (default)
+
 All 36 pixels presented simultaneously at every timestep. The pixel intensity determines spike probability or input current.
 
 ### Spiking Input Encoding
+
 Converts pixel values to spike trains via deterministic accumulator, making all connections uniform spiking synapses (matching hardware where every connection is a spike-triggered current source).
 
 Features:
+
 - **Burst spikes**: `floor(accumulator)` allows multi-level encoding (like Loihi 2 graded spikes)
 - **Dithered initialization**: Random accumulator offsets in [0,1) break quantization patterns
 - **Residual injection**: Final timestep adds remaining accumulator value as fractional spike
@@ -312,15 +339,19 @@ Features:
 
 Results with noise injection (weight=5%, threshold=2%, membrane=0.01, input=10%):
 
+
 | Architecture | Image | Synapses | Accuracy |
-|--------------|-------|----------|----------|
-| 36-12-10 | 6x6 | 552 | 86.69% |
-| 40-7-10 | 5x8 | 350 | 82.95% |
-| 36-8-10 | 4x9 | 368 | 82.67% |
-| 25-9-10 | 5x5 | 315 | 81.89% |
+| ------------ | ----- | -------- | -------- |
+| 36-12-10     | 6x6   | 552      | 86.69%   |
+| 40-7-10      | 5x8   | 350      | 82.95%   |
+| 36-8-10      | 4x9   | 368      | 82.67%   |
+| 25-9-10      | 5x5   | 315      | 81.89%   |
+
 
 ### Temporal Encoding
+
 Rows presented sequentially, mimicking hardware scanning:
+
 - 6 rows presented over time with configurable spacing
 - `row_spacing`: Time between rows (default: 1.5ms)
 - `pulse_width`: Fraction of row spacing for pulse (default: 90%)
@@ -328,6 +359,7 @@ Rows presented sequentially, mimicking hardware scanning:
 ## Analog Output Mode
 
 When `analog_gain > 0`, membrane voltage is added to the spike signal:
+
 ```
 output = spikes + analog_gain * membrane_voltage
 ```
@@ -380,12 +412,14 @@ All parameters are configurable via JSON:
 
 All tests on MNIST (60k train, 10k test, 6x6 downsampled), 15 epochs:
 
-| Test | Mode | Input Encoding | Analog | Best Test Acc | Notes |
-|------|------|----------------|--------|---------------|-------|
-| 1 | Physics | Rate-coded | No | **96.43%** | Best overall |
-| 2 | Physics | Rate-coded | 0.1 | **96.03%** | Minimal impact |
-| 3 | Physics | Temporal | No | 38.72% | Severe overfitting |
-| 4 | Physics | Temporal | 0.1 | 35.32% | Analog hurts here |
+
+| Test | Mode    | Input Encoding | Analog | Best Test Acc | Notes              |
+| ---- | ------- | -------------- | ------ | ------------- | ------------------ |
+| 1    | Physics | Rate-coded     | No     | **96.43%**    | Best overall       |
+| 2    | Physics | Rate-coded     | 0.1    | **96.03%**    | Minimal impact     |
+| 3    | Physics | Temporal       | No     | 38.72%        | Severe overfitting |
+| 4    | Physics | Temporal       | 0.1    | 35.32%        | Analog hurts here  |
+
 
 ### Key Findings
 
@@ -397,6 +431,7 @@ All tests on MNIST (60k train, 10k test, 6x6 downsampled), 15 epochs:
 ### Temporal Encoding Analysis
 
 The large train-test gap with temporal encoding suggests:
+
 - The network memorizes training patterns rather than learning generalizable features
 - Row-by-row presentation requires different architecture (e.g., recurrent connections, more hidden neurons)
 - May need regularization tuned for temporal dynamics
@@ -431,18 +466,21 @@ comparison/venv/bin/python comparison/snntorch_comparison.py --epochs 20 --lr 0.
 
 ### Models Compared
 
-| Model | Type | Architecture |
-|-------|------|--------------|
-| `GilgameshSNN` | SNN | 36 → LIF(12) → LIF(10) — matches gilgamesh exactly |
-| `GilgameshSNN_Synaptic` | SNN | Dual-exponential synaptic dynamics |
-| `GilgameshSNN_Recurrent` | SNN | Recurrent connections in hidden layer |
-| `GilgameshSNN_3Layer` | SNN | 36 → LIF(12) → LIF(6) → LIF(10) |
-| `StandardANN` | ANN | 36 → ReLU(12) → 10 — non-spiking baseline |
-| `StandardANN_3Layer` | ANN | 36 → ReLU(12) → ReLU(6) → 10 |
+
+| Model                    | Type | Architecture                                       |
+| ------------------------ | ---- | -------------------------------------------------- |
+| `GilgameshSNN`           | SNN  | 36 → LIF(12) → LIF(10) — matches gilgamesh exactly |
+| `GilgameshSNN_Synaptic`  | SNN  | Dual-exponential synaptic dynamics                 |
+| `GilgameshSNN_Recurrent` | SNN  | Recurrent connections in hidden layer              |
+| `GilgameshSNN_3Layer`    | SNN  | 36 → LIF(12) → LIF(6) → LIF(10)                    |
+| `StandardANN`            | ANN  | 36 → ReLU(12) → 10 — non-spiking baseline          |
+| `StandardANN_3Layer`     | ANN  | 36 → ReLU(12) → ReLU(6) → 10                       |
+
 
 ### Output
 
 Results saved to `comparison/results/`:
+
 - `comparison_report.md` — Accuracy comparison table
 - `training_curves.png` — Training/test accuracy plots
 - `*_weights.pt` — PyTorch state dicts
@@ -459,6 +497,7 @@ Results saved to `comparison/results/`:
 ## CLI Options
 
 ### Training
+
 ```
 gilgamesh train [OPTIONS]
 
@@ -495,6 +534,7 @@ Options:
 ```
 
 Features:
+
 - MNIST image display with label/prediction
 - Neuron membrane potentials visualized as color intensity
 - Spike propagation pulses along synapses
@@ -518,6 +558,7 @@ Options:
 ```
 
 The inspector shows:
+
 - 6x6 input image (scaled up for visibility)
 - Bar chart of output neuron spike counts
 - Color-coded predictions: green=correct, red=wrong, blue=true label
@@ -558,12 +599,14 @@ Options:
 ```
 
 Features:
+
 - LIF neuron subcircuit with RC membrane, comparator, reset switch, and pulse shaping
 - Full 36→12→10 network with VCCS (voltage-controlled current sources) for weights
 - Compares gilgamesh spike counts against ngspice simulation
 - Outputs comparison table with predictions from both simulators
 
 Performance benchmark (full network, sample 42, physics_6x6_fixed checkpoint):
+
 - **gilgamesh is 12005x faster than ngspice** for the timed simulation kernel in this setup.
 - Measured with `network_spice_bench` using `--duration-ms 1.0`, where:
   - gilgamesh in-process average: **0.027 ms**
@@ -586,20 +629,24 @@ cargo build --release --bin network_spice_bench --bin gilgamesh
 ```
 
 Latency/accuracy tradeoff (Physics 6x6, `dt=1ms`):
+
 - Baseline model (`models/physics_6x6_fixed.json`) was trained at 25 steps.
 - Since each step is 1ms of simulated time, `25 steps = 25ms`, `10 steps = 10ms`.
 
 Baseline checkpoint accuracy vs steps:
 
+
 | Steps | Simulated time | Test accuracy |
-|-------|----------------|---------------|
-| 5 | 5ms | 66.84% |
-| 10 | 10ms | 82.75% |
-| 15 | 15ms | 85.20% |
-| 20 | 20ms | 86.58% |
-| 25 | 25ms | 87.20% |
+| ----- | -------------- | ------------- |
+| 5     | 5ms            | 66.84%        |
+| 10    | 10ms           | 82.75%        |
+| 15    | 15ms           | 85.20%        |
+| 20    | 20ms           | 86.58%        |
+| 25    | 25ms           | 87.20%        |
+
 
 Retraining for 10-step inference:
+
 - Trained a dedicated 10-step model (`configs/physics_6x6_10steps.json`).
 - Output checkpoint: `models/physics_6x6_10steps_retrained.json`.
 - Results:
@@ -610,6 +657,7 @@ Retraining for 10-step inference:
 So retraining for 10ms recovered accuracy substantially compared to truncating the 25-step-trained model at 10 steps (82.75% → 85.69%).
 
 Model topology used in these tests:
+
 - Input: 36 features (6x6)
 - Hidden: 12 LIF neurons (physics mode)
 - Output: 10 LIF neurons (physics mode)
@@ -619,12 +667,14 @@ Model topology used in these tests:
 ### Training Speed Benchmark (Physics Mode vs snnTorch vs PyTorch)
 
 Measured on this machine:
+
 - macOS arm64 (Darwin 25.2.0)
 - Apple M3
 - 16GB RAM
 - CPU-only benchmark (`--device cpu` for Python runs)
 
 Matched benchmark spec:
+
 - Dataset: MNIST downsampled to 6x6
 - Architecture: `36 -> 12 -> 10`
 - Timesteps: `25`
@@ -667,21 +717,25 @@ Commands used:
 
 Results (wall-clock `real` time):
 
-| Stack | Time | Best test accuracy | Relative to gilgamesh |
-|-------|------|--------------------|-----------------------|
-| gilgamesh (physics mode) | **4.87s** | 86.99% | 1.00x |
-| snnTorch SNN (`baseline`) | 76.74s | 90.56% | **15.76x slower** |
-| PyTorch ANN (`ann`) | 40.83s | 88.51% | **8.38x slower** |
+
+| Stack                     | Time      | Best test accuracy | Relative to gilgamesh |
+| ------------------------- | --------- | ------------------ | --------------------- |
+| gilgamesh (physics mode)  | **4.87s** | 86.99%             | 1.00x                 |
+| snnTorch SNN (`baseline`) | 76.74s    | 90.56%             | **15.76x slower**     |
+| PyTorch ANN (`ann`)       | 40.83s    | 88.51%             | **8.38x slower**      |
+
 
 For this workload, gilgamesh is absolutely goated on training speed.
 
 Why the gap is large on this benchmark:
+
 - gilgamesh uses a fixed, compiled Rust training path with custom forward/backward and optimizer updates.
 - No dynamic autograd graph construction overhead.
 - Tiny model + many timesteps amplifies per-op framework overhead in Python stacks.
 - gilgamesh batches preloaded contiguous arrays directly.
 
 Raw logs for this run:
+
 - `artifacts/training_bench_20260211/gilgamesh_physics.log`
 - `artifacts/training_bench_20260211/snntorch_baseline.log`
 - `artifacts/training_bench_20260211/pytorch_ann.log`
@@ -705,6 +759,7 @@ python3 tools/synapse_search.py --output results.json
 ```
 
 Options:
+
 - `--targets`: Target accuracies to search for (default: 95 90 85 80 70)
 - `--probe-epochs`: Epochs for Phase 1 landscape probing (default: 5)
 - `--full-epochs`: Epochs for Phase 2/3 full training (default: 15)
@@ -713,11 +768,13 @@ Options:
 - `--output`: Output JSON file for results
 
 The search has three phases:
+
 1. **Landscape scan**: Probe each (w,h) dimension at small and large hidden sizes
 2. **Binary search**: For promising dimensions, binary search on hidden size
 3. **Refinement**: Multi-seed testing and nearby dimension exploration
 
 **Synapse formula (weights only, no biases):**
+
 ```
 Total = hidden × (input + 10)
       = hidden × (width × height + 10)
@@ -728,6 +785,7 @@ Example: 24-6-10 architecture (3x8 image) = 6 × (24 + 10) = **204 synapses**
 ### Checkpoint Auto-Detection
 
 Both `inspect` and `spice` commands automatically find and use the most recently modified checkpoint file when `--checkpoint` is not specified. It searches:
+
 - Current directory (`*.json`)
 - `./checkpoints/*.json`
 - `./models/*.json`
@@ -767,6 +825,8 @@ comparison/
 └── results/                # Output directory (generated)
 ```
 
-## License
+Copyright (c) 2026 Eoghan Collins. All rights reserved.
 
-MIT
+No permission is granted to use, copy, modify, distribute, or sublicense this software without explicit prior written permission from the copyright holder.
+
+&nbsp;

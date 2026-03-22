@@ -1,0 +1,17 @@
+{
+  "session_id": "ext_20260318_151645_c7e51daf",
+  "status": "open",
+  "runner": "assistant",
+  "created_at": "2026-03-18T15:16:45+00:00",
+  "expires_at": "2026-03-19T15:16:45+00:00",
+  "ttl_hours": 24,
+  "token": "0c20b6b7bbe02807926598f90ed2411f",
+  "attest": "I validated this review was completed without awareness of overall score and is unbiased.",
+  "packet_path": "/Users/eoghancollins/Tarskii/gilgamesh/.desloppify/review_packets/holistic_packet_20260318_151645.json",
+  "blind_packet_path": "/Users/eoghancollins/Tarskii/gilgamesh/.desloppify/review_packet_blind.json",
+  "packet_sha256": "89f541152535ae5b0af32248d44e2178459a84803c37f9c464035a7675298c8a",
+  "template_path": "/Users/eoghancollins/Tarskii/gilgamesh/.desloppify/external_review_sessions/ext_20260318_151645_c7e51daf/review_result.template.json",
+  "launch_prompt_path": "/Users/eoghancollins/Tarskii/gilgamesh/.desloppify/external_review_sessions/ext_20260318_151645_c7e51daf/assistant_launch_prompt.md",
+  "instructions_path": "/Users/eoghancollins/Tarskii/gilgamesh/.desloppify/external_review_sessions/ext_20260318_151645_c7e51daf/reviewer_instructions.md",
+  "expected_output_path": "/Users/eoghancollins/Tarskii/gilgamesh/.desloppify/external_review_sessions/ext_20260318_151645_c7e51daf/review_result.json"
+}
