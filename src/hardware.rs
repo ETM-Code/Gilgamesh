@@ -55,21 +55,28 @@ pub struct HardwareConfig {
 impl Default for HardwareConfig {
     fn default() -> Self {
         Self {
-            // Membrane: τ = 3.96ms
-            c_mem: 33e-9,  // 33 nF
-            r_leak: 120e3, // 120 kΩ
+            // Membrane: τ = R*C = 120kΩ × 10nF = 1.2ms
+            // Updated 2026-03-24 to match final InputSystem PCB schematic
+            // (was 33nF / 3.96ms in earlier SPICE model)
+            c_mem: 10e-9,  // 10 nF (schematic: C_mem*)
+            r_leak: 120e3, // 120 kΩ (schematic: R_leak*)
 
             // Voltages
             vdd: 5.0,
             vref: 0.0,
-            v_threshold: 0.8, // Fixed threshold above Vref
+            // Threshold from resistor divider: R_top=820kΩ to VDD, R_bottom=150kΩ to Vref
+            // θ₀ = (5.0/820k + 2.5/150k) / (1/820k + 1/150k) - 2.5 ≈ 0.387V
+            // (was 0.8V estimate)
+            v_threshold: 0.387,
 
             // Timing
             dt: 1e-6, // 1 µs
 
-            // Current limits (from assistant recommendations)
-            i_syn_max: 3e-6,    // 3 µA per synapse max
-            i_total_max: 50e-6, // 50 µA total per neuron max
+            // Current limits from R_set=174kΩ synapse mirrors
+            // At midscale DAC (2.5V): I = (2.5-0.65)/174k = 10.6µA
+            // At full scale (5.0V): I = (5.0-0.65)/174k = 25.0µA
+            i_syn_max: 25e-6,   // 25 µA per synapse at full-scale DAC
+            i_total_max: 225e-6, // 9 synapses × 25µA max
         }
     }
 }
@@ -243,11 +250,13 @@ mod tests {
     fn test_default_config() {
         let cfg = HardwareConfig::default();
 
-        // τ = R * C = 120kΩ * 33nF = 3.96ms
-        assert!((cfg.tau_m() - 3.96e-3).abs() < 1e-6);
+        // τ = R * C = 120kΩ * 10nF = 1.2ms (updated from 33nF/3.96ms)
+        assert!((cfg.tau_m() - 1.2e-3).abs() < 1e-6,
+            "τ_m should be 1.2ms, got {:.4}ms", cfg.tau_m() * 1e3);
 
-        // I_threshold = V_th / R = 0.8V / 120kΩ ≈ 6.67µA
-        assert!((cfg.i_threshold() - 6.67e-6).abs() < 0.1e-6);
+        // I_threshold = V_th / R = 0.387V / 120kΩ ≈ 3.23µA
+        assert!((cfg.i_threshold() - 3.23e-6).abs() < 0.1e-6,
+            "I_threshold should be ~3.23µA, got {:.2}µA", cfg.i_threshold() * 1e6);
     }
 
     #[test]
@@ -256,16 +265,19 @@ mod tests {
         let gain = cfg.compute_current_gain();
 
         // With gain applied, reaching threshold in τ/4 = 0.3ms
-        // I = C * V_th / t = 10nF * 0.8V / 0.3ms ≈ 26.7µA
-        assert!((gain - 26.7e-6).abs() < 1e-6);
+        // I = C * V_th / t = 10nF * 0.387V / 0.3ms ≈ 12.9µA
+        let expected = cfg.c_mem * cfg.v_threshold / (cfg.tau_m() / 4.0);
+        assert!((gain - expected).abs() < 1e-6,
+            "Current gain should be {:.1}µA, got {:.1}µA", expected * 1e6, gain * 1e6);
     }
 
     #[test]
     fn test_dv_per_step() {
         let cfg = HardwareConfig::default();
 
-        // With 1µA for 1µs into 33nF: dV = (1µA * 1µs) / 33nF ≈ 0.0303mV
+        // With 1µA for 1µs into 10nF: dV = (1µA * 1µs) / 10nF = 0.1mV
         let dv = cfg.dv_per_step(1e-6);
-        assert!((dv - 0.030303e-3).abs() < 1e-9);
+        assert!((dv - 0.1e-3).abs() < 1e-9,
+            "dV should be 0.1mV, got {:.4}mV", dv * 1e3);
     }
 }

@@ -199,9 +199,11 @@ impl Default for PhysicsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            tau_m: 0.00396,
-            tau_pulse: 1.5e-6,
-            tau_theta: 0.001,
+            // Updated 2026-03-24 to match final InputSystem PCB schematic
+            // C_mem=10nF, R_leak=120kΩ → τ_m = 1.2ms (was 3.96ms with 33nF)
+            tau_m: 0.0012,
+            tau_pulse: 1.5e-6,   // R_stretch=150kΩ × C_stretch=10pF
+            tau_theta: 0.000596, // C_thresh=4.7nF / G_theta (was 0.001)
             dt: 0.001,
             adaptation_enabled: false,
             theta_low: 1.0,
