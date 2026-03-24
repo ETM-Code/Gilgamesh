@@ -193,6 +193,17 @@ pub struct PhysicsConfig {
     pub theta_low: f32,
     /// High threshold value (after spike, 20% increase)
     pub theta_high: f32,
+    /// Spike scale: fraction of timestep the inter-layer spike pulse lasts.
+    /// Models hardware pulse stretcher duration relative to integration step.
+    /// Default 1.0 = spike lasts full timestep (original behavior).
+    /// For hardware: spike_scale = t_pulse_effective / dt.
+    /// Tarski PCB with τ_pulse=1.5µs, dt=1ms: spike_scale ≈ 0.00086.
+    #[serde(default = "default_spike_scale")]
+    pub spike_scale: f32,
+}
+
+fn default_spike_scale() -> f32 {
+    1.0 // Default: spike lasts full timestep (backward compatible)
 }
 
 impl Default for PhysicsConfig {
@@ -208,6 +219,7 @@ impl Default for PhysicsConfig {
             adaptation_enabled: false,
             theta_low: 1.0,
             theta_high: 1.2,
+            spike_scale: 1.0,
         }
     }
 }

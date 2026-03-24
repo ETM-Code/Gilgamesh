@@ -304,6 +304,7 @@ impl Checkpoint {
             fc2,
             lif2,
             spiking_input: false,
+            spike_scale: 1.0,
         })
     }
 }

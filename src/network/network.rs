@@ -23,6 +23,11 @@ pub struct Network {
     /// When true, input pixels are converted to spike trains via deterministic accumulator
     /// before being fed through fc1. Makes all connections uniform spiking synapses.
     pub spiking_input: bool,
+    /// Scale factor applied to hidden layer spikes before they enter fc2.
+    /// Models the hardware pulse duration: spike_scale = t_pulse_effective / dt.
+    /// Default 1.0 = spike lasts full timestep (original gilgamesh behavior).
+    /// For Tarski PCB with τ_pulse=1.5µs and dt=1ms: spike_scale ≈ 0.00086.
+    pub spike_scale: f32,
 }
 
 impl Network {
@@ -42,6 +47,7 @@ impl Network {
             fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new(output_size, beta).with_spike_grad(spike_grad),
             spiking_input: false,
+            spike_scale: 1.0,
         }
     }
 
@@ -62,6 +68,7 @@ impl Network {
             fc2: Linear::with_seed(hidden_size, output_size, false, seed.wrapping_add(1)),
             lif2: Leaky::new_physics(output_size, tau_m, dt).with_spike_grad(spike_grad),
             spiking_input: false,
+            spike_scale: 1.0,
         }
     }
 
@@ -86,6 +93,7 @@ impl Network {
             lif2: Leaky::new_physics_with_pulse(output_size, tau_m, dt, tau_pulse, v_peak)
                 .with_spike_grad(spike_grad),
             spiking_input: false,
+            spike_scale: 1.0,
         }
     }
 
@@ -125,6 +133,7 @@ impl Network {
             )
             .with_spike_grad(spike_grad),
             spiking_input: false,
+            spike_scale: 1.0,
         }
     }
 
@@ -225,9 +234,17 @@ impl Network {
             self.lif1.forward(&hidden_current, &state.lif1_state);
 
         // Layer 2: FC -> LIF
+        // Apply spike_scale to model hardware pulse duration.
+        // spike_scale=1.0 means spike lasts full timestep (default/original).
+        // spike_scale<1.0 means shorter pulse (e.g., 0.00086 for 1.5µs pulse in 1ms step).
+        let scaled_spikes = if (self.spike_scale - 1.0).abs() > 1e-6 {
+            &hidden_spikes * self.spike_scale
+        } else {
+            hidden_spikes.clone()
+        };
         let output_current = match quant_bits {
-            Some(bits) => self.fc2.forward_quantized(&hidden_spikes, bits),
-            None => self.fc2.forward(&hidden_spikes),
+            Some(bits) => self.fc2.forward_quantized(&scaled_spikes, bits),
+            None => self.fc2.forward(&scaled_spikes),
         };
         let (output_spikes, lif2_state, lif2_cache) =
             self.lif2.forward(&output_current, &state.lif2_state);
@@ -792,8 +809,13 @@ impl Network {
                 rng,
             );
 
-            // Layer 2: FC -> LIF
-            let mut output_current = hidden_spikes.dot(&fc2_weight);
+            // Layer 2: FC -> LIF (apply spike_scale for hardware pulse duration)
+            let effective_spikes = if (self.spike_scale - 1.0).abs() > 1e-6 {
+                &hidden_spikes * self.spike_scale
+            } else {
+                hidden_spikes.clone()
+            };
+            let mut output_current = effective_spikes.dot(&fc2_weight);
             self.fc2
                 .apply_synapse_drive_model_inplace(&mut output_current);
             if let Some(ref b) = self.fc2.bias {

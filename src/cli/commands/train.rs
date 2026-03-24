@@ -142,6 +142,17 @@ pub(crate) fn train_with_config(
     network.lif1.spike_grad = SurrogateGradient::fast_sigmoid(slope);
     network.lif2.spike_grad = SurrogateGradient::fast_sigmoid(slope);
 
+    // Apply spike_scale from physics config (models hardware pulse duration)
+    if (cfg.physics.spike_scale - 1.0).abs() > 1e-6 {
+        network.spike_scale = cfg.physics.spike_scale;
+        println!(
+            "Spike scale:    {:.6} (pulse={:.2}µs in dt={:.1}ms step)",
+            cfg.physics.spike_scale,
+            cfg.physics.spike_scale * cfg.physics.dt * 1e6,
+            cfg.physics.dt * 1e3,
+        );
+    }
+
     if cfg.hardware.enable_current_caps {
         let syn_scale = cfg.hardware.synapse_scale_from_baseline();
         let pos_gain = DEFAULT_SYNAPSE_POS_GAIN * syn_scale;
