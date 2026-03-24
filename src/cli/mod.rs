@@ -115,6 +115,14 @@ pub(crate) enum Commands {
         /// Batch size
         #[arg(long, default_value = "128")]
         batch_size: usize,
+
+        /// Enable noise injection during evaluation (matches hardware conditions)
+        #[arg(long)]
+        noise: bool,
+
+        /// Config file for noise/quantization parameters (optional, uses defaults if not set)
+        #[arg(long)]
+        config: Option<String>,
     },
 
     /// Run a quick test to verify the implementation
@@ -448,7 +456,9 @@ impl Cli {
                 data_dir,
                 num_steps,
                 batch_size,
-            } => commands::evaluate(&checkpoint, &data_dir, num_steps, batch_size),
+                noise,
+                config,
+            } => commands::evaluate(&checkpoint, &data_dir, num_steps, batch_size, noise, config.as_deref()),
             Commands::Test { quick } => commands::test_implementation(quick),
             Commands::Dashboard {
                 config,

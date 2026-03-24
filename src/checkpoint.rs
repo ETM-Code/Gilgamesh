@@ -476,4 +476,62 @@ mod tests {
         let diff: f32 = (&arr - &arr2).mapv(|x| x.abs()).sum();
         assert!(diff < 1e-6);
     }
+
+    #[test]
+    fn test_checkpoint_roundtrip_36_9_10() {
+        use ndarray::Array2;
+        use std::path::Path;
+
+        let cp_path = "models/tarski_36_9_10_emulator.json";
+        if !Path::new(cp_path).exists() {
+            eprintln!("Skipping: {} not found", cp_path);
+            return;
+        }
+
+        let cp = Checkpoint::load(cp_path).unwrap();
+        let network = cp.to_network().unwrap();
+
+        println!("fc1: {:?}, fc2: {:?}", network.fc1.weight.shape(), network.fc2.weight.shape());
+        println!("lif1 beta={:.6} threshold={} size={}", network.lif1.beta, network.lif1.threshold, network.lif1.size);
+        println!("lif1 mode: {:?}", network.lif1.mode);
+
+        // Run 25 steps with ones input
+        // Use a real MNIST-like input (sample 0 is digit 7, 6x6 normalized)
+        // Values from Python: range [-0.424, 0.912]
+        let input_vec: Vec<f32> = vec![
+            -0.424, -0.424, -0.424, -0.424, -0.424, -0.424,
+            -0.424, -0.424,  0.246,  0.912,  0.415, -0.424,
+            -0.424, -0.250,  0.744,  0.580,  0.912, -0.424,
+            -0.424, -0.424, -0.424,  0.415,  0.580, -0.424,
+            -0.424, -0.424,  0.080,  0.746,  0.246, -0.424,
+            -0.424, -0.424,  0.415,  0.580, -0.250, -0.424,
+        ];
+        let input = Array2::from_shape_vec((1, 36), input_vec).unwrap();
+        let mut state = network.init_state(1);
+        let mut total_spikes = Array2::<f32>::zeros((1, 10));
+
+        // Manually do what forward_step does, with debug prints
+        let hidden_current = network.fc1.forward(&input);
+        println!("Hidden current (fc1 output): {:?}", hidden_current.row(0));
+
+        let (hidden_spk, lif1_state, _) = network.lif1.forward(&hidden_current, &state.lif1_state);
+        println!("After lif1: mem={:?}", lif1_state.mem.row(0));
+        println!("After lif1: spk={:?}", hidden_spk.row(0));
+
+        for t in 0..25 {
+            let (spk, mem, new_state, _) = network.forward_step(&input, &state);
+            total_spikes = &total_spikes + &spk;
+            if t == 0 || t == 5 || t == 24 {
+                let h_max = new_state.lif1_state.mem.row(0).iter().cloned().reduce(f32::max).unwrap();
+                let o_max = mem.row(0).iter().cloned().reduce(f32::max).unwrap();
+                let h_spk: f32 = spk.row(0).iter().sum();
+                println!("  t={}: hidden_mem_max={:.4} output_mem_max={:.4} output_spikes={:.0}", t, h_max, o_max, h_spk);
+            }
+            state = new_state;
+        }
+
+        println!("Total output spikes: {:?}", total_spikes.row(0));
+        let any_spikes = total_spikes.iter().any(|&s| s > 0.0);
+        println!("Any spikes: {}", any_spikes);
+    }
 }

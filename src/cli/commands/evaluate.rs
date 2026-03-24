@@ -1,17 +1,13 @@
 use anyhow::{Context, Result};
 use gilgamesh::data::MnistDataset;
-use gilgamesh::training::{Trainer, TrainingConfig};
+use gilgamesh::training::{NoiseParams, Trainer, TrainingConfig};
 
 /// Find reasonable image dimensions for a given input size.
-/// Prefers square, then factors closest to square, constrained to 4-14 range.
 fn find_image_dimensions(input_size: usize) -> Result<(usize, usize)> {
-    // Try square first
     let side_length = (input_size as f64).sqrt() as usize;
     if side_length * side_length == input_size && side_length >= 4 && side_length <= 14 {
         return Ok((side_length, side_length));
     }
-
-    // Find factors closest to square, within reasonable MNIST downsampling range
     for height_factor in (4..=14).rev() {
         if input_size % height_factor == 0 {
             let width_factor = input_size / height_factor;
@@ -20,10 +16,8 @@ fn find_image_dimensions(input_size: usize) -> Result<(usize, usize)> {
             }
         }
     }
-
     anyhow::bail!(
-        "Cannot find valid image dimensions for input_size {}. \
-         Need factors in range 4-14.",
+        "Cannot find valid image dimensions for input_size {}.",
         input_size
     )
 }
@@ -33,6 +27,8 @@ pub(crate) fn evaluate(
     data_dir: &str,
     num_steps: usize,
     batch_size: usize,
+    noise: bool,
+    config_path: Option<&str>,
 ) -> Result<()> {
     use gilgamesh::checkpoint::Checkpoint;
 
@@ -54,7 +50,6 @@ pub(crate) fn evaluate(
         loaded_checkpoint.architecture.mode
     );
 
-    // Get image dimensions from checkpoint if available, otherwise infer
     let input_size = loaded_checkpoint.architecture.input_size;
     let (width, height) = match (
         loaded_checkpoint.architecture.image_width,
@@ -66,7 +61,10 @@ pub(crate) fn evaluate(
         }
         _ => {
             let dims = find_image_dimensions(input_size)?;
-            println!("Inferred dimensions from input_size: {}x{}", dims.0, dims.1);
+            println!(
+                "Inferred dimensions from input_size: {}x{}",
+                dims.0, dims.1
+            );
             dims
         }
     };
@@ -75,7 +73,6 @@ pub(crate) fn evaluate(
     let dataset = MnistDataset::load_with_dimensions(data_dir, width, height)
         .context("Failed to load MNIST dataset")?;
     println!("Loaded {} test samples", dataset.test_len());
-    println!();
 
     let config = TrainingConfig {
         lr: 0.0,
@@ -87,8 +84,43 @@ pub(crate) fn evaluate(
         bptt_steps: None,
     };
     let mut trainer = Trainer::new(network, config);
-    let accuracy = trainer.evaluate(&dataset);
 
+    // Load noise parameters from config file if provided, or use hardware defaults
+    if noise {
+        let noise_params = if let Some(cfg_path) = config_path {
+            let cfg = gilgamesh::config::Config::load(cfg_path)
+                .with_context(|| format!("Failed to load config from {}", cfg_path))?;
+            NoiseParams {
+                weight_std: cfg.noise.weight_std,
+                threshold_std: cfg.noise.threshold_std,
+                membrane_std: cfg.noise.membrane_std,
+                input_std: cfg.noise.input_std,
+            }
+        } else {
+            // Hardware-realistic defaults
+            NoiseParams {
+                weight_std: 0.05,
+                threshold_std: 0.02,
+                membrane_std: 0.01,
+                input_std: 0.1,
+            }
+        };
+
+        println!(
+            "Noise enabled: weight={:.0}%, threshold={:.0}%, membrane={:.0}%, input={:.0}%",
+            noise_params.weight_std * 100.0,
+            noise_params.threshold_std * 100.0,
+            noise_params.membrane_std * 100.0,
+            noise_params.input_std * 100.0,
+        );
+
+        trainer.noise = noise_params;
+        trainer.noise_during_eval = true;
+    }
+
+    println!();
+    let accuracy = trainer.evaluate(&dataset);
     println!("Test Accuracy: {:.2}%", accuracy);
+
     Ok(())
 }
