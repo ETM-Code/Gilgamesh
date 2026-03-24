@@ -3,6 +3,18 @@
 
 A Rust implementation of hardware-accurate spiking neural networks (SNNs). Features dual-mode operation: a simple beta-decay model (snnTorch-compatible) for fast prototyping and a physics-accurate RC membrane model for chip deployment.
 
+## ⚠️ Hardware Deployment: Critical PCB Fix Required
+
+**The Tarski InputSystem PCB requires a component change before the output layer can function.**
+
+The synapse pulse stretcher capacitor C_stretch must be changed from **10pF to ~5.8nF** (same 0402 footprint). Without this fix, the output neurons cannot fire — the spike pulse (τ_pulse=1.5µs) is too brief for the 10MΩ current mirrors to deliver enough charge to the 10nF membrane.
+
+- **With 10pF (current schematic):** output layer dead, 10% accuracy (random chance)
+- **With 5.8nF (fixed):** output layer works, 83% accuracy on 6×6 MNIST
+- **Everything else is correct:** R_set=10MΩ gives ~3µA max per synapse (matching gilgamesh), threshold divider, membrane RC, shift registers all verified
+
+See `configs/tarski_pcb.json` for the hardware-matched training configuration. Found via emulator SPICE validation — see `emulator/DEVLOG.md` for the full analysis.
+
 ## Features
 
 - **Dual-mode neurons**: Simple (snnTorch-compatible) or Physics-accurate RC dynamics
