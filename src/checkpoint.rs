@@ -195,8 +195,14 @@ impl Checkpoint {
         };
 
         // Generate quantized weights if requested
-        let quantized = quant_bits
-            .map(|bits| quantize_network_weights(&network.fc1.weight, &network.fc2.weight, bits));
+        let fixed_fc2_scale = if network.fc2.fixed_quant_scale > 0.0 {
+            Some(network.fc2.fixed_quant_scale)
+        } else {
+            None
+        };
+        let quantized = quant_bits.map(|bits| {
+            quantize_network_weights(&network.fc1.weight, &network.fc2.weight, bits, fixed_fc2_scale)
+        });
 
         Self {
             version: CHECKPOINT_VERSION,
@@ -350,24 +356,32 @@ fn vec_to_array1(vec: &[f32]) -> Result<Array1<f32>> {
 /// To reconstruct:
 ///   positive: magnitude × pos_scale
 ///   negative: -magnitude × neg_scale
-fn quantize_network_weights(fc1: &Array2<f32>, fc2: &Array2<f32>, bits: u8) -> QuantizedWeights {
-    // For 3-bit magnitude: max = 7
+fn quantize_network_weights(
+    fc1: &Array2<f32>,
+    fc2: &Array2<f32>,
+    bits: u8,
+    fixed_fc2_scale: Option<f32>,
+) -> QuantizedWeights {
     let max_magnitude = ((1i32 << bits) - 1) as f32;
 
-    /// Quantize a single layer's weights, returning (pos_scale, neg_scale, quantized_weights)
-    fn quantize_layer(weights: &Array2<f32>, max_magnitude: f32) -> (f32, f32, Vec<Vec<i8>>) {
-        let (pos_max, neg_max) = weights.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
-            (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
-        });
-        let pos_scale = if pos_max > 1e-8 {
-            pos_max / max_magnitude
-        } else {
-            1.0
+    fn quantize_layer(
+        weights: &Array2<f32>,
+        max_magnitude: f32,
+        fixed_scale: Option<f32>,
+    ) -> (f32, f32, Vec<Vec<i8>>) {
+        let pos_scale = match fixed_scale {
+            Some(s) if s > 0.0 => s,
+            _ => {
+                let pos_max = weights.iter().fold(0.0f32, |m, &w| m.max(w.max(0.0)));
+                if pos_max > 1e-8 { pos_max / max_magnitude } else { 1.0 }
+            }
         };
-        let neg_scale = if neg_max > 1e-8 {
-            neg_max / max_magnitude
-        } else {
-            1.0
+        let neg_scale = match fixed_scale {
+            Some(s) if s > 0.0 => s,
+            _ => {
+                let neg_max = weights.iter().fold(0.0f32, |m, &w| m.max((-w).max(0.0)));
+                if neg_max > 1e-8 { neg_max / max_magnitude } else { 1.0 }
+            }
         };
 
         let quantized = weights
@@ -391,8 +405,10 @@ fn quantize_network_weights(fc1: &Array2<f32>, fc2: &Array2<f32>, bits: u8) -> Q
         (pos_scale, neg_scale, quantized)
     }
 
-    let (fc1_pos_scale, fc1_neg_scale, fc1_weight) = quantize_layer(fc1, max_magnitude);
-    let (fc2_pos_scale, fc2_neg_scale, fc2_weight) = quantize_layer(fc2, max_magnitude);
+    let (fc1_pos_scale, fc1_neg_scale, fc1_weight) =
+        quantize_layer(fc1, max_magnitude, None); // fc1 always adaptive
+    let (fc2_pos_scale, fc2_neg_scale, fc2_weight) =
+        quantize_layer(fc2, max_magnitude, fixed_fc2_scale);
 
     QuantizedWeights {
         magnitude_bits: bits,
