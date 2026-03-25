@@ -1,7 +1,7 @@
 {
   "_comment": "Hardware-matched config for the Tarski InputSystem PCB.",
   "_comment2": "Use this for training networks to deploy on the physical board.",
-  "_comment3": "Component values from the final KiCad schematic (2026-03-24).",
+  "_comment3": "All values from the final KiCad schematic + emulator calibration.",
 
   "mode": "physics",
   "network": {
@@ -17,21 +17,26 @@
   "physics": {
     "enabled": true,
     "tau_m": 0.0012,
-    "tau_pulse": 0.0000015,
+    "tau_pulse": 0.00087,
     "tau_theta": 0.000596,
-    "dt": 0.001
+    "dt": 0.001,
+    "spike_scale": 0.5
   },
   "hardware": {
     "v_rail": 5.0,
     "comp_rail_drop": 0.21,
-    "diode_drop": 0.37
+    "diode_drop": 0.37,
+    "enable_current_caps": true,
+    "synapse_current_max_ua": 3.0,
+    "total_current_max_ua": 50.0
   },
   "quantization": {
     "enabled": true,
-    "bits": 2,
+    "bits": 3,
     "apply_during_training": true,
     "split_sign": true,
-    "input_bits": 12
+    "input_bits": 12,
+    "fixed_fc2_scale": 0.1349
   },
   "noise": {
     "enabled": true,
