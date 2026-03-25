@@ -29,22 +29,42 @@ pub const DEFAULT_SYNAPSE_NEG_GAIN: f32 = 1.06;
 ///
 /// This matches the checkpoint export format in checkpoint.rs and the actual hardware.
 pub fn quantize_weights(weights: &Array2<f32>, bits: u8) -> Array2<f32> {
+    quantize_weights_with_fixed_scale(weights, bits, None, None)
+}
+
+/// Quantize with optional fixed scales (for hardware-matched training).
+///
+/// When fixed_pos_scale / fixed_neg_scale are None, the scale is derived from
+/// the max weight (original adaptive behavior).
+///
+/// When set, the scale is fixed to match hardware current levels. This ensures
+/// the training optimizer learns integer weights that produce exactly the right
+/// current on the physical circuit.
+///
+/// For the Tarski PCB with spike_scale=0.5:
+///   fixed_pos_scale = fixed_neg_scale ≈ 0.1349
+///   (derived from: I_unit × duty × R_leak / (θ_hw × spike_scale))
+pub fn quantize_weights_with_fixed_scale(
+    weights: &Array2<f32>,
+    bits: u8,
+    fixed_pos_scale: Option<f32>,
+    fixed_neg_scale: Option<f32>,
+) -> Array2<f32> {
     let max_magnitude = ((1i32 << bits) - 1) as f32;
 
-    // Find max separately for positive and negative weights
-    let (max_pos, max_neg) = weights.iter().fold((0.0f32, 0.0f32), |(pos, neg), &w| {
-        (pos.max(w.max(0.0)), neg.max((-w).max(0.0)))
-    });
-
-    let pos_scale = if max_pos > 1e-8 {
-        max_pos / max_magnitude
-    } else {
-        1.0
+    let pos_scale = match fixed_pos_scale {
+        Some(s) => s,
+        None => {
+            let max_pos = weights.iter().fold(0.0f32, |m, &w| m.max(w.max(0.0)));
+            if max_pos > 1e-8 { max_pos / max_magnitude } else { 1.0 }
+        }
     };
-    let neg_scale = if max_neg > 1e-8 {
-        max_neg / max_magnitude
-    } else {
-        1.0
+    let neg_scale = match fixed_neg_scale {
+        Some(s) => s,
+        None => {
+            let max_neg = weights.iter().fold(0.0f32, |m, &w| m.max((-w).max(0.0)));
+            if max_neg > 1e-8 { max_neg / max_magnitude } else { 1.0 }
+        }
     };
 
     weights.mapv(|w| {
@@ -84,6 +104,10 @@ pub struct Linear {
     pub synapse_neg_gain: f32,
     /// Optional absolute cap on total output current per neuron (post-bias/gain), in model units.
     pub total_current_cap: Option<f32>,
+    /// Fixed quantization scale (for hardware-matched QAT).
+    /// When > 0, quantize_weights uses this as pos_scale and neg_scale
+    /// instead of deriving from max weight. Set to 0 for adaptive (default).
+    pub fixed_quant_scale: f32,
 }
 
 impl Linear {
@@ -124,6 +148,7 @@ impl Linear {
             synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
+            fixed_quant_scale: 0.0,
         }
     }
 
@@ -225,7 +250,14 @@ impl Linear {
     /// Quantizes weights to n-bit resolution before computing output.
     /// Uses straight-through estimator: quantized forward, full-precision backward.
     pub fn forward_quantized(&self, input: &Array2<f32>, bits: u8) -> Array2<f32> {
-        self.apply_bias_and_gain(input.dot(&quantize_weights(&self.weight, bits)))
+        let fixed_scale = if self.fixed_quant_scale > 0.0 {
+            Some(self.fixed_quant_scale)
+        } else {
+            None
+        };
+        self.apply_bias_and_gain(input.dot(
+            &quantize_weights_with_fixed_scale(&self.weight, bits, fixed_scale, fixed_scale)
+        ))
     }
 
     /// Forward pass with weight noise injection (for robustness training)

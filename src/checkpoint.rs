@@ -257,6 +257,7 @@ impl Checkpoint {
             synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
+            fixed_quant_scale: 0.0,
         };
 
         let fc2 = Linear {
@@ -273,6 +274,7 @@ impl Checkpoint {
             synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
+            fixed_quant_scale: 0.0,
         };
 
         // Create LIF neurons with correct mode

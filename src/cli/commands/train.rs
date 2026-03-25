@@ -142,6 +142,15 @@ pub(crate) fn train_with_config(
     network.lif1.spike_grad = SurrogateGradient::fast_sigmoid(slope);
     network.lif2.spike_grad = SurrogateGradient::fast_sigmoid(slope);
 
+    // Apply fixed fc2 quantization scale from config (hardware-matched)
+    if cfg.quantization.fixed_fc2_scale > 0.0 {
+        network.fc2.fixed_quant_scale = cfg.quantization.fixed_fc2_scale;
+        println!(
+            "Fixed fc2 scale: {:.6} (hardware-matched quantization)",
+            cfg.quantization.fixed_fc2_scale,
+        );
+    }
+
     // Apply spike_scale from physics config (models hardware pulse duration)
     if (cfg.physics.spike_scale - 1.0).abs() > 1e-6 {
         network.spike_scale = cfg.physics.spike_scale;
@@ -159,11 +168,10 @@ pub(crate) fn train_with_config(
         let neg_gain = DEFAULT_SYNAPSE_NEG_GAIN * syn_scale;
         let total_cap = cfg.hardware.total_cap_units();
 
-        network.fc1.synapse_pos_gain = pos_gain;
-        network.fc1.synapse_neg_gain = neg_gain;
+        // Only constrain fc2 (hardware synapses). fc1 is computed digitally
+        // on the laptop, so its weights aren't limited by hardware current.
         network.fc2.synapse_pos_gain = pos_gain;
         network.fc2.synapse_neg_gain = neg_gain;
-        network.fc1.total_current_cap = total_cap;
         network.fc2.total_current_cap = total_cap;
 
         let total_cap_text = total_cap

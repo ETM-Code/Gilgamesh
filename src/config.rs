@@ -388,6 +388,14 @@ pub struct QuantizationConfig {
     /// Input quantization bits (0 = no input quantization).
     /// Models DAC resolution for input pixel values.
     pub input_bits: u8,
+    /// Fixed quantization scale for fc2 weights (hardware-matched).
+    /// When > 0, overrides the adaptive scale (max_weight/max_magnitude)
+    /// with this fixed value. Ensures integer weights map to exact hardware
+    /// current levels.
+    ///
+    /// For Tarski PCB: 0.1349 (derived from I_unit × duty × R_leak / (θ_hw × spike_scale))
+    #[serde(default)]
+    pub fixed_fc2_scale: f32,
 }
 
 impl Default for QuantizationConfig {
@@ -399,6 +407,7 @@ impl Default for QuantizationConfig {
             symmetric: true,
             split_sign: false,
             input_bits: 0,
+            fixed_fc2_scale: 0.0, // 0 = adaptive (default/original behavior)
         }
     }
 }
