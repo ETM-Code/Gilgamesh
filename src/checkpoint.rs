@@ -313,6 +313,7 @@ impl Checkpoint {
             lif2,
             spiking_input: false,
             spike_scale: 1.0,
+            dac_max: f32::INFINITY,
         })
     }
 }

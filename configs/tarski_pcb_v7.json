@@ -1,0 +1,47 @@
+{
+  "_comment": "Two-phase pulse model + DAC clamp. fc2_scale stays at 0.1349 (hardware-matched).",
+  "_comment2": "The two-phase model handles charge deficit in the forward pass, not in the scale.",
+
+  "mode": "physics",
+  "network": { "input_size": 36, "hidden_size": 9, "output_size": 10, "image_size": 6 },
+  "neuron": { "threshold": 1.0, "slope": 25.0 },
+  "physics": {
+    "enabled": true,
+    "tau_m": 0.0012,
+    "tau_pulse": 0.00087,
+    "tau_theta": 0.000596,
+    "dt": 0.001,
+    "spike_scale": 0.5,
+    "dac_max": 7.76
+  },
+  "hardware": {
+    "v_rail": 5.0,
+    "comp_rail_drop": 0.21,
+    "diode_drop": 0.37,
+    "enable_current_caps": true,
+    "synapse_current_max_ua": 3.0,
+    "total_current_max_ua": 50.0
+  },
+  "quantization": {
+    "enabled": true,
+    "bits": 3,
+    "apply_during_training": true,
+    "split_sign": true,
+    "input_bits": 12,
+    "fixed_fc2_scale": 0.1349
+  },
+  "noise": {
+    "enabled": true,
+    "weight_std": 0.08,
+    "threshold_std": 0.04,
+    "membrane_std": 0.02,
+    "input_std": 0.1
+  },
+  "training": {
+    "lr": 0.002,
+    "epochs": 30,
+    "batch_size": 128,
+    "num_steps": 25,
+    "seed": 123
+  }
+}

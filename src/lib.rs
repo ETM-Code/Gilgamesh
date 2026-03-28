@@ -18,6 +18,7 @@ pub mod inspector;
 pub mod layers;
 pub mod network;
 pub mod neurons;
+pub mod hw_forward;
 pub mod spice;
 pub mod surrogate;
 pub mod tensor;

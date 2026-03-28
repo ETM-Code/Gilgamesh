@@ -28,6 +28,12 @@ pub struct Network {
     /// Default 1.0 = spike lasts full timestep (original gilgamesh behavior).
     /// For Tarski PCB with τ_pulse=1.5µs and dt=1ms: spike_scale ≈ 0.00086.
     pub spike_scale: f32,
+    /// Maximum fc1 output value representable by the DAC.
+    /// On hardware: V_DAC ranges from V_BE to V_DD. In gilgamesh's normalized
+    /// units, the max fc1 output = (V_DD - V_BE) / (θ × R_set / R_leak).
+    /// fc1 outputs are clamped to [0, dac_max] during forward pass.
+    /// Set to f32::INFINITY to disable (default).
+    pub dac_max: f32,
 }
 
 impl Network {
@@ -48,6 +54,7 @@ impl Network {
             lif2: Leaky::new(output_size, beta).with_spike_grad(spike_grad),
             spiking_input: false,
             spike_scale: 1.0,
+            dac_max: f32::INFINITY,
         }
     }
 
@@ -69,6 +76,7 @@ impl Network {
             lif2: Leaky::new_physics(output_size, tau_m, dt).with_spike_grad(spike_grad),
             spiking_input: false,
             spike_scale: 1.0,
+            dac_max: f32::INFINITY,
         }
     }
 
@@ -94,6 +102,7 @@ impl Network {
                 .with_spike_grad(spike_grad),
             spiking_input: false,
             spike_scale: 1.0,
+            dac_max: f32::INFINITY,
         }
     }
 
@@ -134,6 +143,7 @@ impl Network {
             .with_spike_grad(spike_grad),
             spiking_input: false,
             spike_scale: 1.0,
+            dac_max: f32::INFINITY,
         }
     }
 
@@ -230,24 +240,63 @@ impl Network {
             Some(bits) => self.fc1.forward_quantized(input, bits),
             None => self.fc1.forward(input),
         };
+        // Clamp to DAC-representable range: on hardware, V_DAC is V_BE to V_DD,
+        // so fc1 output must be in [0, dac_max]. Negative = no current, above max = clipped.
+        let hidden_current = if self.dac_max.is_finite() {
+            hidden_current.mapv(|v| v.clamp(0.0, self.dac_max))
+        } else {
+            hidden_current
+        };
         let (hidden_spikes, lif1_state, lif1_cache) =
             self.lif1.forward(&hidden_current, &state.lif1_state);
 
-        // Layer 2: FC -> LIF
-        // Apply spike_scale to model hardware pulse duration.
-        // spike_scale=1.0 means spike lasts full timestep (default/original).
-        // spike_scale<1.0 means shorter pulse (e.g., 0.00086 for 1.5µs pulse in 1ms step).
-        let scaled_spikes = if (self.spike_scale - 1.0).abs() > 1e-6 {
-            &hidden_spikes * self.spike_scale
-        } else {
-            hidden_spikes.clone()
-        };
+        // Layer 2: FC -> LIF with two-phase hardware pulse model.
+        //
+        // On real hardware, hidden spikes open the SPDT switch for t_on = spike_scale × dt,
+        // delivering full synapse current. Then the switch closes and current drops to zero
+        // for the remaining (1 - spike_scale) × dt. The membrane leaks during both phases.
+        //
+        // This two-phase model is more accurate than the old spike_scale multiplier approach,
+        // which spread the current evenly over the full timestep. The old approach overestimates
+        // membrane charge by ~20% because it doesn't account for the extra leak during the
+        // quiet period after the pulse ends.
         let output_current = match quant_bits {
-            Some(bits) => self.fc2.forward_quantized(&scaled_spikes, bits),
-            None => self.fc2.forward(&scaled_spikes),
+            Some(bits) => self.fc2.forward_quantized(&hidden_spikes, bits),
+            None => self.fc2.forward(&hidden_spikes),
         };
-        let (output_spikes, lif2_state, lif2_cache) =
-            self.lif2.forward(&output_current, &state.lif2_state);
+
+        let (output_spikes, lif2_state, lif2_cache) = if (self.spike_scale - 1.0).abs() > 1e-6 {
+            // Two-phase update: pulse ON, then pulse OFF
+            let dt = match &self.lif2.mode {
+                NeuronMode::Physics { dt, .. } => *dt,
+                _ => 0.001,
+            };
+            let t_on = self.spike_scale * dt;
+            let t_off = dt - t_on;
+
+            // Phase 1: full current for t_on
+            let (_, state_after_pulse, _) =
+                self.lif2.forward_with_dt(&output_current, &state.lif2_state, t_on);
+
+            // Phase 2: zero current for t_off (membrane leaks only)
+            let zero_input = Array2::zeros(output_current.raw_dim());
+            let (output_spikes, lif2_state, lif2_cache) =
+                self.lif2.forward_with_dt(&zero_input, &state_after_pulse, t_off);
+
+            // Check for spikes in phase 1 too (threshold crossing during pulse)
+            let (phase1_spikes, _, phase1_cache) =
+                self.lif2.forward_with_dt(&output_current, &state.lif2_state, t_on);
+            // Combine: spike if either phase produced one
+            let combined_spikes = output_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 })
+                + phase1_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+            let combined_spikes = combined_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+
+            // Use phase1 cache for gradient computation (when current is nonzero)
+            (combined_spikes, lif2_state, phase1_cache)
+        } else {
+            // spike_scale=1.0: original single-phase update
+            self.lif2.forward(&output_current, &state.lif2_state)
+        };
 
         let new_state = NetworkState {
             lif1_state,
@@ -801,6 +850,10 @@ impl Network {
                     row += b;
                 }
             }
+            // Clamp to DAC range: hardware can only output [0, V_max] current
+            if self.dac_max.is_finite() {
+                hidden_current.mapv_inplace(|v| v.clamp(0.0, self.dac_max));
+            }
             let (hidden_spikes, lif1_state, lif1_cache) = self.lif1.forward_noisy(
                 &hidden_current,
                 &state.lif1_state,
@@ -809,13 +862,8 @@ impl Network {
                 rng,
             );
 
-            // Layer 2: FC -> LIF (apply spike_scale for hardware pulse duration)
-            let effective_spikes = if (self.spike_scale - 1.0).abs() > 1e-6 {
-                &hidden_spikes * self.spike_scale
-            } else {
-                hidden_spikes.clone()
-            };
-            let mut output_current = effective_spikes.dot(&fc2_weight);
+            // Layer 2: FC -> LIF with two-phase hardware pulse model
+            let mut output_current = hidden_spikes.dot(&fc2_weight);
             self.fc2
                 .apply_synapse_drive_model_inplace(&mut output_current);
             if let Some(ref b) = self.fc2.bias {
@@ -823,13 +871,37 @@ impl Network {
                     row += b;
                 }
             }
-            let (output_spikes, lif2_state, lif2_cache) = self.lif2.forward_noisy(
-                &output_current,
-                &state.lif2_state,
-                threshold_noise_std,
-                membrane_noise_std,
-                rng,
-            );
+
+            let (output_spikes, lif2_state, lif2_cache) = if (self.spike_scale - 1.0).abs() > 1e-6 {
+                // Two-phase: full current for t_on, then zero for t_off
+                let dt = match &self.lif2.mode {
+                    NeuronMode::Physics { dt, .. } => *dt,
+                    _ => 0.001,
+                };
+                let t_on = self.spike_scale * dt;
+                let t_off = dt - t_on;
+
+                // Phase 1: full current for t_on
+                let (phase1_spikes, state_after_pulse, phase1_cache) =
+                    self.lif2.forward_noisy_with_dt(
+                        &output_current, &state.lif2_state,
+                        threshold_noise_std, membrane_noise_std, rng, t_on,
+                    );
+                // Phase 2: zero current for t_off
+                let zero_input = Array2::zeros(output_current.raw_dim());
+                let (phase2_spikes, lif2_state, _) =
+                    self.lif2.forward_noisy_with_dt(
+                        &zero_input, &state_after_pulse,
+                        0.0, 0.0, rng, t_off, // no noise in leak phase
+                    );
+                let combined = (&phase1_spikes + &phase2_spikes).mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+                (combined, lif2_state, phase1_cache)
+            } else {
+                self.lif2.forward_noisy(
+                    &output_current, &state.lif2_state,
+                    threshold_noise_std, membrane_noise_std, rng,
+                )
+            };
 
             spike_count += &output_spikes;
 

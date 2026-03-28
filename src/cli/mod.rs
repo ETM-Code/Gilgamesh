@@ -98,6 +98,28 @@ pub(crate) enum Commands {
         save_checkpoint: Option<String>,
     },
 
+    /// Fine-tune using hardware emulator forward pass
+    Finetune {
+        /// Pre-trained checkpoint
+        #[arg(long)]
+        checkpoint: String,
+        /// Config file
+        #[arg(long)]
+        config: String,
+        /// Data directory
+        #[arg(long, default_value = "./data")]
+        data_dir: String,
+        /// Output checkpoint path
+        #[arg(long, default_value = "models/finetuned.json")]
+        output: String,
+        /// DAC scale factor (1.16 is optimal for current PCB)
+        #[arg(long, default_value = "1.16")]
+        dac_scale: f64,
+        /// Number of fine-tuning epochs
+        #[arg(long, default_value = "3")]
+        epochs: usize,
+    },
+
     /// Evaluate a trained model
     Evaluate {
         /// Checkpoint file
@@ -450,6 +472,19 @@ impl Cli {
                         save_checkpoint,
                     )
                 }
+            }
+            Commands::Finetune {
+                checkpoint, config, data_dir, output, dac_scale, epochs,
+            } => {
+                commands::finetune::run_finetune(
+                    &std::path::PathBuf::from(checkpoint),
+                    &std::path::PathBuf::from(config),
+                    &std::path::PathBuf::from(data_dir),
+                    &std::path::PathBuf::from(output),
+                    dac_scale,
+                    epochs,
+                );
+                Ok(())
             }
             Commands::Evaluate {
                 checkpoint,

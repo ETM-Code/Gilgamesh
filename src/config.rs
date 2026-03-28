@@ -200,6 +200,13 @@ pub struct PhysicsConfig {
     /// Tarski PCB with τ_pulse=1.5µs, dt=1ms: spike_scale ≈ 0.00086.
     #[serde(default = "default_spike_scale")]
     pub spike_scale: f32,
+    /// Maximum fc1 output the DAC can represent (in gilgamesh normalized units).
+    /// On hardware: V_DAC ranges from V_BE to V_DD. The max fc1 value that maps
+    /// to V_DD is (V_DD - V_BE) / (θ_norm × R_set_input / R_leak).
+    /// For Tarski PCB: (5.0 - 0.65) / (0.387 × 174k / 120k) = 7.76.
+    /// Set to null/omit to disable clamping (default: no clamp).
+    #[serde(default)]
+    pub dac_max: Option<f32>,
 }
 
 fn default_spike_scale() -> f32 {
@@ -220,6 +227,7 @@ impl Default for PhysicsConfig {
             theta_low: 1.0,
             theta_high: 1.2,
             spike_scale: 1.0,
+            dac_max: None,
         }
     }
 }

@@ -162,6 +162,12 @@ pub(crate) fn train_with_config(
         );
     }
 
+    // Apply DAC clamp (constrains fc1 output to hardware-representable range)
+    if let Some(dac_max) = cfg.physics.dac_max {
+        network.dac_max = dac_max;
+        println!("DAC clamp:      fc1 output clamped to [0, {:.2}]", dac_max);
+    }
+
     if cfg.hardware.enable_current_caps {
         let syn_scale = cfg.hardware.synapse_scale_from_baseline();
         let pos_gain = DEFAULT_SYNAPSE_POS_GAIN * syn_scale;

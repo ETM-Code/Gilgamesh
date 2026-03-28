@@ -239,6 +239,59 @@ impl Leaky {
         (spikes, LeakyState::new(mem_reset), cache)
     }
 
+    /// Forward pass with noise injection AND variable timestep.
+    /// Used for the two-phase hardware pulse model during training.
+    pub fn forward_noisy_with_dt<R: Rng>(
+        &self,
+        input: &Array2<f32>,
+        state: &LeakyState,
+        threshold_noise_std: f32,
+        membrane_noise_std: f32,
+        rng: &mut R,
+        dt: f32,
+    ) -> (Array2<f32>, LeakyState, LeakyCache) {
+        let mut mem_new = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
+
+        if membrane_noise_std.is_finite() && membrane_noise_std > 0.0 {
+            if let Ok(normal) = Normal::new(0.0, membrane_noise_std as f64) {
+                for v in mem_new.iter_mut() {
+                    *v += normal.sample(rng) as f32;
+                }
+            }
+        }
+
+        let mem_shifted_for_grad = &mem_new - self.threshold;
+
+        let mut effective_threshold = if threshold_noise_std.is_finite()
+            && threshold_noise_std > 0.0
+            && self.threshold.is_finite()
+            && self.threshold != 0.0
+        {
+            let std = (self.threshold * threshold_noise_std).abs();
+            if let Ok(normal) = Normal::new(0.0, std as f64) {
+                self.threshold + normal.sample(rng) as f32
+            } else {
+                self.threshold
+            }
+        } else {
+            self.threshold
+        };
+        if self.threshold > 0.0 {
+            effective_threshold = effective_threshold.max(1e-6);
+        }
+
+        let mem_shifted = &mem_new - effective_threshold;
+        let spikes = Self::generate_spikes(&mem_shifted);
+        let mem_reset = self.apply_reset(&mem_new, &spikes, effective_threshold);
+
+        let cache = LeakyCache {
+            mem_shifted: mem_shifted_for_grad,
+            spikes: spikes.clone(),
+        };
+
+        (spikes, LeakyState::new(mem_reset), cache)
+    }
+
     /// Forward pass with pulse stretching (physics mode)
     pub fn forward_with_pulse(
         &self,

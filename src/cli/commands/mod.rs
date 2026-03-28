@@ -7,6 +7,7 @@ pub(crate) mod raster;
 pub(crate) mod spice;
 pub(crate) mod spice_test_harness;
 pub(crate) mod test;
+pub(crate) mod finetune;
 pub(crate) mod train;
 pub(crate) mod web;
 

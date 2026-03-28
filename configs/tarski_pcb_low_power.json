@@ -1,0 +1,55 @@
+{
+  "_comment": "Low-power variant: C_mem=1nF, R_leak=1.2MΩ, R_set=100MΩ.",
+  "_comment2": "Same tau_m (1.2ms) and spike_scale. 10× less synapse current.",
+  "_comment3": "Requires retraining to match the lower current levels.",
+
+  "mode": "physics",
+  "network": {
+    "input_size": 36,
+    "hidden_size": 9,
+    "output_size": 10,
+    "image_size": 6
+  },
+  "neuron": {
+    "threshold": 1.0,
+    "slope": 25.0
+  },
+  "physics": {
+    "enabled": true,
+    "tau_m": 0.0012,
+    "tau_pulse": 0.00087,
+    "tau_theta": 0.000596,
+    "dt": 0.001,
+    "spike_scale": 0.5
+  },
+  "hardware": {
+    "v_rail": 5.0,
+    "comp_rail_drop": 0.21,
+    "diode_drop": 0.37,
+    "enable_current_caps": true,
+    "synapse_current_max_ua": 0.304,
+    "total_current_max_ua": 5.0
+  },
+  "quantization": {
+    "enabled": true,
+    "bits": 3,
+    "apply_during_training": true,
+    "split_sign": true,
+    "input_bits": 12,
+    "fixed_fc2_scale": 0.01349
+  },
+  "noise": {
+    "enabled": true,
+    "weight_std": 0.05,
+    "threshold_std": 0.02,
+    "membrane_std": 0.01,
+    "input_std": 0.1
+  },
+  "training": {
+    "lr": 0.001,
+    "epochs": 20,
+    "batch_size": 128,
+    "num_steps": 25,
+    "seed": 42
+  }
+}
