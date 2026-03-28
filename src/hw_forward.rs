@@ -14,6 +14,7 @@ const R_LEAK: f64 = 120e3;
 const TAU_M: f64 = C_MEM * R_LEAK; // 1.2ms
 const V_DD: f64 = 5.0;
 const V_REF: f64 = 2.5;
+const DAC_VREF: f64 = 2.048; // MCP4728 internal reference (factory default)
 const V_BE: f64 = 0.65;
 const R_SET_INPUT: f64 = 174e3;
 const R_SET_SYNAPSE: f64 = 10e6;
@@ -94,7 +95,7 @@ pub fn hw_forward_batch(
         let mut h_current = [0.0f64; 9];
         for i in 0..9 {
             let g = fc1_outputs[[b, i]] as f64;
-            let v_dac = (g * scale + V_BE).clamp(0.0, V_DD);
+            let v_dac = (g * scale + V_BE).clamp(0.0, DAC_VREF);
             h_current[i] = if v_dac > V_BE {
                 (v_dac - V_BE) / R_SET_INPUT
             } else {
