@@ -29,7 +29,7 @@ pub const DEFAULT_SYNAPSE_NEG_GAIN: f32 = 1.06;
 ///
 /// This matches the checkpoint export format in checkpoint.rs and the actual hardware.
 pub fn quantize_weights(weights: &Array2<f32>, bits: u8) -> Array2<f32> {
-    quantize_weights_with_fixed_scale(weights, bits, None, None)
+    quantize_weights_with_fixed_scale_and_defect(weights, bits, None, None, false)
 }
 
 /// Quantize with optional fixed scales (for hardware-matched training).
@@ -50,20 +50,48 @@ pub fn quantize_weights_with_fixed_scale(
     fixed_pos_scale: Option<f32>,
     fixed_neg_scale: Option<f32>,
 ) -> Array2<f32> {
+    quantize_weights_with_fixed_scale_and_defect(
+        weights,
+        bits,
+        fixed_pos_scale,
+        fixed_neg_scale,
+        false,
+    )
+}
+
+/// Quantize with optional fixed scales plus optional inhibitory-LSB defect model.
+///
+/// When `disable_inhibitory_lsb` is true, negative magnitudes are restricted to
+/// even values only (0,2,4,...) to model a broken inhibitory 1x branch.
+pub fn quantize_weights_with_fixed_scale_and_defect(
+    weights: &Array2<f32>,
+    bits: u8,
+    fixed_pos_scale: Option<f32>,
+    fixed_neg_scale: Option<f32>,
+    disable_inhibitory_lsb: bool,
+) -> Array2<f32> {
     let max_magnitude = ((1i32 << bits) - 1) as f32;
 
     let pos_scale = match fixed_pos_scale {
         Some(s) => s,
         None => {
             let max_pos = weights.iter().fold(0.0f32, |m, &w| m.max(w.max(0.0)));
-            if max_pos > 1e-8 { max_pos / max_magnitude } else { 1.0 }
+            if max_pos > 1e-8 {
+                max_pos / max_magnitude
+            } else {
+                1.0
+            }
         }
     };
     let neg_scale = match fixed_neg_scale {
         Some(s) => s,
         None => {
             let max_neg = weights.iter().fold(0.0f32, |m, &w| m.max((-w).max(0.0)));
-            if max_neg > 1e-8 { max_neg / max_magnitude } else { 1.0 }
+            if max_neg > 1e-8 {
+                max_neg / max_magnitude
+            } else {
+                1.0
+            }
         }
     };
 
@@ -72,8 +100,11 @@ pub fn quantize_weights_with_fixed_scale(
             let q = (w / pos_scale).round().clamp(0.0, max_magnitude);
             q * pos_scale
         } else {
-            let q = ((-w) / neg_scale).round().clamp(0.0, max_magnitude);
-            -(q * neg_scale)
+            let mut q = ((-w) / neg_scale).round().clamp(0.0, max_magnitude) as i32;
+            if disable_inhibitory_lsb {
+                q &= !1; // Force odd magnitudes off: 1x inhibitory transistor is broken.
+            }
+            -((q as f32) * neg_scale)
         }
     })
 }
@@ -108,6 +139,9 @@ pub struct Linear {
     /// When > 0, quantize_weights uses this as pos_scale and neg_scale
     /// instead of deriving from max weight. Set to 0 for adaptive (default).
     pub fixed_quant_scale: f32,
+    /// Hardware defect model: disable inhibitory magnitude LSB (1x branch).
+    /// When true, negative quantized magnitudes are forced to even values.
+    pub disable_inhibitory_lsb: bool,
 }
 
 impl Linear {
@@ -149,6 +183,7 @@ impl Linear {
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
             fixed_quant_scale: 0.0,
+            disable_inhibitory_lsb: false,
         }
     }
 
@@ -196,6 +231,28 @@ impl Linear {
     pub fn with_total_current_cap(mut self, cap: Option<f32>) -> Self {
         self.total_current_cap = cap.filter(|v| *v > 0.0);
         self
+    }
+
+    /// Enable/disable broken inhibitory 1x branch modeling during quantization.
+    pub fn with_broken_inhibitory_lsb(mut self, broken: bool) -> Self {
+        self.disable_inhibitory_lsb = broken;
+        self
+    }
+
+    /// Quantized weight matrix using this layer's quantization settings.
+    pub fn quantized_weight_matrix(&self, bits: u8) -> Array2<f32> {
+        let fixed_scale = if self.fixed_quant_scale > 0.0 {
+            Some(self.fixed_quant_scale)
+        } else {
+            None
+        };
+        quantize_weights_with_fixed_scale_and_defect(
+            &self.weight,
+            bits,
+            fixed_scale,
+            fixed_scale,
+            self.disable_inhibitory_lsb,
+        )
     }
 
     /// Gain to apply for a single synaptic branch weight sign.
@@ -250,14 +307,7 @@ impl Linear {
     /// Quantizes weights to n-bit resolution before computing output.
     /// Uses straight-through estimator: quantized forward, full-precision backward.
     pub fn forward_quantized(&self, input: &Array2<f32>, bits: u8) -> Array2<f32> {
-        let fixed_scale = if self.fixed_quant_scale > 0.0 {
-            Some(self.fixed_quant_scale)
-        } else {
-            None
-        };
-        self.apply_bias_and_gain(input.dot(
-            &quantize_weights_with_fixed_scale(&self.weight, bits, fixed_scale, fixed_scale)
-        ))
+        self.apply_bias_and_gain(input.dot(&self.quantized_weight_matrix(bits)))
     }
 
     /// Forward pass with weight noise injection (for robustness training)
@@ -476,6 +526,20 @@ mod tests {
                 quant
             );
         }
+    }
+
+    #[test]
+    fn test_quantize_weights_broken_inhibitory_lsb() {
+        let weights = array![[-0.10, -0.20, -0.30, -0.70, 0.35]];
+        let quantized =
+            quantize_weights_with_fixed_scale_and_defect(&weights, 3, Some(0.10), Some(0.10), true);
+
+        // Negative magnitudes should be even-only: {0,2,4,6} for 3-bit.
+        assert!((quantized[[0, 0]] - 0.0).abs() < 1e-6); // 1 -> 0
+        assert!((quantized[[0, 1]] + 0.2).abs() < 1e-6); // 2 -> 2
+        assert!((quantized[[0, 2]] + 0.2).abs() < 1e-6); // 3 -> 2
+        assert!((quantized[[0, 3]] + 0.6).abs() < 1e-6); // 7 -> 6
+        assert!((quantized[[0, 4]] - 0.4).abs() < 1e-6); // positive path unchanged
     }
 
     #[test]

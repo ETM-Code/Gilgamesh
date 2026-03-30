@@ -61,10 +61,7 @@ pub(crate) fn evaluate(
         }
         _ => {
             let dims = find_image_dimensions(input_size)?;
-            println!(
-                "Inferred dimensions from input_size: {}x{}",
-                dims.0, dims.1
-            );
+            println!("Inferred dimensions from input_size: {}x{}", dims.0, dims.1);
             dims
         }
     };

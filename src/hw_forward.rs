@@ -183,5 +183,10 @@ pub fn hw_forward_single(
 ) -> Vec<f64> {
     let fc1 = Array2::from_shape_fn((1, fc1_output.len()), |(_, j)| fc1_output[j] as f32);
     let counts = hw_forward_batch(&fc1, fc2_quantized, dac_scale, num_steps);
-    counts.row(0).to_vec().into_iter().map(|v| v as f64).collect()
+    counts
+        .row(0)
+        .to_vec()
+        .into_iter()
+        .map(|v| v as f64)
+        .collect()
 }

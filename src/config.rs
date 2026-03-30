@@ -404,6 +404,11 @@ pub struct QuantizationConfig {
     /// For Tarski PCB: 0.1349 (derived from I_unit × duty × R_leak / (θ_hw × spike_scale))
     #[serde(default)]
     pub fixed_fc2_scale: f32,
+    /// Hardware defect model: inhibitory 1x branch is broken (Q4).
+    /// When true, negative quantized magnitudes are forced to even values
+    /// so the dead 1x branch is never used.
+    #[serde(default)]
+    pub broken_inhibitory_lsb: bool,
 }
 
 impl Default for QuantizationConfig {
@@ -416,6 +421,7 @@ impl Default for QuantizationConfig {
             split_sign: false,
             input_bits: 0,
             fixed_fc2_scale: 0.0, // 0 = adaptive (default/original behavior)
+            broken_inhibitory_lsb: false,
         }
     }
 }

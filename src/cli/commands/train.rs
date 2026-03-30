@@ -150,6 +150,10 @@ pub(crate) fn train_with_config(
             cfg.quantization.fixed_fc2_scale,
         );
     }
+    if cfg.quantization.broken_inhibitory_lsb {
+        network.fc2.disable_inhibitory_lsb = true;
+        println!("HW defect:      inhibitory 1x branch disabled (negative magnitudes even-only)");
+    }
 
     // Apply spike_scale from physics config (models hardware pulse duration)
     if (cfg.physics.spike_scale - 1.0).abs() > 1e-6 {

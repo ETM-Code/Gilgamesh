@@ -75,7 +75,7 @@ impl Default for HardwareConfig {
             // Current limits from R_set=174kΩ synapse mirrors
             // At midscale DAC (2.5V): I = (2.5-0.65)/174k = 10.6µA
             // At full scale (5.0V): I = (5.0-0.65)/174k = 25.0µA
-            i_syn_max: 25e-6,   // 25 µA per synapse at full-scale DAC
+            i_syn_max: 25e-6,    // 25 µA per synapse at full-scale DAC
             i_total_max: 225e-6, // 9 synapses × 25µA max
         }
     }
@@ -251,12 +251,18 @@ mod tests {
         let cfg = HardwareConfig::default();
 
         // τ = R * C = 120kΩ * 10nF = 1.2ms (updated from 33nF/3.96ms)
-        assert!((cfg.tau_m() - 1.2e-3).abs() < 1e-6,
-            "τ_m should be 1.2ms, got {:.4}ms", cfg.tau_m() * 1e3);
+        assert!(
+            (cfg.tau_m() - 1.2e-3).abs() < 1e-6,
+            "τ_m should be 1.2ms, got {:.4}ms",
+            cfg.tau_m() * 1e3
+        );
 
         // I_threshold = V_th / R = 0.387V / 120kΩ ≈ 3.23µA
-        assert!((cfg.i_threshold() - 3.23e-6).abs() < 0.1e-6,
-            "I_threshold should be ~3.23µA, got {:.2}µA", cfg.i_threshold() * 1e6);
+        assert!(
+            (cfg.i_threshold() - 3.23e-6).abs() < 0.1e-6,
+            "I_threshold should be ~3.23µA, got {:.2}µA",
+            cfg.i_threshold() * 1e6
+        );
     }
 
     #[test]
@@ -267,8 +273,12 @@ mod tests {
         // With gain applied, reaching threshold in τ/4 = 0.3ms
         // I = C * V_th / t = 10nF * 0.387V / 0.3ms ≈ 12.9µA
         let expected = cfg.c_mem * cfg.v_threshold / (cfg.tau_m() / 4.0);
-        assert!((gain - expected).abs() < 1e-6,
-            "Current gain should be {:.1}µA, got {:.1}µA", expected * 1e6, gain * 1e6);
+        assert!(
+            (gain - expected).abs() < 1e-6,
+            "Current gain should be {:.1}µA, got {:.1}µA",
+            expected * 1e6,
+            gain * 1e6
+        );
     }
 
     #[test]
@@ -277,7 +287,10 @@ mod tests {
 
         // With 1µA for 1µs into 10nF: dV = (1µA * 1µs) / 10nF = 0.1mV
         let dv = cfg.dv_per_step(1e-6);
-        assert!((dv - 0.1e-3).abs() < 1e-9,
-            "dV should be 0.1mV, got {:.4}mV", dv * 1e3);
+        assert!(
+            (dv - 0.1e-3).abs() < 1e-9,
+            "dV should be 0.1mV, got {:.4}mV",
+            dv * 1e3
+        );
     }
 }

@@ -474,7 +474,12 @@ impl Cli {
                 }
             }
             Commands::Finetune {
-                checkpoint, config, data_dir, output, dac_scale, epochs,
+                checkpoint,
+                config,
+                data_dir,
+                output,
+                dac_scale,
+                epochs,
             } => {
                 commands::finetune::run_finetune(
                     &std::path::PathBuf::from(checkpoint),
@@ -493,7 +498,14 @@ impl Cli {
                 batch_size,
                 noise,
                 config,
-            } => commands::evaluate(&checkpoint, &data_dir, num_steps, batch_size, noise, config.as_deref()),
+            } => commands::evaluate(
+                &checkpoint,
+                &data_dir,
+                num_steps,
+                batch_size,
+                noise,
+                config.as_deref(),
+            ),
             Commands::Test { quick } => commands::test_implementation(quick),
             Commands::Dashboard {
                 config,

@@ -85,7 +85,8 @@ fn parse_input_rows(path: &PathBuf) -> Result<Vec<(f32, f32)>> {
     let file = File::open(path).with_context(|| format!("Failed to open input CSV {:?}", path))?;
     let mut rows = Vec::new();
     for (idx, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.with_context(|| format!("Failed reading line {} from {:?}", idx + 1, path))?;
+        let line =
+            line.with_context(|| format!("Failed reading line {} from {:?}", idx + 1, path))?;
         if idx == 0 && line.to_ascii_lowercase().contains("time") {
             continue;
         }
@@ -96,7 +97,10 @@ fn parse_input_rows(path: &PathBuf) -> Result<Vec<(f32, f32)>> {
         if parts.len() < 2 {
             bail!("Invalid CSV line {} in {:?}: {}", idx + 1, path, line);
         }
-        let t: f32 = parts[0].trim().parse().with_context(|| format!("Bad time at line {}", idx + 1))?;
+        let t: f32 = parts[0]
+            .trim()
+            .parse()
+            .with_context(|| format!("Bad time at line {}", idx + 1))?;
         let i: f32 = parts[1]
             .trim()
             .parse()
@@ -186,7 +190,12 @@ fn main() -> Result<()> {
         writeln!(
             out,
             "{:.9},{:.9e},{:.9e},{:.6},{:.6},{}",
-            t, cmd_i, gil_i, state.mem[[0, 0]], pulse[[0, 0]], spike
+            t,
+            cmd_i,
+            gil_i,
+            state.mem[[0, 0]],
+            pulse[[0, 0]],
+            spike
         )?;
         state = new_state;
     }

@@ -28,7 +28,8 @@
     "apply_during_training": true,
     "split_sign": true,
     "input_bits": 12,
-    "fixed_fc2_scale": 0.1349
+    "fixed_fc2_scale": 0.1349,
+    "broken_inhibitory_lsb": true
   },
   "noise": {
     "enabled": true,

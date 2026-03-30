@@ -276,16 +276,19 @@ impl Network {
 
             // Phase 1: full current for t_on
             let (_, state_after_pulse, _) =
-                self.lif2.forward_with_dt(&output_current, &state.lif2_state, t_on);
+                self.lif2
+                    .forward_with_dt(&output_current, &state.lif2_state, t_on);
 
             // Phase 2: zero current for t_off (membrane leaks only)
             let zero_input = Array2::zeros(output_current.raw_dim());
             let (output_spikes, lif2_state, lif2_cache) =
-                self.lif2.forward_with_dt(&zero_input, &state_after_pulse, t_off);
+                self.lif2
+                    .forward_with_dt(&zero_input, &state_after_pulse, t_off);
 
             // Check for spikes in phase 1 too (threshold crossing during pulse)
             let (phase1_spikes, _, phase1_cache) =
-                self.lif2.forward_with_dt(&output_current, &state.lif2_state, t_on);
+                self.lif2
+                    .forward_with_dt(&output_current, &state.lif2_state, t_on);
             // Combine: spike if either phase produced one
             let combined_spikes = output_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 })
                 + phase1_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
@@ -415,18 +418,18 @@ impl Network {
         split_sign: bool,
         input_quant_bits: u8,
     ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>) {
-        use crate::layers::linear::{quantize_input, quantize_weights};
+        use crate::layers::linear::quantize_input;
 
         let batch_size = input.shape()[0];
         let mut state = self.init_state(batch_size);
         let mut caches = Vec::with_capacity(num_steps);
 
         // Pre-compute quantized weights once (not per-timestep)
-        // quantize_weights uses split-sign scaling (independent pos/neg) matching hardware
+        // Layer methods apply fixed-scale settings and optional hardware defect models.
         let (fc1_weight, fc2_weight) = match quant_bits {
             Some(bits) => (
-                quantize_weights(&self.fc1.weight, bits),
-                quantize_weights(&self.fc2.weight, bits),
+                self.fc1.quantized_weight_matrix(bits),
+                self.fc2.quantized_weight_matrix(bits),
             ),
             None => (self.fc1.weight.clone(), self.fc2.weight.clone()),
         };
@@ -884,22 +887,33 @@ impl Network {
                 // Phase 1: full current for t_on
                 let (phase1_spikes, state_after_pulse, phase1_cache) =
                     self.lif2.forward_noisy_with_dt(
-                        &output_current, &state.lif2_state,
-                        threshold_noise_std, membrane_noise_std, rng, t_on,
+                        &output_current,
+                        &state.lif2_state,
+                        threshold_noise_std,
+                        membrane_noise_std,
+                        rng,
+                        t_on,
                     );
                 // Phase 2: zero current for t_off
                 let zero_input = Array2::zeros(output_current.raw_dim());
-                let (phase2_spikes, lif2_state, _) =
-                    self.lif2.forward_noisy_with_dt(
-                        &zero_input, &state_after_pulse,
-                        0.0, 0.0, rng, t_off, // no noise in leak phase
-                    );
-                let combined = (&phase1_spikes + &phase2_spikes).mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+                let (phase2_spikes, lif2_state, _) = self.lif2.forward_noisy_with_dt(
+                    &zero_input,
+                    &state_after_pulse,
+                    0.0,
+                    0.0,
+                    rng,
+                    t_off, // no noise in leak phase
+                );
+                let combined =
+                    (&phase1_spikes + &phase2_spikes).mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
                 (combined, lif2_state, phase1_cache)
             } else {
                 self.lif2.forward_noisy(
-                    &output_current, &state.lif2_state,
-                    threshold_noise_std, membrane_noise_std, rng,
+                    &output_current,
+                    &state.lif2_state,
+                    threshold_noise_std,
+                    membrane_noise_std,
+                    rng,
                 )
             };
 

@@ -544,7 +544,12 @@ impl Leaky {
             .and(&hold)
             .and(&emitted_spikes)
             .for_each(
-                |crossing, &shifted, &prev_shifted, &pending_step, &hold_remaining, &just_emitted| {
+                |crossing,
+                 &shifted,
+                 &prev_shifted,
+                 &pending_step,
+                 &hold_remaining,
+                 &just_emitted| {
                     // Trigger only on upward threshold crossings (comparator edge behavior),
                     // not continuously while membrane remains above threshold.
                     if shifted > 0.0

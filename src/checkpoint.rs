@@ -201,7 +201,13 @@ impl Checkpoint {
             None
         };
         let quantized = quant_bits.map(|bits| {
-            quantize_network_weights(&network.fc1.weight, &network.fc2.weight, bits, fixed_fc2_scale)
+            quantize_network_weights(
+                &network.fc1.weight,
+                &network.fc2.weight,
+                bits,
+                fixed_fc2_scale,
+                network.fc2.disable_inhibitory_lsb,
+            )
         });
 
         Self {
@@ -264,6 +270,7 @@ impl Checkpoint {
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
             fixed_quant_scale: 0.0,
+            disable_inhibitory_lsb: false,
         };
 
         let fc2 = Linear {
@@ -281,6 +288,7 @@ impl Checkpoint {
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
             fixed_quant_scale: 0.0,
+            disable_inhibitory_lsb: false,
         };
 
         // Create LIF neurons with correct mode
@@ -362,6 +370,7 @@ fn quantize_network_weights(
     fc2: &Array2<f32>,
     bits: u8,
     fixed_fc2_scale: Option<f32>,
+    fc2_disable_inhibitory_lsb: bool,
 ) -> QuantizedWeights {
     let max_magnitude = ((1i32 << bits) - 1) as f32;
 
@@ -369,19 +378,28 @@ fn quantize_network_weights(
         weights: &Array2<f32>,
         max_magnitude: f32,
         fixed_scale: Option<f32>,
+        disable_negative_lsb: bool,
     ) -> (f32, f32, Vec<Vec<i8>>) {
         let pos_scale = match fixed_scale {
             Some(s) if s > 0.0 => s,
             _ => {
                 let pos_max = weights.iter().fold(0.0f32, |m, &w| m.max(w.max(0.0)));
-                if pos_max > 1e-8 { pos_max / max_magnitude } else { 1.0 }
+                if pos_max > 1e-8 {
+                    pos_max / max_magnitude
+                } else {
+                    1.0
+                }
             }
         };
         let neg_scale = match fixed_scale {
             Some(s) if s > 0.0 => s,
             _ => {
                 let neg_max = weights.iter().fold(0.0f32, |m, &w| m.max((-w).max(0.0)));
-                if neg_max > 1e-8 { neg_max / max_magnitude } else { 1.0 }
+                if neg_max > 1e-8 {
+                    neg_max / max_magnitude
+                } else {
+                    1.0
+                }
             }
         };
 
@@ -395,8 +413,12 @@ fn quantize_network_weights(
                             let q = (w / pos_scale).round() as i8;
                             q.clamp(0, max_magnitude as i8)
                         } else {
-                            let q = ((-w) / neg_scale).round() as i8;
-                            -q.clamp(0, max_magnitude as i8)
+                            let mut q = ((-w) / neg_scale).round() as i8;
+                            q = q.clamp(0, max_magnitude as i8);
+                            if disable_negative_lsb {
+                                q &= !1; // model broken inhibitory 1x branch
+                            }
+                            -q
                         }
                     })
                     .collect()
@@ -407,9 +429,13 @@ fn quantize_network_weights(
     }
 
     let (fc1_pos_scale, fc1_neg_scale, fc1_weight) =
-        quantize_layer(fc1, max_magnitude, None); // fc1 always adaptive
-    let (fc2_pos_scale, fc2_neg_scale, fc2_weight) =
-        quantize_layer(fc2, max_magnitude, fixed_fc2_scale);
+        quantize_layer(fc1, max_magnitude, None, false); // fc1 always adaptive
+    let (fc2_pos_scale, fc2_neg_scale, fc2_weight) = quantize_layer(
+        fc2,
+        max_magnitude,
+        fixed_fc2_scale,
+        fc2_disable_inhibitory_lsb,
+    );
 
     QuantizedWeights {
         magnitude_bits: bits,
@@ -511,20 +537,25 @@ mod tests {
         let cp = Checkpoint::load(cp_path).unwrap();
         let network = cp.to_network().unwrap();
 
-        println!("fc1: {:?}, fc2: {:?}", network.fc1.weight.shape(), network.fc2.weight.shape());
-        println!("lif1 beta={:.6} threshold={} size={}", network.lif1.beta, network.lif1.threshold, network.lif1.size);
+        println!(
+            "fc1: {:?}, fc2: {:?}",
+            network.fc1.weight.shape(),
+            network.fc2.weight.shape()
+        );
+        println!(
+            "lif1 beta={:.6} threshold={} size={}",
+            network.lif1.beta, network.lif1.threshold, network.lif1.size
+        );
         println!("lif1 mode: {:?}", network.lif1.mode);
 
         // Run 25 steps with ones input
         // Use a real MNIST-like input (sample 0 is digit 7, 6x6 normalized)
         // Values from Python: range [-0.424, 0.912]
         let input_vec: Vec<f32> = vec![
-            -0.424, -0.424, -0.424, -0.424, -0.424, -0.424,
-            -0.424, -0.424,  0.246,  0.912,  0.415, -0.424,
-            -0.424, -0.250,  0.744,  0.580,  0.912, -0.424,
-            -0.424, -0.424, -0.424,  0.415,  0.580, -0.424,
-            -0.424, -0.424,  0.080,  0.746,  0.246, -0.424,
-            -0.424, -0.424,  0.415,  0.580, -0.250, -0.424,
+            -0.424, -0.424, -0.424, -0.424, -0.424, -0.424, -0.424, -0.424, 0.246, 0.912, 0.415,
+            -0.424, -0.424, -0.250, 0.744, 0.580, 0.912, -0.424, -0.424, -0.424, -0.424, 0.415,
+            0.580, -0.424, -0.424, -0.424, 0.080, 0.746, 0.246, -0.424, -0.424, -0.424, 0.415,
+            0.580, -0.250, -0.424,
         ];
         let input = Array2::from_shape_vec((1, 36), input_vec).unwrap();
         let mut state = network.init_state(1);
@@ -542,10 +573,20 @@ mod tests {
             let (spk, mem, new_state, _) = network.forward_step(&input, &state);
             total_spikes = &total_spikes + &spk;
             if t == 0 || t == 5 || t == 24 {
-                let h_max = new_state.lif1_state.mem.row(0).iter().cloned().reduce(f32::max).unwrap();
+                let h_max = new_state
+                    .lif1_state
+                    .mem
+                    .row(0)
+                    .iter()
+                    .cloned()
+                    .reduce(f32::max)
+                    .unwrap();
                 let o_max = mem.row(0).iter().cloned().reduce(f32::max).unwrap();
                 let h_spk: f32 = spk.row(0).iter().sum();
-                println!("  t={}: hidden_mem_max={:.4} output_mem_max={:.4} output_spikes={:.0}", t, h_max, o_max, h_spk);
+                println!(
+                    "  t={}: hidden_mem_max={:.4} output_mem_max={:.4} output_spikes={:.0}",
+                    t, h_max, o_max, h_spk
+                );
             }
             state = new_state;
         }
