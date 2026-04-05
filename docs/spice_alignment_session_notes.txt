@@ -15,7 +15,7 @@ path for hardware validation. The network architecture is:
 
     Input (36) -> FC1 -> LIF (12 hidden) -> FC2 -> LIF (10 output) -> Spike Count
 
-A previous assistant review identified 12 issues. Four were approved for fixing:
+A previous review identified 12 issues. Four were approved for fixing:
   1. Membrane equation doesn't match RC physics
   2. SPICE weight scaling is wrong
   3. v_peak default is wrong (2.6V instead of 4.44V)

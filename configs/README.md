@@ -49,7 +49,7 @@ With fixed scale: **identical spike patterns** on every output neuron.
 
 ### PCB fix required
 
-See `URGENT_CIRCUIT_SURGERY.md` at the repo root. The pulse stretcher capacitor
+See `../../docs/urgent-circuit-surgery.md`. The pulse stretcher capacitor
 C_stretch must be changed from 10pF to ~5.6nF on the 9 hidden layer neurons.
 
 ## Other Configs
