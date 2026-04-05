@@ -49,8 +49,10 @@ With fixed scale: **identical spike patterns** on every output neuron.
 
 ### PCB fix required
 
-See `../../docs/urgent-circuit-surgery.md`. The pulse stretcher capacitor
-C_stretch must be changed from 10pF to ~5.6nF on the 9 hidden layer neurons.
+See the hardware-fix notes in the companion emulator repository:
+https://github.com/ETM-Code/Tarski-Emulator
+
+The pulse stretcher capacitor C_stretch must be changed from 10pF to ~5.6nF on the 9 hidden-layer neurons for output-layer operation to match the trained model assumptions.
 
 ## Other Configs
 
