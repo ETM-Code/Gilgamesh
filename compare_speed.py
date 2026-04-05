@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare snnTorch Python vs gilgamesh Rust speed."""
 import sys
-sys.path.insert(0, '../snntorch_reference')
+sys.path.insert(0, '../references/snntorch_reference')
 
 import time
 import torch
