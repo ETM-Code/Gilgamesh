@@ -450,53 +450,15 @@ The large train-test gap with temporal encoding suggests:
 
 ## PyTorch/snntorch Comparison
 
-A Python comparison script is included to benchmark gilgamesh against standard PyTorch implementations.
+The Arduino-oriented Python comparison and quantized training workflow was moved to:
 
-### Setup
+- `../arduino-mnist/training/comparison/`
 
-```bash
-# Create virtual environment with Python 3.11
-python3.11 -m venv --system-site-packages comparison/venv
-
-# Install dependencies (if not using system packages)
-source comparison/venv/bin/activate
-pip install torch torchvision snntorch matplotlib numpy
-```
-
-### Running
+From the repository root, use:
 
 ```bash
-# Run all models (SNNs + ANNs)
-./comparison/run_comparison.sh
-
-# Or run specific models
-comparison/venv/bin/python comparison/snntorch_comparison.py --models baseline ann
-
-# Custom training
-comparison/venv/bin/python comparison/snntorch_comparison.py --epochs 20 --lr 0.0005
+./arduino-mnist/training/comparison/run_comparison.sh
 ```
-
-### Models Compared
-
-
-| Model                    | Type | Architecture                                       |
-| ------------------------ | ---- | -------------------------------------------------- |
-| `GilgameshSNN`           | SNN  | 36 → LIF(12) → LIF(10) — matches gilgamesh exactly |
-| `GilgameshSNN_Synaptic`  | SNN  | Dual-exponential synaptic dynamics                 |
-| `GilgameshSNN_Recurrent` | SNN  | Recurrent connections in hidden layer              |
-| `GilgameshSNN_3Layer`    | SNN  | 36 → LIF(12) → LIF(6) → LIF(10)                    |
-| `StandardANN`            | ANN  | 36 → ReLU(12) → 10 — non-spiking baseline          |
-| `StandardANN_3Layer`     | ANN  | 36 → ReLU(12) → ReLU(6) → 10                       |
-
-
-### Output
-
-Results saved to `comparison/results/`:
-
-- `comparison_report.md` — Accuracy comparison table
-- `training_curves.png` — Training/test accuracy plots
-- `*_weights.pt` — PyTorch state dicts
-- `*_weights.json` — JSON weights (gilgamesh-compatible format)
 
 ## Training Details
 
@@ -703,8 +665,8 @@ Commands used:
   --data-dir ./data
 
 # snnTorch baseline SNN (GilgameshSNN model in comparison script)
-/usr/bin/time -p ./comparison/.venv/bin/python ./comparison/snntorch_comparison.py \
-  --data-dir ./comparison/data \
+/usr/bin/time -p ./arduino-mnist/training/comparison/.venv/bin/python ./arduino-mnist/training/comparison/snntorch_comparison.py \
+  --data-dir ./arduino-mnist/training/comparison/data \
   --output-dir ./artifacts/training_bench_20260211/snntorch_baseline \
   --models baseline \
   --epochs 15 \
@@ -715,8 +677,8 @@ Commands used:
   --device cpu
 
 # PyTorch ANN baseline (StandardANN model in comparison script)
-/usr/bin/time -p ./comparison/.venv/bin/python ./comparison/snntorch_comparison.py \
-  --data-dir ./comparison/data \
+/usr/bin/time -p ./arduino-mnist/training/comparison/.venv/bin/python ./arduino-mnist/training/comparison/snntorch_comparison.py \
+  --data-dir ./arduino-mnist/training/comparison/data \
   --output-dir ./artifacts/training_bench_20260211/pytorch_ann \
   --models ann \
   --epochs 15 \
@@ -830,11 +792,12 @@ src/
 tools/
 └── synapse_search.py  # Binary search for minimum synapses
 
-comparison/
-├── snntorch_comparison.py  # PyTorch/snntorch training script
-├── requirements.txt        # Python dependencies
-├── run_comparison.sh       # Run script (uses venv)
-└── results/                # Output directory (generated)
+python comparison/training workflow:
+└── ../arduino-mnist/training/comparison/
+    ├── snntorch_comparison.py  # PyTorch/snntorch training script
+    ├── requirements.txt        # Python dependencies
+    ├── run_comparison.sh       # Run script
+    └── results*/               # Output directories
 ```
 
 Copyright (c) 2026 Eoghan Collins. All rights reserved.

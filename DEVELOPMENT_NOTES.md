@@ -76,11 +76,6 @@ gilgamesh/
 ├── data_6x6/                 # Downsampled 6x6 MNIST
 ├── test_images_6x6/          # Test samples (PNG + JSON)
 │
-├── comparison/               # PyTorch/snnTorch comparison system
-│   ├── snntorch_comparison.py # PyTorch training script
-│   ├── EMBEDDED_GUIDE.md     # Quantization and embedding guide
-│   └── results*/             # Various result directories
-│
 ├── tools/                    # Analysis utilities
 │   ├── synapse_search.py     # Binary search for minimum synapses
 │   └── neuron_compare.py     # Neuron comparison script
@@ -208,8 +203,8 @@ JSON-configurable parameters in `configs/`:
 | `src/config.rs` | Complete configuration system |
 | `src/spice.rs` | SPICE netlist generation for hardware validation |
 | `src/training.rs` | Training loop, Adam optimizer, loss functions |
-| `comparison/snntorch_comparison.py` | PyTorch baseline for comparison |
-| `comparison/EMBEDDED_GUIDE.md` | Quantization and embedded deployment guide |
+| `../arduino-mnist/training/comparison/snntorch_comparison.py` | PyTorch baseline for hardware-oriented comparison |
+| `../arduino-mnist/training/comparison/EMBEDDED_GUIDE.md` | Quantization and embedded deployment guide |
 
 ## Dependencies
 
@@ -217,12 +212,12 @@ JSON-configurable parameters in `configs/`:
 
 **Frontend:** React 18, Vite, TypeScript, Tailwind CSS, Recharts
 
-**Python Comparison:** torch, snntorch, matplotlib
+**Python Comparison:** moved under `arduino-mnist/training/comparison` (torch, snntorch, matplotlib)
 
 ## Development Notes
 
 - Focus on minimal parameter networks for chip deployment
 - Extensive SPICE validation for hardware accuracy
 - Supports 8-bit and 16-bit quantization for embedded systems
-- archive/arduino-mnist classification code exists (see recent commits)
+- Arduino-focused comparison/training code now lives in `arduino-mnist/training/comparison`
 - Temporal encoding has known overfitting issues (needs recurrent connections)
