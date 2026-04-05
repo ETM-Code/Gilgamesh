@@ -224,5 +224,5 @@ JSON-configurable parameters in `configs/`:
 - Focus on minimal parameter networks for chip deployment
 - Extensive SPICE validation for hardware accuracy
 - Supports 8-bit and 16-bit quantization for embedded systems
-- Arduino MNIST classification code exists (see recent commits)
+- archive/arduino-mnist classification code exists (see recent commits)
 - Temporal encoding has known overfitting issues (needs recurrent connections)
