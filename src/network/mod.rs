@@ -4,6 +4,7 @@
 //! Input -> Linear -> LIF -> Linear -> LIF -> Output
 
 mod cache;
+mod constructors;
 mod gradients;
 mod network;
 mod state;

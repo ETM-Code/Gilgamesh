@@ -1,9 +1,11 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use gilgamesh::config::Config;
 
 pub(crate) mod commands;
 pub(crate) mod utils;
+
+const DEFAULT_TRAIN_CONFIG_PATH: &str = "configs/tarski_pcb_v7.json";
 
 #[derive(Parser)]
 #[command(name = "gilgamesh")]
@@ -22,20 +24,20 @@ pub(crate) enum Commands {
         config: Option<String>,
 
         /// Learning rate
-        #[arg(long, default_value = "0.001")]
-        lr: f32,
+        #[arg(long)]
+        lr: Option<f32>,
 
         /// Number of epochs
-        #[arg(long, default_value = "15")]
-        epochs: usize,
+        #[arg(long)]
+        epochs: Option<usize>,
 
         /// Batch size
-        #[arg(long, default_value = "128")]
-        batch_size: usize,
+        #[arg(long)]
+        batch_size: Option<usize>,
 
         /// Number of timesteps
-        #[arg(long, default_value = "25")]
-        num_steps: usize,
+        #[arg(long)]
+        num_steps: Option<usize>,
 
         /// Hidden layer size (uses config default if not specified)
         #[arg(long)]
@@ -54,44 +56,36 @@ pub(crate) enum Commands {
         image_height: Option<usize>,
 
         /// Membrane decay (beta)
-        #[arg(long, default_value = "0.9")]
-        beta: f32,
+        #[arg(long)]
+        beta: Option<f32>,
 
         /// Random seed
-        #[arg(long, default_value = "42")]
-        seed: u64,
+        #[arg(long)]
+        seed: Option<u64>,
 
         /// Data directory
         #[arg(long, default_value = "./data")]
         data_dir: String,
 
         /// Surrogate gradient slope
-        #[arg(long, default_value = "25.0")]
-        slope: f32,
+        #[arg(long)]
+        slope: Option<f32>,
 
         /// Enable weight quantization (3-bit magnitude for current sources)
         #[arg(long)]
         quantize: bool,
 
         /// Quantization magnitude bits (default: 3 for hardware current sources)
-        #[arg(long, default_value = "3")]
-        quantize_bits: u8,
+        #[arg(long)]
+        quantize_bits: Option<u8>,
 
         /// Enable noise injection
         #[arg(long)]
         noise: bool,
 
         /// Weight noise std (default: 0.05)
-        #[arg(long, default_value = "0.05")]
-        weight_noise: f32,
-
-        /// Enable visualization with Rerun (requires --features visualization)
         #[arg(long)]
-        visualize: bool,
-
-        /// Save visualization to .rrd file instead of spawning viewer
-        #[arg(long)]
-        visualize_file: Option<String>,
+        weight_noise: Option<f32>,
 
         /// Save checkpoint to this path after training
         #[arg(long)]
@@ -152,40 +146,6 @@ pub(crate) enum Commands {
         /// Use small dataset for quick testing
         #[arg(long)]
         quick: bool,
-    },
-
-    /// Launch interactive training dashboard (requires --features dashboard)
-    Dashboard {
-        /// Path to JSON config file
-        #[arg(long)]
-        config: Option<String>,
-
-        /// Number of epochs
-        #[arg(long, default_value = "15")]
-        epochs: usize,
-
-        /// Data directory
-        #[arg(long, default_value = "./data")]
-        data_dir: String,
-    },
-
-    /// Launch interactive network visualizer (requires --features animation)
-    Animate {
-        /// Path to checkpoint file (auto-finds latest if not specified)
-        #[arg(long)]
-        checkpoint: Option<String>,
-
-        /// Data directory (for loading sample images)
-        #[arg(long, default_value = "./data")]
-        data_dir: String,
-
-        /// Animation speed multiplier
-        #[arg(long, default_value = "1.0")]
-        speed: f32,
-
-        /// Starting sample index
-        #[arg(long, default_value = "0")]
-        sample: usize,
     },
 
     /// Visual test runner for inspecting single samples (requires --features dashboard)
@@ -252,84 +212,6 @@ pub(crate) enum Commands {
         /// Output PNG DPI
         #[arg(long, default_value = "200")]
         dpi: usize,
-    },
-
-    /// Compare gilgamesh simulation with ngspice for hardware validation
-    Spice {
-        /// Path to checkpoint file (uses most recent if not specified)
-        #[arg(long)]
-        checkpoint: Option<String>,
-
-        /// Data directory
-        #[arg(long, default_value = "./data")]
-        data_dir: String,
-
-        /// Sample index from test set (random if not specified)
-        #[arg(long)]
-        sample: Option<usize>,
-
-        /// Output directory for netlists and results
-        #[arg(long, default_value = "./spice_output")]
-        output_dir: String,
-
-        /// Run ngspice automatically (requires ngspice in PATH)
-        #[arg(long)]
-        run_ngspice: bool,
-
-        /// Number of timesteps (used for Rust forward pass)
-        #[arg(long, default_value = "25")]
-        num_steps: usize,
-
-        /// Simulation duration in milliseconds (auto-computed from model if not set)
-        #[arg(long)]
-        duration: Option<f32>,
-
-        /// Enable analog output stage in SPICE netlist
-        #[arg(long)]
-        analog_output: bool,
-
-        /// Disable pulse stretching circuit
-        #[arg(long)]
-        no_pulse_stretch: bool,
-    },
-
-    /// Minimal SPICE harness (1-2 neurons) with Rust comparison
-    SpiceMini {
-        /// Output directory for netlist and results
-        #[arg(long, default_value = "./spice_output_mini")]
-        output_dir: String,
-
-        /// Run ngspice automatically (requires ngspice in PATH)
-        #[arg(long)]
-        run_ngspice: bool,
-
-        /// Use two neurons (pulse -> synapse -> neuron)
-        #[arg(long)]
-        two_neurons: bool,
-
-        /// Input current into neuron A (Amps)
-        #[arg(long, default_value = "0.000010")]
-        input_current: f32,
-
-        /// Synapse gain (A/V) for neuron B (optional)
-        #[arg(long)]
-        synapse_gain: Option<f32>,
-
-        /// Simulation duration (seconds)
-        #[arg(long, default_value = "0.005")]
-        duration: f32,
-
-        /// SPICE timestep (seconds)
-        #[arg(long, default_value = "2.5e-7")]
-        dt: f32,
-
-        /// Peak pulse voltage for Rust comparison (V)
-        #[arg(long, default_value = "4.44")]
-        v_peak: f32,
-
-        /// Enable adaptive injection (uses R_inject instead of disabling it)
-        #[arg(long)]
-        enable_inject: bool,
     },
 
     /// Run single-neuron test for SPICE comparison
@@ -427,51 +309,60 @@ impl Cli {
                 quantize_bits,
                 noise,
                 weight_noise,
-                visualize,
-                visualize_file,
                 save_checkpoint,
             } => {
-                if let Some(config_path) = config {
-                    commands::train_from_config(
-                        &config_path,
-                        &data_dir,
-                        visualize,
-                        visualize_file,
-                        save_checkpoint,
-                    )
-                } else {
-                    let mut cfg = Config::default();
-                    cfg.training.lr = lr;
-                    cfg.training.epochs = epochs;
-                    cfg.training.batch_size = batch_size;
-                    cfg.training.num_steps = num_steps;
-                    cfg.training.seed = seed;
-                    if let Some(h) = hidden_size {
-                        cfg.network.hidden_size = h;
-                    }
-                    // Handle image dimensions
-                    if let (Some(w), Some(h)) = (image_width, image_height) {
-                        cfg.network.image_width = Some(w);
-                        cfg.network.image_height = Some(h);
-                        cfg.network.input_size = w * h;
-                    } else if let Some(img) = image_size {
-                        cfg.network.image_size = img;
-                        cfg.network.input_size = img * img;
-                    }
-                    cfg.neuron.beta = beta;
-                    cfg.neuron.slope = slope;
-                    cfg.quantization.enabled = quantize;
-                    cfg.quantization.bits = quantize_bits;
-                    cfg.noise.enabled = noise;
-                    cfg.noise.weight_std = weight_noise;
-                    commands::train_with_config(
-                        &cfg,
-                        &data_dir,
-                        visualize,
-                        visualize_file,
-                        save_checkpoint,
-                    )
+                let config_path = config.as_deref().unwrap_or(DEFAULT_TRAIN_CONFIG_PATH);
+                let mut cfg = Config::load(config_path).with_context(|| {
+                    format!("Failed to load training config from {}", config_path)
+                })?;
+
+                // Override config with explicitly provided CLI args
+                if let Some(val) = lr {
+                    cfg.training.lr = val;
                 }
+                if let Some(val) = epochs {
+                    cfg.training.epochs = val;
+                }
+                if let Some(val) = batch_size {
+                    cfg.training.batch_size = val;
+                }
+                if let Some(val) = num_steps {
+                    cfg.training.num_steps = val;
+                }
+                if let Some(val) = seed {
+                    cfg.training.seed = val;
+                }
+                if let Some(val) = hidden_size {
+                    cfg.network.hidden_size = val;
+                }
+                if let (Some(w), Some(h)) = (image_width, image_height) {
+                    cfg.network.image_width = Some(w);
+                    cfg.network.image_height = Some(h);
+                    cfg.network.input_size = w * h;
+                } else if let Some(val) = image_size {
+                    cfg.network.image_size = val;
+                    cfg.network.input_size = val * val;
+                }
+                if let Some(val) = beta {
+                    cfg.neuron.beta = val;
+                }
+                if let Some(val) = slope {
+                    cfg.neuron.slope = val;
+                }
+                if quantize {
+                    cfg.quantization.enabled = true;
+                }
+                if let Some(val) = quantize_bits {
+                    cfg.quantization.bits = val;
+                }
+                if noise {
+                    cfg.noise.enabled = true;
+                }
+                if let Some(val) = weight_noise {
+                    cfg.noise.weight_std = val;
+                }
+
+                commands::train_with_config(&cfg, &data_dir, save_checkpoint)
             }
             Commands::Finetune {
                 checkpoint,
@@ -507,17 +398,7 @@ impl Cli {
                 config.as_deref(),
             ),
             Commands::Test { quick } => commands::test_implementation(quick),
-            Commands::Dashboard {
-                config,
-                epochs,
-                data_dir,
-            } => commands::run_dashboard(config, epochs, &data_dir),
-            Commands::Animate {
-                checkpoint,
-                data_dir,
-                speed,
-                sample,
-            } => commands::run_animation(checkpoint, &data_dir, speed, sample),
+
             Commands::Inspect {
                 checkpoint,
                 data_dir,
@@ -548,48 +429,6 @@ impl Cli {
                 background_image,
                 bg_alpha,
                 dpi,
-            ),
-            Commands::Spice {
-                checkpoint,
-                data_dir,
-                sample,
-                output_dir,
-                run_ngspice,
-                num_steps,
-                duration,
-                analog_output,
-                no_pulse_stretch,
-            } => commands::run_spice(
-                checkpoint,
-                &data_dir,
-                sample,
-                &output_dir,
-                run_ngspice,
-                num_steps,
-                duration,
-                analog_output,
-                !no_pulse_stretch,
-            ),
-            Commands::SpiceMini {
-                output_dir,
-                run_ngspice,
-                two_neurons,
-                input_current,
-                synapse_gain,
-                duration,
-                dt,
-                v_peak,
-                enable_inject,
-            } => commands::run_spice_test_harness(
-                &output_dir,
-                run_ngspice,
-                two_neurons,
-                input_current,
-                synapse_gain,
-                duration,
-                dt,
-                v_peak,
-                enable_inject,
             ),
             Commands::NeuronTest {
                 tau_m,

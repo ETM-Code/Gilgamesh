@@ -6,24 +6,15 @@ use gilgamesh::network::Network;
 use gilgamesh::surrogate::SurrogateGradient;
 use gilgamesh::training::{NoiseParams, Trainer, TrainingConfig};
 
-pub(crate) fn train_from_config(
-    config_path: &str,
-    data_dir: &str,
-    visualize: bool,
-    visualize_file: Option<String>,
-    save_checkpoint: Option<String>,
-) -> Result<()> {
-    let cfg = Config::load(config_path)
-        .with_context(|| format!("Failed to load config from {}", config_path))?;
-    println!("Loaded config from: {}", config_path);
-    train_with_config(&cfg, data_dir, visualize, visualize_file, save_checkpoint)
-}
+const SPIKE_SCALE_EPSILON: f32 = 1e-6;
+const LR_MIN_FACTOR: f32 = 0.01;
+const DEFAULT_MAX_GRAD_NORM: f32 = 1.0;
+const DEFAULT_WEIGHT_DECAY: f32 = 0.01;
+const LOG_SEPARATOR_WIDTH: usize = 60;
 
 pub(crate) fn train_with_config(
     cfg: &Config,
     data_dir: &str,
-    visualize: bool,
-    visualize_file: Option<String>,
     save_checkpoint: Option<String>,
 ) -> Result<()> {
     println!("=== gilgamesh Training ===");
@@ -156,7 +147,7 @@ pub(crate) fn train_with_config(
     }
 
     // Apply spike_scale from physics config (models hardware pulse duration)
-    if (cfg.physics.spike_scale - 1.0).abs() > 1e-6 {
+    if (cfg.physics.spike_scale - 1.0).abs() > SPIKE_SCALE_EPSILON {
         network.spike_scale = cfg.physics.spike_scale;
         println!(
             "Spike scale:    {:.6} (pulse={:.2}µs in dt={:.1}ms step)",
@@ -282,44 +273,18 @@ pub(crate) fn train_with_config(
         println!(
             "LR schedule:    cosine annealing ({:.6} -> {:.6})",
             cfg.training.lr,
-            cfg.training.lr * 0.01
+            cfg.training.lr * LR_MIN_FACTOR
         );
     }
 
-    trainer.max_grad_norm = Some(1.0);
-    println!("Grad clipping:  max_norm=1.0");
+    trainer.max_grad_norm = Some(DEFAULT_MAX_GRAD_NORM);
+    println!("Grad clipping:  max_norm={DEFAULT_MAX_GRAD_NORM}");
 
-    trainer.optimizer.set_weight_decay(0.01);
-    println!("Weight decay:   0.01 (AdamW)");
-
-    #[cfg(feature = "visualization")]
-    let mut recorder = if visualize {
-        let rec = if let Some(ref path) = visualize_file {
-            println!("Visualization:  saving to {}", path);
-            gilgamesh::TrainingRecorder::to_file("gilgamesh", path, false, 1)?
-        } else {
-            println!("Visualization:  spawning Rerun viewer");
-            gilgamesh::TrainingRecorder::new("gilgamesh", false, 1)?
-        };
-        rec.log_architecture(input_size, hidden_size, output_size, &cfg.mode)?;
-        Some(rec)
-    } else {
-        None
-    };
-
-    #[cfg(not(feature = "visualization"))]
-    let mut recorder: Option<gilgamesh::TrainingRecorder> = {
-        let _ = &visualize_file;
-        if visualize {
-            println!(
-                "Warning: visualization requested but feature not enabled. Rebuild with --features visualization"
-            );
-        }
-        None
-    };
+    trainer.optimizer.set_weight_decay(DEFAULT_WEIGHT_DECAY);
+    println!("Weight decay:   {DEFAULT_WEIGHT_DECAY:.2} (AdamW)");
 
     println!("Training...");
-    println!("{:-<60}", "");
+    println!("{:-<width$}", "", width = LOG_SEPARATOR_WIDTH);
 
     let mut best_test_acc = 0.0f32;
 
@@ -339,18 +304,9 @@ pub(crate) fn train_with_config(
             "Epoch {:3} | Loss: {:.4} | Train Acc: {:5.2}% | Test Acc: {:5.2}% | LR: {:.6}",
             epoch, train_loss, train_acc, test_acc, lr
         );
-
-        if let Some(ref mut rec) = recorder {
-            rec.set_epoch(epoch);
-            let _ = rec.log_epoch_metrics(train_loss, train_acc, test_acc, lr);
-            if epoch % 5 == 0 || epoch == 1 {
-                let _ = rec.log_weights("fc1", &trainer.network.fc1.weight);
-                let _ = rec.log_weights("fc2", &trainer.network.fc2.weight);
-            }
-        }
     }
 
-    println!("{:-<60}", "");
+    println!("{:-<width$}", "", width = LOG_SEPARATOR_WIDTH);
     println!();
     println!("=== Training Complete ===");
     println!("Best Test Accuracy: {:.2}%", best_test_acc);

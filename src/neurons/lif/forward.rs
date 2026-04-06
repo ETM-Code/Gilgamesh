@@ -7,6 +7,8 @@ use super::leaky::Leaky;
 use super::mode::{default_tau_pulse, default_tau_theta, NeuronMode, ResetMechanism};
 use super::state::LeakyState;
 
+const EFFECTIVE_THRESHOLD_MAX: f32 = 1e-6;
+
 impl Leaky {
     /// Compute membrane update based on mode (uses stored dt)
     #[inline]
@@ -224,7 +226,7 @@ impl Leaky {
             self.threshold
         };
         if self.threshold > 0.0 {
-            effective_threshold = effective_threshold.max(1e-6);
+            effective_threshold = effective_threshold.max(EFFECTIVE_THRESHOLD_MAX);
         }
 
         let mem_shifted = &mem_new - effective_threshold;

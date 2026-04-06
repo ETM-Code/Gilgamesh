@@ -11,6 +11,14 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 
 pub use crate::config::TrainingConfig;
 
+const ADAM_DEFAULT_BETA1: f32 = 0.9;
+const ADAM_DEFAULT_BETA2: f32 = 0.999;
+const ADAM_DEFAULT_EPS: f32 = 1e-8;
+const LR_SCHEDULER_MIN_FACTOR: f32 = 0.01;
+const DEFAULT_TRAINER_DT: f32 = 0.001;
+const DISABLED_ANALOG_GAIN: f32 = 0.0;
+const PERCENT_SCALE: f32 = 100.0;
+
 /// AdamW weight update: updates moments and applies weight decay + bias-corrected gradient step
 fn adam_update_weight(
     weight: &mut Array2<f32>,
@@ -77,9 +85,9 @@ impl AdamOptimizer {
     pub fn new(net: &Network, lr: f32) -> Self {
         Self {
             lr,
-            beta1: 0.9,
-            beta2: 0.999,
-            eps: 1e-8,
+            beta1: ADAM_DEFAULT_BETA1,
+            beta2: ADAM_DEFAULT_BETA2,
+            eps: ADAM_DEFAULT_EPS,
             weight_decay: 0.0,
             timestep: 0,
             first_moment_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
@@ -202,7 +210,7 @@ impl LRScheduler {
     pub fn new(initial_lr: f32, total_epochs: usize) -> Self {
         Self {
             initial_lr,
-            min_lr: initial_lr * 0.01, // Default min is 1% of initial
+            min_lr: initial_lr * LR_SCHEDULER_MIN_FACTOR, // Default min is 1% of initial
             total_epochs,
         }
     }
@@ -330,12 +338,12 @@ impl Trainer {
             noise: NoiseParams::default(),
             rng,
             adaptation_enabled: false,
-            dt: 0.001, // Default 1ms timestep
+            dt: DEFAULT_TRAINER_DT, // Default 1ms timestep
             lr_scheduler: None,
             current_epoch: 0,
             max_grad_norm: None,
-            analog_gain: 0.0,    // Disabled by default
-            input_encoder: None, // Rate-coded by default
+            analog_gain: DISABLED_ANALOG_GAIN, // Disabled by default
+            input_encoder: None,               // Rate-coded by default
             bptt_steps,
             noise_during_eval: false,
             split_sign_quant: false,
@@ -419,7 +427,7 @@ impl Trainer {
                 // Use encoding forward for temporal or custom input encoding
                 self.network
                     .forward_with_encoding(&images, encoder, self.config.num_steps)
-            } else if self.analog_gain > 0.0 {
+            } else if self.analog_gain > DISABLED_ANALOG_GAIN {
                 // Use analog forward for hybrid spike+membrane transmission
                 self.network
                     .forward_with_analog(&images, self.config.num_steps, self.analog_gain)
@@ -464,7 +472,7 @@ impl Trainer {
         }
 
         let avg_loss = total_loss / total as f32;
-        let accuracy = 100.0 * correct as f32 / total as f32;
+        let accuracy = PERCENT_SCALE * correct as f32 / total as f32;
 
         (avg_loss, accuracy)
     }
@@ -512,7 +520,7 @@ impl Trainer {
             total += batch_total;
         }
 
-        100.0 * correct as f32 / total as f32
+        PERCENT_SCALE * correct as f32 / total as f32
     }
 
     /// Full training loop
