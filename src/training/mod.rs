@@ -2,7 +2,7 @@
 //!
 //! Provides training loop, optimizer, and parallel batch processing.
 
-use crate::data::{BatchIterator, InputEncoder, MnistDataset};
+use crate::data::{BatchIterator, Dataset, InputEncoder};
 use crate::network::{Network, NetworkGradients};
 use crate::tensor::cross_entropy_loss;
 use ndarray::{Array1, Array2};
@@ -396,7 +396,7 @@ impl Trainer {
     }
 
     /// Train for one epoch with parallel batch processing
-    pub fn train_epoch(&mut self, dataset: &MnistDataset) -> (f32, f32) {
+    pub fn train_epoch<D: Dataset>(&mut self, dataset: &D) -> (f32, f32) {
         let batch_iter = BatchIterator::new(dataset, self.config.batch_size, true, true);
         let _num_batches = batch_iter.num_batches();
 
@@ -478,7 +478,7 @@ impl Trainer {
     }
 
     /// Evaluate on test set
-    pub fn evaluate(&mut self, dataset: &MnistDataset) -> f32 {
+    pub fn evaluate<D: Dataset>(&mut self, dataset: &D) -> f32 {
         let batch_iter = BatchIterator::new(dataset, self.config.batch_size, false, false);
 
         let mut correct = 0usize;
@@ -524,9 +524,9 @@ impl Trainer {
     }
 
     /// Full training loop
-    pub fn train(
+    pub fn train<D: Dataset>(
         &mut self,
-        dataset: &MnistDataset,
+        dataset: &D,
         callback: Option<&dyn Fn(&EpochResult)>,
     ) -> Vec<EpochResult> {
         let mut results = Vec::with_capacity(self.config.epochs);
@@ -559,6 +559,74 @@ impl Trainer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::Dataset;
+    use ndarray::Array2;
+
+    struct MockDataset {
+        train_images: Array2<f32>,
+        train_labels: Vec<usize>,
+        test_images: Array2<f32>,
+        test_labels: Vec<usize>,
+    }
+
+    impl MockDataset {
+        fn new(train_samples: usize, test_samples: usize, feature_dim: usize) -> Self {
+            let train_images = Array2::from_shape_fn((train_samples, feature_dim), |(r, c)| {
+                ((r + c) as f32).sin() * 0.1
+            });
+            let test_images = Array2::from_shape_fn((test_samples, feature_dim), |(r, c)| {
+                ((r + c) as f32).cos() * 0.1
+            });
+
+            let train_labels: Vec<usize> = (0..train_samples).map(|i| i % 2).collect();
+            let test_labels: Vec<usize> = (0..test_samples).map(|i| i % 2).collect();
+
+            Self {
+                train_images,
+                train_labels,
+                test_images,
+                test_labels,
+            }
+        }
+    }
+
+    impl Dataset for MockDataset {
+        fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+            let mut batch_images = Array2::zeros((indices.len(), self.feature_dim()));
+            let mut batch_labels = Vec::with_capacity(indices.len());
+
+            for (i, &idx) in indices.iter().enumerate() {
+                batch_images.row_mut(i).assign(&self.train_images.row(idx));
+                batch_labels.push(self.train_labels[idx]);
+            }
+
+            (batch_images, batch_labels)
+        }
+
+        fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+            let mut batch_images = Array2::zeros((indices.len(), self.feature_dim()));
+            let mut batch_labels = Vec::with_capacity(indices.len());
+
+            for (i, &idx) in indices.iter().enumerate() {
+                batch_images.row_mut(i).assign(&self.test_images.row(idx));
+                batch_labels.push(self.test_labels[idx]);
+            }
+
+            (batch_images, batch_labels)
+        }
+
+        fn train_len(&self) -> usize {
+            self.train_labels.len()
+        }
+
+        fn test_len(&self) -> usize {
+            self.test_labels.len()
+        }
+
+        fn feature_dim(&self) -> usize {
+            self.train_images.shape()[1]
+        }
+    }
 
     #[test]
     fn test_adam_optimizer() {
@@ -581,5 +649,34 @@ mod tests {
         assert_eq!(config.epochs, 15);
         assert_eq!(config.batch_size, 128);
         assert_eq!(config.num_steps, 25);
+    }
+
+    #[test]
+    fn test_trainer_with_generic_dataset_trait() {
+        let dataset = MockDataset::new(32, 16, 4);
+        let net = Network::new(4, 3, 2, 0.9, 42);
+        let config = TrainingConfig {
+            lr: 1e-3,
+            epochs: 1,
+            batch_size: 8,
+            num_steps: 3,
+            seed: 42,
+            num_workers: 0,
+            bptt_steps: None,
+        };
+        let mut trainer = Trainer::new(net, config);
+
+        let (loss, train_acc) = trainer.train_epoch(&dataset);
+        let test_acc = trainer.evaluate(&dataset);
+
+        assert!(loss.is_finite(), "Loss should be finite");
+        assert!(
+            (0.0..=100.0).contains(&train_acc),
+            "Train accuracy should be in [0, 100]"
+        );
+        assert!(
+            (0.0..=100.0).contains(&test_acc),
+            "Test accuracy should be in [0, 100]"
+        );
     }
 }

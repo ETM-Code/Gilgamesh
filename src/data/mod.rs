@@ -7,6 +7,20 @@ use anyhow::Result;
 use mnist::MnistBuilder;
 use ndarray::Array2;
 
+/// Generic dataset interface used by training and evaluation.
+pub trait Dataset {
+    /// Get a batch of training data.
+    fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>);
+    /// Get a batch of test data.
+    fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>);
+    /// Number of training samples.
+    fn train_len(&self) -> usize;
+    /// Number of test samples.
+    fn test_len(&self) -> usize;
+    /// Feature dimension for each input sample.
+    fn feature_dim(&self) -> usize;
+}
+
 /// MNIST dataset with configurable downsampling
 pub struct MnistDataset {
     pub train_images: Array2<f32>,
@@ -169,22 +183,39 @@ impl MnistDataset {
     }
 }
 
+impl Dataset for MnistDataset {
+    fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+        self.get_train_batch(indices)
+    }
+
+    fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+        self.get_test_batch(indices)
+    }
+
+    fn train_len(&self) -> usize {
+        self.train_len()
+    }
+
+    fn test_len(&self) -> usize {
+        self.test_len()
+    }
+
+    fn feature_dim(&self) -> usize {
+        self.feature_dim()
+    }
+}
+
 /// Batch iterator for training
-pub struct BatchIterator<'a> {
-    dataset: &'a MnistDataset,
+pub struct BatchIterator<'a, D: Dataset> {
+    dataset: &'a D,
     indices: Vec<usize>,
     batch_size: usize,
     current: usize,
     is_train: bool,
 }
 
-impl<'a> BatchIterator<'a> {
-    pub fn new(
-        dataset: &'a MnistDataset,
-        batch_size: usize,
-        shuffle: bool,
-        is_train: bool,
-    ) -> Self {
+impl<'a, D: Dataset> BatchIterator<'a, D> {
+    pub fn new(dataset: &'a D, batch_size: usize, shuffle: bool, is_train: bool) -> Self {
         let len = if is_train {
             dataset.train_len()
         } else {
@@ -212,7 +243,7 @@ impl<'a> BatchIterator<'a> {
     }
 }
 
-impl<'a> Iterator for BatchIterator<'a> {
+impl<'a, D: Dataset> Iterator for BatchIterator<'a, D> {
     type Item = (Array2<f32>, Vec<usize>);
 
     fn next(&mut self) -> Option<Self::Item> {
