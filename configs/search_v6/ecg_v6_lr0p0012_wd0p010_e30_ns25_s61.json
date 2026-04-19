@@ -1,0 +1,56 @@
+{
+  "_comment": "No-noise ECG config that previously produced the strongest peak during seed sweep.",
+  "mode": "physics",
+  "network": {
+    "input_size": 36,
+    "hidden_size": 9,
+    "output_size": 10,
+    "image_size": 6
+  },
+  "neuron": {
+    "threshold": 1.0,
+    "slope": 25.0
+  },
+  "physics": {
+    "enabled": true,
+    "tau_m": 0.0012,
+    "tau_pulse": 0.00087,
+    "tau_theta": 0.000596,
+    "dt": 0.001,
+    "spike_scale": 0.5,
+    "dac_max": 7.76
+  },
+  "hardware": {
+    "v_rail": 5.0,
+    "comp_rail_drop": 0.21,
+    "diode_drop": 0.37,
+    "enable_current_caps": true,
+    "synapse_current_max_ua": 3.0,
+    "total_current_max_ua": 50.0
+  },
+  "quantization": {
+    "enabled": true,
+    "bits": 3,
+    "apply_during_training": true,
+    "split_sign": true,
+    "input_bits": 12,
+    "fixed_fc2_scale": 0.1349,
+    "broken_inhibitory_lsb": true
+  },
+  "noise": {
+    "enabled": false,
+    "weight_std": 0.0,
+    "threshold_std": 0.0,
+    "membrane_std": 0.0,
+    "input_std": 0.0
+  },
+  "training": {
+    "lr": 0.0012,
+    "epochs": 30,
+    "batch_size": 128,
+    "num_steps": 25,
+    "seed": 61,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0
+  }
+}

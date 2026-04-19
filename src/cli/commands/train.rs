@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use gilgamesh::config::Config;
-use gilgamesh::data::MnistDataset;
+use gilgamesh::data::{AnyDataset, ArrayDataset, Dataset, MnistDataset};
 use gilgamesh::layers::linear::{DEFAULT_SYNAPSE_NEG_GAIN, DEFAULT_SYNAPSE_POS_GAIN};
 use gilgamesh::network::Network;
 use gilgamesh::surrogate::SurrogateGradient;
@@ -8,13 +8,46 @@ use gilgamesh::training::{NoiseParams, Trainer, TrainingConfig};
 
 const SPIKE_SCALE_EPSILON: f32 = 1e-6;
 const LR_MIN_FACTOR: f32 = 0.01;
-const DEFAULT_MAX_GRAD_NORM: f32 = 1.0;
-const DEFAULT_WEIGHT_DECAY: f32 = 0.01;
 const LOG_SEPARATOR_WIDTH: usize = 60;
+const ECG_CLASS_WEIGHT_MIN: f32 = 0.25;
+const ECG_CLASS_WEIGHT_MAX: f32 = 4.0;
+
+fn estimate_class_weights<D: Dataset>(dataset: &D, output_size: usize) -> Vec<f32> {
+    let mut counts = vec![0usize; output_size];
+    let n = dataset.train_len();
+    let chunk = 1024usize;
+
+    let mut start = 0usize;
+    while start < n {
+        let end = (start + chunk).min(n);
+        let idx: Vec<usize> = (start..end).collect();
+        let (_x, y) = dataset.get_train_batch(&idx);
+        for label in y {
+            if label < output_size {
+                counts[label] += 1;
+            }
+        }
+        start = end;
+    }
+
+    let total: usize = counts.iter().sum();
+    let present: usize = counts.iter().filter(|&&c| c > 0).count().max(1);
+    let mut weights = vec![1.0f32; output_size];
+
+    for i in 0..output_size {
+        if counts[i] > 0 {
+            let w = total as f32 / (present as f32 * counts[i] as f32);
+            weights[i] = w.clamp(ECG_CLASS_WEIGHT_MIN, ECG_CLASS_WEIGHT_MAX);
+        }
+    }
+    weights
+}
 
 pub(crate) fn train_with_config(
     cfg: &Config,
     data_dir: &str,
+    dataset_kind: &str,
+    class_weighting: bool,
     save_checkpoint: Option<String>,
 ) -> Result<()> {
     println!("=== gilgamesh Training ===");
@@ -49,9 +82,21 @@ pub(crate) fn train_with_config(
 
     let image_width = cfg.network.get_width();
     let image_height = cfg.network.get_height();
-    println!("Loading MNIST dataset...");
-    let dataset = MnistDataset::load_with_dimensions(data_dir, image_width, image_height)
-        .context("Failed to load MNIST dataset")?;
+    let dataset = match dataset_kind {
+        "mnist" => {
+            println!("Loading MNIST dataset...");
+            let ds = MnistDataset::load_with_dimensions(data_dir, image_width, image_height)
+                .context("Failed to load MNIST dataset")?;
+            AnyDataset::Mnist(ds)
+        }
+        "ecg" => {
+            println!("Loading ECG dataset from .npy files...");
+            let ds =
+                ArrayDataset::load_npy(data_dir).context("Failed to load ECG dataset (.npy)")?;
+            AnyDataset::Array(ds)
+        }
+        other => anyhow::bail!("Unsupported dataset kind: {other}. Use 'mnist' or 'ecg'."),
+    };
     println!(
         "Loaded {} training samples, {} test samples",
         dataset.train_len(),
@@ -132,6 +177,8 @@ pub(crate) fn train_with_config(
 
     network.lif1.spike_grad = SurrogateGradient::fast_sigmoid(slope);
     network.lif2.spike_grad = SurrogateGradient::fast_sigmoid(slope);
+    network.lif1.threshold = cfg.neuron.threshold;
+    network.lif2.threshold = cfg.neuron.threshold;
 
     // Apply fixed fc2 quantization scale from config (hardware-matched)
     if cfg.quantization.fixed_fc2_scale > 0.0 {
@@ -202,6 +249,7 @@ pub(crate) fn train_with_config(
         println!("  Output: {} (LIF, beta={})", output_size, beta);
     }
     println!("  Total parameters: {}", network.num_parameters());
+    println!("  Threshold: {}", cfg.neuron.threshold);
     println!();
 
     let train_config = TrainingConfig {
@@ -212,6 +260,8 @@ pub(crate) fn train_with_config(
         seed: cfg.training.seed,
         num_workers: cfg.training.num_workers,
         bptt_steps: cfg.training.bptt_steps,
+        weight_decay: cfg.training.weight_decay,
+        max_grad_norm: cfg.training.max_grad_norm,
     };
     let mut trainer = Trainer::new(network, train_config);
 
@@ -277,16 +327,25 @@ pub(crate) fn train_with_config(
         );
     }
 
-    trainer.max_grad_norm = Some(DEFAULT_MAX_GRAD_NORM);
-    println!("Grad clipping:  max_norm={DEFAULT_MAX_GRAD_NORM}");
+    trainer.max_grad_norm = Some(cfg.training.max_grad_norm);
+    println!("Grad clipping:  max_norm={:.3}", cfg.training.max_grad_norm);
 
-    trainer.optimizer.set_weight_decay(DEFAULT_WEIGHT_DECAY);
-    println!("Weight decay:   {DEFAULT_WEIGHT_DECAY:.2} (AdamW)");
+    trainer
+        .optimizer
+        .set_weight_decay(cfg.training.weight_decay);
+    println!("Weight decay:   {:.4} (AdamW)", cfg.training.weight_decay);
+
+    if dataset_kind == "ecg" && class_weighting {
+        let class_weights = estimate_class_weights(&dataset, output_size);
+        trainer.class_weights = Some(class_weights.clone());
+        println!("Class weights:  {:?}", class_weights);
+    }
 
     println!("Training...");
     println!("{:-<width$}", "", width = LOG_SEPARATOR_WIDTH);
 
     let mut best_test_acc = 0.0f32;
+    let mut best_network = trainer.network.clone();
 
     for epoch in 1..=cfg.training.epochs {
         let lr = trainer
@@ -298,6 +357,7 @@ pub(crate) fn train_with_config(
 
         if test_acc > best_test_acc {
             best_test_acc = test_acc;
+            best_network = trainer.network.clone();
         }
 
         println!(
@@ -322,6 +382,18 @@ pub(crate) fn train_with_config(
             final_test_accuracy: final_test_acc,
             final_loss: None,
             config_file: None,
+            num_steps: Some(cfg.training.num_steps),
+            quant_bits: if cfg.quantization.enabled {
+                Some(cfg.quantization.bits)
+            } else {
+                None
+            },
+            split_sign_quant: Some(cfg.quantization.split_sign),
+            input_quant_bits: if cfg.quantization.input_bits > 0 {
+                Some(cfg.quantization.input_bits)
+            } else {
+                None
+            },
         };
 
         // Include quantized weights for hardware deployment
@@ -332,7 +404,7 @@ pub(crate) fn train_with_config(
         let image_dims = Some((image_width, image_height));
 
         let checkpoint = Checkpoint::from_network_quantized(
-            &trainer.network,
+            &best_network,
             Some(metadata),
             quant_bits,
             image_dims,

@@ -9,15 +9,26 @@ use std::path::PathBuf;
 
 use gilgamesh::checkpoint::Checkpoint;
 use gilgamesh::config::Config;
-use gilgamesh::data::MnistDataset;
+use gilgamesh::data::{AnyDataset, ArrayDataset, Dataset, MnistDataset};
 use gilgamesh::hw_forward::hw_forward_batch;
+use gilgamesh::layers::linear::quantize_input;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FineTunePreprocess {
+    quant_bits: Option<u8>,
+    input_quant_bits: u8,
+}
+
 pub fn run_finetune(
     checkpoint_path: &PathBuf,
     config_path: &PathBuf,
     data_dir: &PathBuf,
+    dataset_kind: &str,
     output_path: &PathBuf,
     dac_scale: f64,
     epochs: usize,
+    train_limit: Option<usize>,
+    test_limit: Option<usize>,
 ) {
     let cfg = Config::load(config_path.to_str().unwrap()).expect("Failed to load config");
 
@@ -45,20 +56,49 @@ pub fn run_finetune(
     };
 
     let num_steps = cfg.training.num_steps;
+    let preprocess = FineTunePreprocess {
+        quant_bits: cp.metadata.as_ref().and_then(|m| m.quant_bits),
+        input_quant_bits: cp
+            .metadata
+            .as_ref()
+            .and_then(|m| m.input_quant_bits)
+            .unwrap_or(0),
+    };
 
     println!("Loaded: {}", checkpoint_path.display());
+    println!("Dataset: {}", dataset_kind);
     println!("DAC scale: {:.2}×", dac_scale);
     println!("Epochs: {}", epochs);
+    if let Some(bits) = preprocess.quant_bits {
+        println!("Weight quant: {}-bit", bits);
+    }
+    if preprocess.input_quant_bits > 0 {
+        println!("Input quant: {}-bit DAC", preprocess.input_quant_bits);
+    }
 
-    // Load MNIST
-    let dataset = MnistDataset::load_with_size(data_dir.to_str().unwrap(), cfg.network.image_size)
-        .expect("Failed to load MNIST");
+    let dataset = match dataset_kind {
+        "mnist" => AnyDataset::Mnist(
+            MnistDataset::load_with_dimensions(
+                data_dir.to_str().unwrap(),
+                cfg.network.get_width(),
+                cfg.network.get_height(),
+            )
+            .expect("Failed to load MNIST"),
+        ),
+        "ecg" => AnyDataset::Array(
+            ArrayDataset::load_npy(data_dir.to_str().unwrap())
+                .expect("Failed to load ECG dataset (.npy)"),
+        ),
+        other => panic!("Unsupported dataset kind: {other}. Use 'mnist' or 'ecg'."),
+    };
 
-    let n_test = dataset.test_len().min(2000);
+    let default_test = if dataset_kind == "ecg" { 5000 } else { 2000 };
+    let n_test = dataset.test_len().min(test_limit.unwrap_or(default_test));
     let test_indices: Vec<usize> = (0..n_test).collect();
     let (test_images, test_labels) = dataset.get_test_batch(&test_indices);
 
-    let n_train = dataset.train_len().min(5000); // use subset for speed
+    let default_train = if dataset_kind == "ecg" { 20000 } else { 5000 };
+    let n_train = dataset.train_len().min(train_limit.unwrap_or(default_train));
     let train_indices: Vec<usize> = (0..n_train).collect();
     let (train_images, train_labels) = dataset.get_train_batch(&train_indices);
 
@@ -70,6 +110,7 @@ pub fn run_finetune(
         &fc2_quantized,
         dac_scale,
         num_steps,
+        preprocess,
     );
     println!(
         "Initial HW accuracy: {:.1}% ({} test samples)\n",
@@ -98,6 +139,7 @@ pub fn run_finetune(
                     &fc2_quantized,
                     dac_scale,
                     num_steps,
+                    preprocess,
                 );
 
                 // Try +delta
@@ -109,6 +151,7 @@ pub fn run_finetune(
                     &fc2_quantized,
                     dac_scale,
                     num_steps,
+                    preprocess,
                 );
 
                 // Try -delta
@@ -120,6 +163,7 @@ pub fn run_finetune(
                     &fc2_quantized,
                     dac_scale,
                     num_steps,
+                    preprocess,
                 );
 
                 // Keep the best
@@ -146,6 +190,7 @@ pub fn run_finetune(
             &fc2_quantized,
             dac_scale,
             num_steps,
+            preprocess,
         );
         println!(
             "Epoch {:>2} | delta={:.4} | improvements={}/{} | HW Test: {:.1}%",
@@ -190,6 +235,27 @@ pub fn run_finetune(
     println!("Saved to: {}", output_path.display());
 }
 
+fn fc1_for_hw(
+    network: &gilgamesh::network::Network,
+    images: &Array2<f32>,
+    preprocess: FineTunePreprocess,
+) -> Array2<f32> {
+    let mut input = images.clone();
+    if preprocess.input_quant_bits > 0 {
+        input = quantize_input(&input, preprocess.input_quant_bits);
+    }
+
+    let mut fc1 = match preprocess.quant_bits {
+        Some(bits) => network.fc1.forward_quantized(&input, bits),
+        None => network.fc1.forward(&input),
+    };
+
+    if network.dac_max.is_finite() {
+        fc1.mapv_inplace(|v| v.clamp(0.0, network.dac_max));
+    }
+    fc1
+}
+
 fn hw_accuracy(
     network: &gilgamesh::network::Network,
     images: &Array2<f32>,
@@ -197,8 +263,9 @@ fn hw_accuracy(
     fc2_quantized: &[Vec<i8>],
     dac_scale: f64,
     num_steps: usize,
+    preprocess: FineTunePreprocess,
 ) -> f64 {
-    let fc1_out = network.fc1.forward(images);
+    let fc1_out = fc1_for_hw(network, images, preprocess);
     let hw_counts = hw_forward_batch(&fc1_out, fc2_quantized, dac_scale, num_steps);
 
     let mut correct = 0;

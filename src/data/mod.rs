@@ -5,7 +5,8 @@
 
 use anyhow::Result;
 use mnist::MnistBuilder;
-use ndarray::Array2;
+use ndarray::{Array1, Array2};
+use ndarray_npy::read_npy;
 
 /// Generic dataset interface used by training and evaluation.
 pub trait Dataset {
@@ -19,6 +20,124 @@ pub trait Dataset {
     fn test_len(&self) -> usize;
     /// Feature dimension for each input sample.
     fn feature_dim(&self) -> usize;
+}
+
+/// Generic in-memory dataset backed by train/test arrays and labels.
+pub struct ArrayDataset {
+    pub train_images: Array2<f32>,
+    pub train_labels: Vec<usize>,
+    pub test_images: Array2<f32>,
+    pub test_labels: Vec<usize>,
+}
+
+impl ArrayDataset {
+    /// Load dataset from .npy files:
+    /// - train_images.npy [N, features] float32
+    /// - train_labels.npy [N] integer-like
+    /// - test_images.npy [M, features] float32
+    /// - test_labels.npy [M] integer-like
+    pub fn load_npy(data_dir: &str) -> Result<Self> {
+        let train_images: Array2<f32> = read_npy(format!("{data_dir}/train_images.npy"))?;
+        let test_images: Array2<f32> = read_npy(format!("{data_dir}/test_images.npy"))?;
+
+        let train_labels_arr: Array1<i64> = read_npy(format!("{data_dir}/train_labels.npy"))?;
+        let test_labels_arr: Array1<i64> = read_npy(format!("{data_dir}/test_labels.npy"))?;
+
+        let train_labels = train_labels_arr.iter().map(|&x| x as usize).collect();
+        let test_labels = test_labels_arr.iter().map(|&x| x as usize).collect();
+
+        Ok(Self {
+            train_images,
+            train_labels,
+            test_images,
+            test_labels,
+        })
+    }
+}
+
+impl Dataset for ArrayDataset {
+    fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+        let batch_size = indices.len();
+        let features = self.feature_dim();
+        let mut batch_images = Array2::zeros((batch_size, features));
+        let mut batch_labels = Vec::with_capacity(batch_size);
+
+        for (i, &idx) in indices.iter().enumerate() {
+            batch_images.row_mut(i).assign(&self.train_images.row(idx));
+            batch_labels.push(self.train_labels[idx]);
+        }
+
+        (batch_images, batch_labels)
+    }
+
+    fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+        let batch_size = indices.len();
+        let features = self.feature_dim();
+        let mut batch_images = Array2::zeros((batch_size, features));
+        let mut batch_labels = Vec::with_capacity(batch_size);
+
+        for (i, &idx) in indices.iter().enumerate() {
+            batch_images.row_mut(i).assign(&self.test_images.row(idx));
+            batch_labels.push(self.test_labels[idx]);
+        }
+
+        (batch_images, batch_labels)
+    }
+
+    fn train_len(&self) -> usize {
+        self.train_labels.len()
+    }
+
+    fn test_len(&self) -> usize {
+        self.test_labels.len()
+    }
+
+    fn feature_dim(&self) -> usize {
+        self.train_images.shape()[1]
+    }
+}
+
+/// Runtime dataset selection wrapper.
+pub enum AnyDataset {
+    Mnist(MnistDataset),
+    Array(ArrayDataset),
+}
+
+impl Dataset for AnyDataset {
+    fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+        match self {
+            AnyDataset::Mnist(ds) => ds.get_train_batch(indices),
+            AnyDataset::Array(ds) => ds.get_train_batch(indices),
+        }
+    }
+
+    fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
+        match self {
+            AnyDataset::Mnist(ds) => ds.get_test_batch(indices),
+            AnyDataset::Array(ds) => ds.get_test_batch(indices),
+        }
+    }
+
+    fn train_len(&self) -> usize {
+        match self {
+            AnyDataset::Mnist(ds) => ds.train_len(),
+            AnyDataset::Array(ds) => ds.train_len(),
+        }
+    }
+
+    fn test_len(&self) -> usize {
+        match self {
+            AnyDataset::Mnist(ds) => ds.test_len(),
+            AnyDataset::Array(ds) => ds.test_len(),
+        }
+    }
+
+    fn feature_dim(&self) -> usize {
+        match self {
+            AnyDataset::Mnist(ds) => ds.feature_dim(),
+            AnyDataset::Array(ds) => ds.feature_dim(),
+        }
+    }
 }
 
 /// MNIST dataset with configurable downsampling

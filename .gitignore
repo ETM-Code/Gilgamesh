@@ -3,3 +3,16 @@ assistant.md
 tmp*
 artifacts/training_bench*
 target
+.DS_Store
+**/.DS_Store
+
+# Raw / processed ECG datasets (bulky, regeneratable)
+data_ecg_raw/
+data_ecg_36/
+data_ecg_36_fulluncapped/
+data_ecg_36_multiscale/
+data_ecg_36_resample/
+data_ecg_36_resampledx/
+
+# Training run outputs
+results/

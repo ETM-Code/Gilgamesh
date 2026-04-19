@@ -70,6 +70,8 @@ pub(crate) fn test_implementation(quick: bool) -> Result<()> {
             seed: 42,
             num_workers: 0,
             bptt_steps: None,
+            weight_decay: 0.01,
+            max_grad_norm: 1.0,
         };
 
         use gilgamesh::tensor::cross_entropy_loss;

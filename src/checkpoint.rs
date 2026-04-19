@@ -70,6 +70,27 @@ pub struct ArchitectureInfo {
     /// Surrogate gradient slope
     #[serde(default = "ArchitectureInfo::default_slope")]
     pub slope: f32,
+    /// Scale factor applied to hidden spikes before fc2 (pulse duration model)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spike_scale: Option<f32>,
+    /// Maximum fc1 output (DAC clamp), if finite
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dac_max: Option<f32>,
+    /// fc2 fixed quantization scale (hardware-matched), if enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_fc2_scale: Option<f32>,
+    /// Whether inhibitory LSB is disabled in fc2 quantization path
+    #[serde(default)]
+    pub disable_inhibitory_lsb: bool,
+    /// fc2 positive current-source gain
+    #[serde(default = "ArchitectureInfo::default_synapse_pos_gain")]
+    pub fc2_synapse_pos_gain: f32,
+    /// fc2 negative current-source gain
+    #[serde(default = "ArchitectureInfo::default_synapse_neg_gain")]
+    pub fc2_synapse_neg_gain: f32,
+    /// Optional cap on total current-source units for fc2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fc2_total_current_cap: Option<f32>,
 }
 
 impl ArchitectureInfo {
@@ -78,6 +99,12 @@ impl ArchitectureInfo {
     }
     fn default_slope() -> f32 {
         25.0
+    }
+    fn default_synapse_pos_gain() -> f32 {
+        DEFAULT_SYNAPSE_POS_GAIN
+    }
+    fn default_synapse_neg_gain() -> f32 {
+        DEFAULT_SYNAPSE_NEG_GAIN
     }
 }
 
@@ -135,6 +162,18 @@ pub struct TrainingMetadata {
     /// Config file used (if any)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_file: Option<String>,
+    /// Num timesteps used during training/eval
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_steps: Option<usize>,
+    /// Weight quantization bits used during training/eval
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quant_bits: Option<u8>,
+    /// Whether split-sign quantization was enabled
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_sign_quant: Option<bool>,
+    /// Input quantization bits used for forward path
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_quant_bits: Option<u8>,
 }
 
 impl Checkpoint {
@@ -184,6 +223,25 @@ impl Checkpoint {
             },
             threshold: network.lif1.threshold,
             slope: network.lif1.spike_grad.slope(),
+            spike_scale: if (network.spike_scale - 1.0).abs() > 1e-6 {
+                Some(network.spike_scale)
+            } else {
+                None
+            },
+            dac_max: if network.dac_max.is_finite() {
+                Some(network.dac_max)
+            } else {
+                None
+            },
+            fixed_fc2_scale: if network.fc2.fixed_quant_scale > 0.0 {
+                Some(network.fc2.fixed_quant_scale)
+            } else {
+                None
+            },
+            disable_inhibitory_lsb: network.fc2.disable_inhibitory_lsb,
+            fc2_synapse_pos_gain: network.fc2.synapse_pos_gain,
+            fc2_synapse_neg_gain: network.fc2.synapse_neg_gain,
+            fc2_total_current_cap: network.fc2.total_current_cap,
         };
 
         // Convert weights to nested Vec
@@ -273,7 +331,7 @@ impl Checkpoint {
             disable_inhibitory_lsb: false,
         };
 
-        let fc2 = Linear {
+        let mut fc2 = Linear {
             weight: vec_to_array2(&self.weights.fc2_weight)?,
             bias: self
                 .weights
@@ -287,9 +345,12 @@ impl Checkpoint {
             synapse_pos_gain: DEFAULT_SYNAPSE_POS_GAIN,
             synapse_neg_gain: DEFAULT_SYNAPSE_NEG_GAIN,
             total_current_cap: None,
-            fixed_quant_scale: 0.0,
-            disable_inhibitory_lsb: false,
+            fixed_quant_scale: arch.fixed_fc2_scale.unwrap_or(0.0),
+            disable_inhibitory_lsb: arch.disable_inhibitory_lsb,
         };
+        fc2.synapse_pos_gain = arch.fc2_synapse_pos_gain;
+        fc2.synapse_neg_gain = arch.fc2_synapse_neg_gain;
+        fc2.total_current_cap = arch.fc2_total_current_cap;
 
         // Create LIF neurons with correct mode
         let spike_grad = SurrogateGradient::fast_sigmoid(arch.slope);
@@ -320,8 +381,8 @@ impl Checkpoint {
             fc2,
             lif2,
             spiking_input: false,
-            spike_scale: 1.0,
-            dac_max: f32::INFINITY,
+            spike_scale: arch.spike_scale.unwrap_or(1.0),
+            dac_max: arch.dac_max.unwrap_or(f32::INFINITY),
         })
     }
 }
@@ -465,6 +526,10 @@ mod tests {
             final_test_accuracy: 96.2,
             final_loss: Some(0.05),
             config_file: None,
+            num_steps: None,
+            quant_bits: None,
+            split_sign_quant: None,
+            input_quant_bits: None,
         };
         let checkpoint = Checkpoint::from_network(&net, Some(metadata));
 

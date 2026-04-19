@@ -326,6 +326,10 @@ pub struct TrainingConfig {
     pub num_workers: usize,
     /// Truncated BPTT steps (None/0 = full BPTT)
     pub bptt_steps: Option<usize>,
+    /// AdamW weight decay
+    pub weight_decay: f32,
+    /// Max gradient norm for clipping
+    pub max_grad_norm: f32,
 }
 
 impl Default for TrainingConfig {
@@ -338,6 +342,8 @@ impl Default for TrainingConfig {
             seed: 42,
             num_workers: 0,
             bptt_steps: None,
+            weight_decay: 0.01,
+            max_grad_norm: 1.0,
         }
     }
 }

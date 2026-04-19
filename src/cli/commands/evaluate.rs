@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use gilgamesh::data::MnistDataset;
+use gilgamesh::config::Config;
+use gilgamesh::data::{AnyDataset, ArrayDataset, Dataset, MnistDataset};
 use gilgamesh::training::{NoiseParams, Trainer, TrainingConfig};
 
 /// Find reasonable image dimensions for a given input size.
@@ -25,6 +26,7 @@ fn find_image_dimensions(input_size: usize) -> Result<(usize, usize)> {
 pub(crate) fn evaluate(
     checkpoint: &str,
     data_dir: &str,
+    dataset_kind: &str,
     num_steps: usize,
     batch_size: usize,
     noise: bool,
@@ -66,27 +68,97 @@ pub(crate) fn evaluate(
         }
     };
 
-    println!("Loading MNIST dataset ({}x{})...", width, height);
-    let dataset = MnistDataset::load_with_dimensions(data_dir, width, height)
-        .context("Failed to load MNIST dataset")?;
+    let dataset = match dataset_kind {
+        "mnist" => {
+            println!("Loading MNIST dataset ({}x{})...", width, height);
+            let ds = MnistDataset::load_with_dimensions(data_dir, width, height)
+                .context("Failed to load MNIST dataset")?;
+            AnyDataset::Mnist(ds)
+        }
+        "ecg" => {
+            println!("Loading ECG dataset from .npy files...");
+            let ds =
+                ArrayDataset::load_npy(data_dir).context("Failed to load ECG dataset (.npy)")?;
+            AnyDataset::Array(ds)
+        }
+        other => anyhow::bail!("Unsupported dataset kind: {other}. Use 'mnist' or 'ecg'."),
+    };
     println!("Loaded {} test samples", dataset.test_len());
+
+    let loaded_cfg = if let Some(cfg_path) = config_path {
+        Some(
+            Config::load(cfg_path)
+                .with_context(|| format!("Failed to load config from {}", cfg_path))?,
+        )
+    } else {
+        None
+    };
+
+    let mut effective_num_steps = num_steps;
+    if let Some(meta) = &loaded_checkpoint.metadata {
+        if let Some(saved_steps) = meta.num_steps {
+            let cli_is_default = num_steps == TrainingConfig::default().num_steps;
+            if cli_is_default && saved_steps != num_steps {
+                effective_num_steps = saved_steps;
+                println!("Timesteps: using checkpoint metadata value {}", saved_steps);
+            }
+        }
+    }
 
     let config = TrainingConfig {
         lr: 0.0,
         epochs: 0,
         batch_size,
-        num_steps,
+        num_steps: effective_num_steps,
         seed: 42,
         num_workers: 0,
         bptt_steps: None,
+        weight_decay: 0.01,
+        max_grad_norm: 1.0,
     };
     let mut trainer = Trainer::new(network, config);
 
+    if let Some(meta) = &loaded_checkpoint.metadata {
+        if let Some(bits) = meta.quant_bits {
+            trainer.quant_bits = Some(bits);
+        }
+        if let Some(split_sign) = meta.split_sign_quant {
+            trainer.split_sign_quant = split_sign;
+        }
+        if let Some(input_bits) = meta.input_quant_bits {
+            trainer.input_quant_bits = input_bits;
+        }
+    }
+
+    // Config overrides metadata for eval behavior when provided.
+    if let Some(cfg) = &loaded_cfg {
+        if cfg.quantization.enabled {
+            trainer.quant_bits = Some(cfg.quantization.bits);
+        } else {
+            trainer.quant_bits = None;
+        }
+        trainer.split_sign_quant = cfg.quantization.split_sign;
+        trainer.input_quant_bits = cfg.quantization.input_bits;
+    }
+
+    if let Some(bits) = trainer.quant_bits {
+        println!(
+            "Eval quantization: {}-bit{}",
+            bits,
+            if trainer.split_sign_quant {
+                ", split-sign"
+            } else {
+                ""
+            }
+        );
+    }
+    if trainer.input_quant_bits > 0 {
+        println!("Input quant: {}-bit DAC", trainer.input_quant_bits);
+    }
+
     // Load noise parameters from config file if provided, or use hardware defaults
     if noise {
-        let noise_params = if let Some(cfg_path) = config_path {
-            let cfg = gilgamesh::config::Config::load(cfg_path)
-                .with_context(|| format!("Failed to load config from {}", cfg_path))?;
+        let noise_params = if let Some(cfg) = &loaded_cfg {
             NoiseParams {
                 weight_std: cfg.noise.weight_std,
                 threshold_std: cfg.noise.threshold_std,

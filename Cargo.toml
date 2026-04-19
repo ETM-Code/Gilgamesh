@@ -22,6 +22,7 @@ web = ["dep:axum", "dep:tokio", "dep:tokio-tungstenite", "dep:tower-http", "dep:
 # Linear algebra (BLAS optional via features)
 ndarray = { version = "0.16", features = ["rayon"] }
 ndarray-rand = "0.15"
+ndarray-npy = "0.9"
 blas-src = { version = "0.10", optional = true }
 
 # Parallelism

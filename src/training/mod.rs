@@ -4,8 +4,9 @@
 
 use crate::data::{BatchIterator, Dataset, InputEncoder};
 use crate::network::{Network, NetworkGradients};
-use crate::tensor::cross_entropy_loss;
+use crate::tensor::{cross_entropy_loss, cross_entropy_loss_weighted};
 use ndarray::{Array1, Array2};
+use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
@@ -314,6 +315,8 @@ pub struct Trainer {
     pub split_sign_quant: bool,
     /// Input quantization bits (0 = no input quantization)
     pub input_quant_bits: u8,
+    /// Optional class weights for imbalanced classification.
+    pub class_weights: Option<Vec<f32>>,
 }
 
 impl Trainer {
@@ -348,6 +351,7 @@ impl Trainer {
             noise_during_eval: false,
             split_sign_quant: false,
             input_quant_bits: 0,
+            class_weights: None,
         }
     }
 
@@ -397,14 +401,15 @@ impl Trainer {
 
     /// Train for one epoch with parallel batch processing
     pub fn train_epoch<D: Dataset>(&mut self, dataset: &D) -> (f32, f32) {
-        let batch_iter = BatchIterator::new(dataset, self.config.batch_size, true, true);
-        let _num_batches = batch_iter.num_batches();
+        let mut indices: Vec<usize> = (0..dataset.train_len()).collect();
+        indices.shuffle(&mut self.rng);
 
         let mut total_loss = 0.0;
         let mut correct = 0usize;
         let mut total = 0usize;
 
-        for (images, labels) in batch_iter {
+        for batch_indices in indices.chunks(self.config.batch_size) {
+            let (images, labels) = dataset.get_train_batch(batch_indices);
             let batch_size = images.shape()[0];
 
             // Forward pass (with optional quantization, noise, adaptation, analog, or encoding)
@@ -447,7 +452,11 @@ impl Trainer {
             };
 
             // Compute loss and gradient
-            let (loss, grad_output) = cross_entropy_loss(&spike_count, &labels);
+            let (loss, grad_output) = if let Some(ref weights) = self.class_weights {
+                cross_entropy_loss_weighted(&spike_count, &labels, weights)
+            } else {
+                cross_entropy_loss(&spike_count, &labels)
+            };
 
             // Backward pass
             let mut grads =
@@ -663,6 +672,8 @@ mod tests {
             seed: 42,
             num_workers: 0,
             bptt_steps: None,
+            weight_decay: 0.01,
+            max_grad_norm: 1.0,
         };
         let mut trainer = Trainer::new(net, config);
 

@@ -470,6 +470,92 @@ From the repository root, use:
 
 ## CLI Options
 
+> Note: The sections below include historical commands used in earlier builds.
+> The authoritative runtime command set currently implemented in `src/cli/mod.rs` is:
+> `train`, `finetune`, `evaluate`, `test`, `inspect`, `raster`, `neuron-test`, `web`.
+
+### Current CLI (from `src/cli`)
+
+```
+gilgamesh train [OPTIONS]
+  --config <FILE>
+  --lr <RATE>
+  --epochs <N>
+  --batch-size <N>
+  --num-steps <N>
+  --hidden-size <N>
+  --image-size <N>
+  --image-width <N>
+  --image-height <N>
+  --beta <VALUE>
+  --seed <N>
+  --data-dir <PATH>          [default: ./data]
+  --slope <VALUE>
+  --quantize
+  --quantize-bits <BITS>
+  --noise
+  --weight-noise <VALUE>
+  --save-checkpoint <PATH>
+
+gilgamesh finetune [OPTIONS]
+  --checkpoint <PATH>
+  --config <FILE>
+  --data-dir <PATH>          [default: ./data]
+  --output <PATH>            [default: models/finetuned.json]
+  --dac-scale <VALUE>        [default: 1.16]
+  --epochs <N>               [default: 3]
+
+gilgamesh evaluate [OPTIONS]
+  --checkpoint <PATH>
+  --data-dir <PATH>          [default: ./data]
+  --num-steps <N>            [default: 25]
+  --batch-size <N>           [default: 128]
+  --noise
+  --config <FILE>
+
+gilgamesh test [OPTIONS]
+  --quick
+
+gilgamesh inspect [OPTIONS]
+  --checkpoint <PATH>
+  --data-dir <PATH>          [default: ./data]
+  --num-steps <N>            [default: 25]
+  --seed <N>                 [default: 42]
+
+gilgamesh raster [OPTIONS]
+  --checkpoint <PATH>
+  --data-dir <PATH>          [default: ./data]
+  --num-samples <N>          [default: 6]
+  --num-steps <N>            [default: 25]
+  --max-search <N>           [default: 500]
+  --output-json <PATH>       [default: ./artifacts/spike_raster_data.json]
+  --output-image <PATH>      [default: ./artifacts/spike_raster_plot.png]
+  --no-plot
+  --background-image <PATH>
+  --bg-alpha <VALUE>         [default: 0.2]
+  --dpi <N>                  [default: 200]
+
+gilgamesh neuron-test [OPTIONS]
+  --tau-m <SECONDS>          [default: 0.00396]
+  --dt <SECONDS>             [default: 2.5e-7]
+  --threshold <V>            [default: 0.8]
+  --vref <V>                 [default: 0.0]
+  --input-current <A>        [default: 0.000010]
+  --duration <SECONDS>       [default: 0.05]
+  --tau-pulse <SECONDS>      [default: 1.5e-6]
+  --v-peak <V>               [default: 4.44]
+  --comparator-delay <SEC>   [default: 0]
+  --reset-hold <SECONDS>     [default: 3.6e-7]
+  --c-mem <F>                [default: 33e-9]
+  --output <FILE>            [default: neuron_output.csv]
+
+gilgamesh web [OPTIONS]
+  -p, --port <PORT>          [default: 3000]
+  -c, --checkpoint <PATH>
+  --data-dir <PATH>          [default: ./data]
+  --open <BOOL>              [default: true]
+```
+
 ### Training
 
 ```

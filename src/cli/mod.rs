@@ -19,6 +19,14 @@ pub(crate) struct Cli {
 pub(crate) enum Commands {
     /// Train a new SNN on MNIST
     Train {
+        /// Dataset kind: mnist or ecg
+        #[arg(long, default_value = "mnist")]
+        dataset: String,
+
+        /// Enable class-weighted loss (useful for imbalanced ECG classes)
+        #[arg(long)]
+        class_weighting: bool,
+
         /// Path to JSON config file (overrides other args)
         #[arg(long)]
         config: Option<String>,
@@ -100,6 +108,9 @@ pub(crate) enum Commands {
         /// Config file
         #[arg(long)]
         config: String,
+        /// Dataset kind: mnist or ecg
+        #[arg(long, default_value = "mnist")]
+        dataset: String,
         /// Data directory
         #[arg(long, default_value = "./data")]
         data_dir: String,
@@ -112,10 +123,20 @@ pub(crate) enum Commands {
         /// Number of fine-tuning epochs
         #[arg(long, default_value = "3")]
         epochs: usize,
+        /// Max train samples to use during coordinate search
+        #[arg(long)]
+        train_samples: Option<usize>,
+        /// Max test samples to use for HW eval/selection
+        #[arg(long)]
+        test_samples: Option<usize>,
     },
 
     /// Evaluate a trained model
     Evaluate {
+        /// Dataset kind: mnist or ecg
+        #[arg(long, default_value = "mnist")]
+        dataset: String,
+
         /// Checkpoint file
         #[arg(long)]
         checkpoint: String,
@@ -292,6 +313,8 @@ impl Cli {
     pub(crate) fn run(self) -> Result<()> {
         match self.command {
             Commands::Train {
+                dataset,
+                class_weighting,
                 config,
                 lr,
                 epochs,
@@ -362,27 +385,40 @@ impl Cli {
                     cfg.noise.weight_std = val;
                 }
 
-                commands::train_with_config(&cfg, &data_dir, save_checkpoint)
+                commands::train_with_config(
+                    &cfg,
+                    &data_dir,
+                    &dataset,
+                    class_weighting,
+                    save_checkpoint,
+                )
             }
             Commands::Finetune {
                 checkpoint,
                 config,
+                dataset,
                 data_dir,
                 output,
                 dac_scale,
                 epochs,
+                train_samples,
+                test_samples,
             } => {
                 commands::finetune::run_finetune(
                     &std::path::PathBuf::from(checkpoint),
                     &std::path::PathBuf::from(config),
                     &std::path::PathBuf::from(data_dir),
+                    &dataset,
                     &std::path::PathBuf::from(output),
                     dac_scale,
                     epochs,
+                    train_samples,
+                    test_samples,
                 );
                 Ok(())
             }
             Commands::Evaluate {
+                dataset,
                 checkpoint,
                 data_dir,
                 num_steps,
@@ -392,6 +428,7 @@ impl Cli {
             } => commands::evaluate(
                 &checkpoint,
                 &data_dir,
+                &dataset,
                 num_steps,
                 batch_size,
                 noise,

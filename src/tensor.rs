@@ -155,6 +155,34 @@ pub fn cross_entropy_loss(logits: &Array2<f32>, targets: &[usize]) -> (f32, Arra
     (loss, grad)
 }
 
+/// Class-weighted cross-entropy loss for imbalanced classification.
+/// `class_weights` should be indexed by class id.
+/// Returns (loss, gradient w.r.t. logits).
+pub fn cross_entropy_loss_weighted(
+    logits: &Array2<f32>,
+    targets: &[usize],
+    class_weights: &[f32],
+) -> (f32, Array2<f32>) {
+    let batch_size = logits.shape()[0];
+    let probs = softmax(logits);
+
+    let mut loss = 0.0;
+    let mut grad = probs.clone();
+
+    for (i, &target) in targets.iter().enumerate() {
+        let weight = *class_weights.get(target).unwrap_or(&1.0);
+        loss -= weight * probs[[i, target]].max(1e-7).ln();
+        grad[[i, target]] -= 1.0;
+        // Scale per-sample gradient row by class weight.
+        grad.row_mut(i).mapv_inplace(|v| v * weight);
+    }
+
+    loss /= batch_size as f32;
+    grad /= batch_size as f32;
+
+    (loss, grad)
+}
+
 /// Heaviside step function (spike generation)
 #[inline]
 pub fn heaviside(value: f32) -> f32 {
@@ -195,5 +223,17 @@ mod tests {
 
         assert!(loss > 0.0);
         assert_eq!(grad.shape(), logits.shape());
+    }
+
+    #[test]
+    fn test_cross_entropy_weighted() {
+        let logits = array![[2.0, 1.0, 0.1], [0.1, 1.0, 2.0]];
+        let targets = vec![0, 2];
+        let class_weights = vec![1.0, 1.0, 2.0];
+        let (loss_w, grad_w) = cross_entropy_loss_weighted(&logits, &targets, &class_weights);
+        let (loss, grad) = cross_entropy_loss(&logits, &targets);
+
+        assert!(loss_w > loss);
+        assert_eq!(grad_w.shape(), grad.shape());
     }
 }
