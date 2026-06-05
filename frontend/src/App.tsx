@@ -155,10 +155,10 @@ function App() {
               step="0.1"
               value={speed}
               onChange={(e) => handleSpeedChange(parseFloat(e.target.value))}
-              className="w-full h-1 bg-white/10 rounded-full appearance-none tooling-pointer
+              className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer
                 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3
                 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-blue-400
-                [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:tooling-pointer"
+                [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:cursor-pointer"
             />
             <div className="text-center text-white/50 text-xs mt-1">{speed.toFixed(1)}x</div>
           </div>
@@ -195,7 +195,7 @@ function App() {
             </div>
 
             {/* Input Current Toggle */}
-            <label className="flex items-center gap-2 tooling-pointer">
+            <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
                 checked={showInputCurrent}
@@ -216,7 +216,7 @@ function App() {
                 { value: 'stop', label: 'Stop' },
                 { value: 'loop', label: 'Loop current' },
               ].map(option => (
-                <label key={option.value} className="flex items-center gap-2 tooling-pointer">
+                <label key={option.value} className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="radio"
                     name="endBehavior"
