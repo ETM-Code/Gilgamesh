@@ -3,7 +3,7 @@
 //! Provides training loop, optimizer, and parallel batch processing.
 
 use crate::data::{BatchIterator, Dataset, InputEncoder};
-use crate::network::{Network, NetworkGradients};
+use crate::network::{Network, NetworkCache, NetworkGradients};
 use crate::tensor::{cross_entropy_loss, cross_entropy_loss_weighted};
 use ndarray::{Array1, Array2};
 use rand::seq::SliceRandom;
@@ -16,11 +16,38 @@ const ADAM_DEFAULT_BETA1: f32 = 0.9;
 const ADAM_DEFAULT_BETA2: f32 = 0.999;
 const ADAM_DEFAULT_EPS: f32 = 1e-8;
 const LR_SCHEDULER_MIN_FACTOR: f32 = 0.01;
-const DEFAULT_TRAINER_DT: f32 = 0.001;
+const DEFAULT_TRAINER_DT: f32 = crate::neurons::DEFAULT_DT;
 const DISABLED_ANALOG_GAIN: f32 = 0.0;
 const PERCENT_SCALE: f32 = 100.0;
 
+/// Generic AdamW parameter update over any ndarray dimensionality.
+///
+/// Updates the first/second moment estimates in place, then applies the
+/// (optional) decoupled weight-decay term and the bias-corrected gradient step.
+/// `weight_decay` is 0.0 for parameters (e.g. biases) that should not decay.
+fn adam_update_param<D: ndarray::Dimension>(
+    param: &mut ndarray::Array<f32, D>,
+    grad: &ndarray::Array<f32, D>,
+    first_moment: &mut ndarray::Array<f32, D>,
+    second_moment: &mut ndarray::Array<f32, D>,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    beta1_correction: f32,
+    beta2_correction: f32,
+) {
+    *first_moment = &*first_moment * beta1 + grad * (1.0 - beta1);
+    *second_moment = &*second_moment * beta2 + &grad.mapv(|x| x * x) * (1.0 - beta2);
+    let corrected_first = &*first_moment / beta1_correction;
+    let corrected_second = &*second_moment / beta2_correction;
+    *param = &*param * (1.0 - lr * weight_decay)
+        - &(&corrected_first / &(corrected_second.mapv(|x| x.sqrt()) + eps) * lr);
+}
+
 /// AdamW weight update: updates moments and applies weight decay + bias-corrected gradient step
+#[allow(clippy::too_many_arguments)]
 fn adam_update_weight(
     weight: &mut Array2<f32>,
     grad: &Array2<f32>,
@@ -34,12 +61,19 @@ fn adam_update_weight(
     beta1_correction: f32,
     beta2_correction: f32,
 ) {
-    *first_moment = &*first_moment * beta1 + grad * (1.0 - beta1);
-    *second_moment = &*second_moment * beta2 + &grad.mapv(|x| x * x) * (1.0 - beta2);
-    let corrected_first = &*first_moment / beta1_correction;
-    let corrected_second = &*second_moment / beta2_correction;
-    *weight = &*weight * (1.0 - lr * weight_decay)
-        - &(&corrected_first / &(corrected_second.mapv(|x| x.sqrt()) + eps) * lr);
+    adam_update_param(
+        weight,
+        grad,
+        first_moment,
+        second_moment,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        beta1_correction,
+        beta2_correction,
+    );
 }
 
 /// Adam bias update: updates moments and applies bias-corrected gradient step (no weight decay)
@@ -55,11 +89,56 @@ fn adam_update_bias(
     beta1_correction: f32,
     beta2_correction: f32,
 ) {
-    *first_moment = &*first_moment * beta1 + grad * (1.0 - beta1);
-    *second_moment = &*second_moment * beta2 + &grad.mapv(|x| x * x) * (1.0 - beta2);
-    let corrected_first = &*first_moment / beta1_correction;
-    let corrected_second = &*second_moment / beta2_correction;
-    *bias = &*bias - &(&corrected_first / &(corrected_second.mapv(|x| x.sqrt()) + eps) * lr);
+    adam_update_param(
+        bias,
+        grad,
+        first_moment,
+        second_moment,
+        lr,
+        beta1,
+        beta2,
+        eps,
+        0.0,
+        beta1_correction,
+        beta2_correction,
+    );
+}
+
+/// First/second moment estimate pair for a single Adam parameter group.
+///
+/// Holds the running `m`/`v` accumulators for one tensor (weight or bias) of
+/// arbitrary dimensionality, matching the AdamW formulation.
+#[derive(Clone)]
+pub struct AdamSlot<D: ndarray::Dimension> {
+    pub first_moment: ndarray::Array<f32, D>,
+    pub second_moment: ndarray::Array<f32, D>,
+}
+
+impl<D: ndarray::Dimension> AdamSlot<D> {
+    /// Zero-initialized moments shaped like `param`.
+    fn zeros_like(param: &ndarray::Array<f32, D>) -> Self {
+        Self {
+            first_moment: ndarray::Array::zeros(param.raw_dim()),
+            second_moment: ndarray::Array::zeros(param.raw_dim()),
+        }
+    }
+}
+
+/// Adam moment state for one linear layer: a weight slot plus an optional bias slot.
+#[derive(Clone)]
+pub struct LayerMoments {
+    pub weight: AdamSlot<ndarray::Ix2>,
+    pub bias: Option<AdamSlot<ndarray::Ix1>>,
+}
+
+impl LayerMoments {
+    /// Zero-initialized moments matching `layer`'s weight and (optional) bias.
+    fn zeros_like(layer: &crate::layers::Linear) -> Self {
+        Self {
+            weight: AdamSlot::zeros_like(&layer.weight),
+            bias: layer.bias.as_ref().map(AdamSlot::zeros_like),
+        }
+    }
 }
 
 /// Adam optimizer state with optional weight decay (AdamW)
@@ -71,15 +150,9 @@ pub struct AdamOptimizer {
     pub eps: f32,
     pub weight_decay: f32,
     pub timestep: usize,
-    // Moment estimates for each parameter group
-    pub first_moment_fc1_weight: Array2<f32>,
-    pub second_moment_fc1_weight: Array2<f32>,
-    pub first_moment_fc1_bias: Option<Array1<f32>>,
-    pub second_moment_fc1_bias: Option<Array1<f32>>,
-    pub first_moment_fc2_weight: Array2<f32>,
-    pub second_moment_fc2_weight: Array2<f32>,
-    pub first_moment_fc2_bias: Option<Array1<f32>>,
-    pub second_moment_fc2_bias: Option<Array1<f32>>,
+    // Moment estimates per layer (weight + optional bias).
+    pub fc1: LayerMoments,
+    pub fc2: LayerMoments,
 }
 
 impl AdamOptimizer {
@@ -91,14 +164,8 @@ impl AdamOptimizer {
             eps: ADAM_DEFAULT_EPS,
             weight_decay: 0.0,
             timestep: 0,
-            first_moment_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
-            second_moment_fc1_weight: Array2::zeros(net.fc1.weight.raw_dim()),
-            first_moment_fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            second_moment_fc1_bias: net.fc1.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            first_moment_fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
-            second_moment_fc2_weight: Array2::zeros(net.fc2.weight.raw_dim()),
-            first_moment_fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
-            second_moment_fc2_bias: net.fc2.bias.as_ref().map(|b| Array1::zeros(b.len())),
+            fc1: LayerMoments::zeros_like(&net.fc1),
+            fc2: LayerMoments::zeros_like(&net.fc2),
         }
     }
 
@@ -122,48 +189,11 @@ impl AdamOptimizer {
         let beta1_correction = 1.0 - self.beta1.powi(self.timestep as i32);
         let beta2_correction = 1.0 - self.beta2.powi(self.timestep as i32);
 
-        // Update FC1 weight
-        adam_update_weight(
-            &mut net.fc1.weight,
+        Self::step_layer(
+            &mut net.fc1,
+            &mut self.fc1,
             &grads.fc1_weight,
-            &mut self.first_moment_fc1_weight,
-            &mut self.second_moment_fc1_weight,
-            self.lr,
-            self.beta1,
-            self.beta2,
-            self.eps,
-            self.weight_decay,
-            beta1_correction,
-            beta2_correction,
-        );
-
-        // Update FC1 bias
-        if let (Some(ref mut fm), Some(ref mut sm), Some(ref g), Some(ref mut b)) = (
-            &mut self.first_moment_fc1_bias,
-            &mut self.second_moment_fc1_bias,
             &grads.fc1_bias,
-            &mut net.fc1.bias,
-        ) {
-            adam_update_bias(
-                b,
-                g,
-                fm,
-                sm,
-                self.lr,
-                self.beta1,
-                self.beta2,
-                self.eps,
-                beta1_correction,
-                beta2_correction,
-            );
-        }
-
-        // Update FC2 weight
-        adam_update_weight(
-            &mut net.fc2.weight,
-            &grads.fc2_weight,
-            &mut self.first_moment_fc2_weight,
-            &mut self.second_moment_fc2_weight,
             self.lr,
             self.beta1,
             self.beta2,
@@ -173,22 +203,62 @@ impl AdamOptimizer {
             beta2_correction,
         );
 
-        // Update FC2 bias
-        if let (Some(ref mut fm), Some(ref mut sm), Some(ref g), Some(ref mut b)) = (
-            &mut self.first_moment_fc2_bias,
-            &mut self.second_moment_fc2_bias,
+        Self::step_layer(
+            &mut net.fc2,
+            &mut self.fc2,
+            &grads.fc2_weight,
             &grads.fc2_bias,
-            &mut net.fc2.bias,
-        ) {
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            self.weight_decay,
+            beta1_correction,
+            beta2_correction,
+        );
+    }
+
+    /// Apply one AdamW update to a single linear layer's weight and (optional) bias.
+    #[allow(clippy::too_many_arguments)]
+    fn step_layer(
+        layer: &mut crate::layers::Linear,
+        moments: &mut LayerMoments,
+        grad_weight: &Array2<f32>,
+        grad_bias: &Option<Array1<f32>>,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+        beta1_correction: f32,
+        beta2_correction: f32,
+    ) {
+        adam_update_weight(
+            &mut layer.weight,
+            grad_weight,
+            &mut moments.weight.first_moment,
+            &mut moments.weight.second_moment,
+            lr,
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            beta1_correction,
+            beta2_correction,
+        );
+
+        if let (Some(slot), Some(g), Some(b)) =
+            (moments.bias.as_mut(), grad_bias.as_ref(), layer.bias.as_mut())
+        {
             adam_update_bias(
                 b,
                 g,
-                fm,
-                sm,
-                self.lr,
-                self.beta1,
-                self.beta2,
-                self.eps,
+                &mut slot.first_moment,
+                &mut slot.second_moment,
+                lr,
+                beta1,
+                beta2,
+                eps,
                 beta1_correction,
                 beta2_correction,
             );
@@ -319,7 +389,65 @@ pub struct Trainer {
     pub class_weights: Option<Vec<f32>>,
 }
 
+/// Which loop a [`Trainer::forward_batch`] call is serving.
+///
+/// Training enables the adaptation/analog forward variants and always honours
+/// the noise setting; evaluation skips those variants and only injects noise
+/// when `noise_during_eval` is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Train,
+    Eval,
+}
+
 impl Trainer {
+    /// Run the appropriate forward variant for `images` in the given `phase`.
+    ///
+    /// Centralises the train/eval branch ladders so both loops pick the same
+    /// variant for a given configuration, preserving each phase's original
+    /// behaviour (eval omits the adaptation and analog paths).
+    fn forward_batch(
+        &mut self,
+        images: &Array2<f32>,
+        phase: Phase,
+    ) -> (Array2<f32>, Array2<f32>, Vec<NetworkCache>) {
+        let use_noise = match phase {
+            Phase::Train => self.noise.is_enabled(),
+            Phase::Eval => self.noise_during_eval && self.noise.is_enabled(),
+        };
+        if use_noise {
+            self.network.forward_noisy(
+                images,
+                self.config.num_steps,
+                self.noise.weight_std,
+                self.noise.threshold_std,
+                self.noise.membrane_std,
+                self.noise.input_std,
+                &mut self.rng,
+            )
+        } else if phase == Phase::Train && self.adaptation_enabled {
+            self.network
+                .forward_with_adaptation(images, self.config.num_steps, self.dt)
+        } else if let Some(ref encoder) = self.input_encoder {
+            self.network
+                .forward_with_encoding(images, encoder, self.config.num_steps)
+        } else if phase == Phase::Train && self.analog_gain > DISABLED_ANALOG_GAIN {
+            self.network
+                .forward_with_analog(images, self.config.num_steps, self.analog_gain)
+        } else if self.input_quant_bits > 0 {
+            self.network.forward_quantized_full(
+                images,
+                self.config.num_steps,
+                self.quant_bits,
+                self.split_sign_quant,
+                self.input_quant_bits,
+            )
+        } else {
+            self.network
+                .forward_quantized(images, self.config.num_steps, self.quant_bits)
+        }
+    }
+
     pub fn new(network: Network, config: TrainingConfig) -> Self {
         let optimizer = AdamOptimizer::new(&network, config.lr);
         let rng = Xoshiro256PlusPlus::seed_from_u64(config.seed);
@@ -413,43 +541,7 @@ impl Trainer {
             let batch_size = images.shape()[0];
 
             // Forward pass (with optional quantization, noise, adaptation, analog, or encoding)
-            let (spike_count, _, caches) = if self.noise.is_enabled() {
-                // Use noisy forward for robustness training
-                self.network.forward_noisy(
-                    &images,
-                    self.config.num_steps,
-                    self.noise.weight_std,
-                    self.noise.threshold_std,
-                    self.noise.membrane_std,
-                    self.noise.input_std,
-                    &mut self.rng,
-                )
-            } else if self.adaptation_enabled {
-                // Use adaptation forward for threshold adaptation
-                self.network
-                    .forward_with_adaptation(&images, self.config.num_steps, self.dt)
-            } else if let Some(ref encoder) = self.input_encoder {
-                // Use encoding forward for temporal or custom input encoding
-                self.network
-                    .forward_with_encoding(&images, encoder, self.config.num_steps)
-            } else if self.analog_gain > DISABLED_ANALOG_GAIN {
-                // Use analog forward for hybrid spike+membrane transmission
-                self.network
-                    .forward_with_analog(&images, self.config.num_steps, self.analog_gain)
-            } else if self.input_quant_bits > 0 {
-                // Use full quantized forward with input quantization
-                self.network.forward_quantized_full(
-                    &images,
-                    self.config.num_steps,
-                    self.quant_bits,
-                    self.split_sign_quant,
-                    self.input_quant_bits,
-                )
-            } else {
-                // Use quantized forward (handles None for no quantization)
-                self.network
-                    .forward_quantized(&images, self.config.num_steps, self.quant_bits)
-            };
+            let (spike_count, _, caches) = self.forward_batch(&images, Phase::Train);
 
             // Compute loss and gradient
             let (loss, grad_output) = if let Some(ref weights) = self.class_weights {
@@ -495,34 +587,7 @@ impl Trainer {
 
         for (images, labels) in batch_iter {
             // Use noisy forward during eval if noise_during_eval is set
-            let (spike_count, _, _) = if self.noise_during_eval && self.noise.is_enabled() {
-                self.network.forward_noisy(
-                    &images,
-                    self.config.num_steps,
-                    self.noise.weight_std,
-                    self.noise.threshold_std,
-                    self.noise.membrane_std,
-                    self.noise.input_std,
-                    &mut self.rng,
-                )
-            } else if let Some(ref encoder) = self.input_encoder {
-                // Use encoding forward for temporal encoding
-                self.network
-                    .forward_with_encoding(&images, encoder, self.config.num_steps)
-            } else if self.input_quant_bits > 0 {
-                // Use full quantized forward with input quantization
-                self.network.forward_quantized_full(
-                    &images,
-                    self.config.num_steps,
-                    self.quant_bits,
-                    self.split_sign_quant,
-                    self.input_quant_bits,
-                )
-            } else {
-                // Use quantized forward (handles None for no quantization)
-                self.network
-                    .forward_quantized(&images, self.config.num_steps, self.quant_bits)
-            };
+            let (spike_count, _, _) = self.forward_batch(&images, Phase::Eval);
 
             let (batch_correct, batch_total) = count_correct(&spike_count, &labels);
             correct += batch_correct;

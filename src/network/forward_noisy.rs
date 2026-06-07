@@ -121,8 +121,7 @@ impl Network {
                     rng,
                     t_off,
                 );
-                let combined =
-                    (&phase1_spikes + &phase2_spikes).mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+                let combined = super::combine_binary_spikes(&phase1_spikes, &phase2_spikes);
                 (combined, lif2_state, phase1_cache)
             } else {
                 self.lif2.forward_noisy(

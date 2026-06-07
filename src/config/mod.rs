@@ -433,7 +433,16 @@ impl Default for QuantizationConfig {
 }
 
 impl QuantizationConfig {
-    /// Quantize a weight value
+    /// Quantize a single weight value (legacy per-scalar path).
+    ///
+    /// This is the original, simple symmetric/asymmetric scalar quantizer and is
+    /// **not** on the active forward/training path. Production quantization uses
+    /// the split-sign matrix quantizer in
+    /// [`crate::layers::linear::quantize_weights`] (driven by the `split_sign`,
+    /// `fixed_fc2_scale`, and `broken_inhibitory_lsb` fields), which models the
+    /// hardware's independent excitatory/inhibitory current scales. This method
+    /// is retained only for the characterization tests that pin its exact
+    /// rounding behavior; prefer `quantize_weights` for any new code.
     pub fn quantize(&self, weight: f32) -> f32 {
         if !self.enabled {
             return weight;

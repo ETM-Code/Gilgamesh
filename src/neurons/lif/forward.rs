@@ -150,6 +150,39 @@ impl Leaky {
         new_thresh
     }
 
+    /// Threshold-and-reset step against a scalar threshold.
+    ///
+    /// Given the freshly integrated membrane, returns `(spikes, mem_reset,
+    /// mem_shifted)`: the binary spikes, the membrane after the reset
+    /// mechanism, and `mem_new - threshold` (the surrogate-gradient input).
+    #[inline]
+    fn step_fixed_threshold(
+        &self,
+        mem_new: &Array2<f32>,
+        threshold: f32,
+    ) -> (Array2<f32>, Array2<f32>, Array2<f32>) {
+        let mem_shifted = mem_new - threshold;
+        let spikes = Self::generate_spikes(&mem_shifted);
+        let mem_reset = self.apply_reset(mem_new, &spikes, threshold);
+        (spikes, mem_reset, mem_shifted)
+    }
+
+    /// Threshold-and-reset step against a per-neuron threshold array.
+    ///
+    /// Adaptive-threshold analogue of [`Leaky::step_fixed_threshold`]; returns
+    /// `(spikes, mem_reset, mem_shifted)`.
+    #[inline]
+    fn step_adaptive_threshold(
+        &self,
+        mem_new: &Array2<f32>,
+        threshold: &Array2<f32>,
+    ) -> (Array2<f32>, Array2<f32>, Array2<f32>) {
+        let mem_shifted = mem_new - threshold;
+        let spikes = Self::generate_spikes(&mem_shifted);
+        let mem_reset = self.apply_reset_array(mem_new, &spikes, threshold);
+        (spikes, mem_reset, mem_shifted)
+    }
+
     /// Forward pass for a single timestep
     pub fn forward(
         &self,
@@ -157,12 +190,11 @@ impl Leaky {
         state: &LeakyState,
     ) -> (Array2<f32>, LeakyState, LeakyCache) {
         let mem_new = self.compute_membrane(&state.mem, input);
-        let mem_shifted = &mem_new - self.threshold;
-        let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset(&mem_new, &spikes, self.threshold);
+        let (spikes, mem_reset, mem_shifted) =
+            self.step_fixed_threshold(&mem_new, self.threshold);
 
         let cache = LeakyCache {
-            mem_shifted: mem_shifted.clone(),
+            mem_shifted,
             spikes: spikes.clone(),
         };
 
@@ -177,12 +209,11 @@ impl Leaky {
         dt: f32,
     ) -> (Array2<f32>, LeakyState, LeakyCache) {
         let mem_new = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
-        let mem_shifted = &mem_new - self.threshold;
-        let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset(&mem_new, &spikes, self.threshold);
+        let (spikes, mem_reset, mem_shifted) =
+            self.step_fixed_threshold(&mem_new, self.threshold);
 
         let cache = LeakyCache {
-            mem_shifted: mem_shifted.clone(),
+            mem_shifted,
             spikes: spikes.clone(),
         };
 
@@ -276,9 +307,8 @@ impl Leaky {
         };
 
         let mem_new = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
-        let mem_shifted = &mem_new - self.threshold;
-        let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset(&mem_new, &spikes, self.threshold);
+        let (spikes, mem_reset, mem_shifted) =
+            self.step_fixed_threshold(&mem_new, self.threshold);
 
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &spikes, dt);
@@ -329,9 +359,8 @@ impl Leaky {
             .clone()
             .unwrap_or_else(|| Array2::from_elem(mem_new.raw_dim(), self.threshold));
 
-        let mem_shifted = &mem_new - &current_threshold;
-        let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset_array(&mem_new, &spikes, &current_threshold);
+        let (spikes, mem_reset, _mem_shifted) =
+            self.step_adaptive_threshold(&mem_new, &current_threshold);
 
         let new_threshold = if state.adaptive_threshold.is_some() {
             Some(Self::update_adaptive_threshold(
@@ -388,9 +417,8 @@ impl Leaky {
             .clone()
             .unwrap_or_else(|| Array2::from_elem(mem_new.raw_dim(), self.threshold));
 
-        let mem_shifted = &mem_new - &current_threshold;
-        let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset_array(&mem_new, &spikes, &current_threshold);
+        let (spikes, mem_reset, _mem_shifted) =
+            self.step_adaptive_threshold(&mem_new, &current_threshold);
 
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &spikes, dt);

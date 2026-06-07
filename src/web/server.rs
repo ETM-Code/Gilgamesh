@@ -48,6 +48,29 @@ impl AppState {
     pub fn broadcast(&self, msg: ServerMessage) {
         let _ = self.tx.send(msg);
     }
+
+    /// Broadcast an `Ack` for the named command.
+    fn ack(&self, command: impl Into<String>) {
+        self.broadcast(ServerMessage::Ack {
+            command: command.into(),
+        });
+    }
+
+    /// Take the simulation write lock, apply `mutate`, then broadcast an `Ack`.
+    ///
+    /// Collapses the "lock, mutate, ack" trio shared by the simple control
+    /// commands (pause/resume/next/prev/...).
+    async fn with_sim_mut(
+        &self,
+        command: impl Into<String>,
+        mutate: impl FnOnce(&mut SimulationState),
+    ) {
+        {
+            let mut sim = self.simulation.write().await;
+            mutate(&mut sim);
+        }
+        self.ack(command);
+    }
 }
 
 /// Run the web server
@@ -194,94 +217,80 @@ async fn handle_command(cmd: ClientMessage, state: &Arc<AppState>) {
         }
 
         ClientMessage::NextSample => {
-            let mut sim = state.simulation.write().await;
-            sim.next_sample();
-            state.broadcast(ServerMessage::Ack {
-                command: "next_sample".to_string(),
-            });
+            state
+                .with_sim_mut("next_sample", |sim| sim.next_sample())
+                .await;
         }
 
         ClientMessage::PrevSample => {
-            let mut sim = state.simulation.write().await;
-            sim.prev_sample();
-            state.broadcast(ServerMessage::Ack {
-                command: "prev_sample".to_string(),
-            });
+            state
+                .with_sim_mut("prev_sample", |sim| sim.prev_sample())
+                .await;
         }
 
         ClientMessage::JumpToSample { index } => {
-            let mut sim = state.simulation.write().await;
-            sim.jump_to_sample(index);
-            state.broadcast(ServerMessage::Ack {
-                command: format!("jump_to_sample:{}", index),
-            });
+            state
+                .with_sim_mut(format!("jump_to_sample:{}", index), |sim| {
+                    sim.jump_to_sample(index)
+                })
+                .await;
         }
 
         ClientMessage::RandomSample => {
-            let mut sim = state.simulation.write().await;
-            sim.random_sample();
-            state.broadcast(ServerMessage::Ack {
-                command: "random_sample".to_string(),
-            });
+            state
+                .with_sim_mut("random_sample", |sim| sim.random_sample())
+                .await;
         }
 
         ClientMessage::Pause => {
-            let mut sim = state.simulation.write().await;
-            sim.paused = true;
-            state.broadcast(ServerMessage::Ack {
-                command: "pause".to_string(),
-            });
+            state
+                .with_sim_mut("pause", |sim| sim.paused = true)
+                .await;
         }
 
         ClientMessage::Resume => {
-            let mut sim = state.simulation.write().await;
-            sim.paused = false;
-            state.broadcast(ServerMessage::Ack {
-                command: "resume".to_string(),
-            });
+            state
+                .with_sim_mut("resume", |sim| sim.paused = false)
+                .await;
         }
 
         ClientMessage::SetSpeed { speed } => {
-            let mut sim = state.simulation.write().await;
-            sim.speed = speed.clamp(0.1, 10.0);
-            state.broadcast(ServerMessage::Ack {
-                command: format!("set_speed:{}", speed),
-            });
+            state
+                .with_sim_mut(format!("set_speed:{}", speed), |sim| {
+                    sim.speed = speed.clamp(0.1, 10.0)
+                })
+                .await;
         }
 
         ClientMessage::SetEndOfSampleBehavior { behavior } => {
             println!("Setting end-of-sample behavior to: {:?}", behavior);
-            let mut sim = state.simulation.write().await;
-            sim.set_end_of_sample_behavior(behavior);
-            state.broadcast(ServerMessage::Ack {
-                command: format!("set_end_of_sample_behavior:{:?}", behavior),
-            });
+            state
+                .with_sim_mut(format!("set_end_of_sample_behavior:{:?}", behavior), |sim| {
+                    sim.set_end_of_sample_behavior(behavior)
+                })
+                .await;
         }
 
         ClientMessage::RestartSample => {
-            let mut sim = state.simulation.write().await;
-            sim.restart_sample();
-            state.broadcast(ServerMessage::Ack {
-                command: "restart_sample".to_string(),
-            });
+            state
+                .with_sim_mut("restart_sample", |sim| sim.restart_sample())
+                .await;
         }
 
         ClientMessage::StartTraining { config } => {
-            let mut sim = state.simulation.write().await;
-            sim.config = config;
-            sim.mode = SimulationMode::Training;
-            // Training loop will pick this up
-            state.broadcast(ServerMessage::Ack {
-                command: "start_training".to_string(),
-            });
+            state
+                .with_sim_mut("start_training", |sim| {
+                    sim.config = config;
+                    sim.mode = SimulationMode::Training;
+                    // Training loop will pick this up
+                })
+                .await;
         }
 
         ClientMessage::StopTraining => {
-            let mut sim = state.simulation.write().await;
-            sim.mode = SimulationMode::Idle;
-            state.broadcast(ServerMessage::Ack {
-                command: "stop_training".to_string(),
-            });
+            state
+                .with_sim_mut("stop_training", |sim| sim.mode = SimulationMode::Idle)
+                .await;
         }
 
         ClientMessage::LoadCheckpoint { path } => {
@@ -306,11 +315,9 @@ async fn handle_command(cmd: ClientMessage, state: &Arc<AppState>) {
         }
 
         ClientMessage::UpdateConfig { config } => {
-            let mut sim = state.simulation.write().await;
-            sim.config = config.clone();
-            state.broadcast(ServerMessage::Ack {
-                command: "update_config".to_string(),
-            });
+            state
+                .with_sim_mut("update_config", |sim| sim.config = config)
+                .await;
         }
 
         ClientMessage::GetWeights => {

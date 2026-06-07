@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ServerMessage, ClientMessage, AnimationFrame, Status, NetworkTopology, TrainingUpdate } from '../lib/protocol';
 
+// Diagnostic console logging is dev-only noise; gate it behind the Vite DEV flag
+// so production bundles stay quiet. Behavior (state updates, reconnect, send) is
+// unchanged either way. `import.meta.env` is injected by Vite; read it through a
+// local cast so this compiles without the ambient vite/client types.
+const DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV ?? false;
+const devLog = (...args: unknown[]) => {
+  if (DEV) console.log(...args);
+};
+const devWarn = (...args: unknown[]) => {
+  if (DEV) console.warn(...args);
+};
+const devError = (...args: unknown[]) => {
+  if (DEV) console.error(...args);
+};
+
 interface UseWebSocketReturn {
   connected: boolean;
   frame: AnimationFrame | null;
@@ -31,18 +46,18 @@ export function useWebSocket(url: string): UseWebSocketReturn {
     ws.onopen = () => {
       setConnected(true);
       setError(null);
-      console.log('WebSocket connected');
+      devLog('WebSocket connected');
     };
 
     ws.onclose = () => {
       setConnected(false);
-      console.log('WebSocket disconnected, reconnecting...');
+      devLog('WebSocket disconnected, reconnecting...');
       // Reconnect after 2 seconds
       reconnectTimeoutRef.current = window.setTimeout(connect, 2000);
     };
 
     ws.onerror = (e) => {
-      console.error('WebSocket error:', e);
+      devError('WebSocket error:', e);
       setError('Connection error');
     };
 
@@ -77,7 +92,7 @@ export function useWebSocket(url: string): UseWebSocketReturn {
             break;
         }
       } catch (e) {
-        console.error('Failed to parse message:', e);
+        devError('Failed to parse message:', e);
       }
     };
   }, [url]);
@@ -95,10 +110,10 @@ export function useWebSocket(url: string): UseWebSocketReturn {
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const json = JSON.stringify(msg);
-      console.log('WebSocket sending:', json);
+      devLog('WebSocket sending:', json);
       wsRef.current.send(json);
     } else {
-      console.warn('WebSocket not connected, cannot send:', msg);
+      devWarn('WebSocket not connected, cannot send:', msg);
     }
   }, []);
 

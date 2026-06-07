@@ -6,6 +6,25 @@ import { ControlPanel } from './components/ControlPanel';
 import { OutputSpikes } from './components/OutputSpikes';
 import type { EndOfSampleBehavior, PulseStyle } from './lib/protocol';
 
+// End-of-sample radio options (value sent to the backend + display label).
+const END_BEHAVIORS: ReadonlyArray<{ value: EndOfSampleBehavior; label: string }> = [
+  { value: 'auto-advance', label: 'Auto advance' },
+  { value: 'stop', label: 'Stop' },
+  { value: 'loop', label: 'Loop current' },
+];
+
+// One header stat: a large colored value above a small uppercase caption.
+// The caption is the element tests locate by text, and its previousSibling is
+// the value, so this DOM shape (value div then caption div) must stay stable.
+function Stat({ value, label, valueClassName }: { value: string; label: string; valueClassName: string }) {
+  return (
+    <div className="text-center">
+      <div className={`text-2xl font-light ${valueClassName}`}>{value}</div>
+      <div className="text-[10px] text-white/40 tracking-widest">{label}</div>
+    </div>
+  );
+}
+
 function App() {
   const wsUrl = `ws://${window.location.host}/ws`;
   const { connected, frame, status, topology, send } = useWebSocket(wsUrl);
@@ -90,24 +109,14 @@ function App() {
 
         {/* Stats */}
         <div className="flex items-center gap-8">
-          <div className="text-center">
-            <div className="text-2xl font-light text-blue-400">{neuronCount}</div>
-            <div className="text-[10px] text-white/40 tracking-widest">NEURONS</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-light text-purple-400">{synapseCount}</div>
-            <div className="text-[10px] text-white/40 tracking-widest">SYNAPSES</div>
-          </div>
-          <div className="text-center">
-            <div className="text-2xl font-light text-orange-400">{activeNeurons}</div>
-            <div className="text-[10px] text-white/40 tracking-widest">ACTIVE</div>
-          </div>
-          <div className="text-center">
-            <div className={`text-2xl font-light ${connected ? 'text-green-400' : 'text-red-400'}`}>
-              {connected ? '60' : '0'}
-            </div>
-            <div className="text-[10px] text-white/40 tracking-widest">FPS</div>
-          </div>
+          <Stat value={String(neuronCount)} label="NEURONS" valueClassName="text-blue-400" />
+          <Stat value={String(synapseCount)} label="SYNAPSES" valueClassName="text-purple-400" />
+          <Stat value={String(activeNeurons)} label="ACTIVE" valueClassName="text-orange-400" />
+          <Stat
+            value={connected ? '60' : '0'}
+            label="FPS"
+            valueClassName={connected ? 'text-green-400' : 'text-red-400'}
+          />
         </div>
       </header>
 
@@ -206,18 +215,14 @@ function App() {
           <div>
             <h3 className="text-[10px] text-white/40 tracking-widest mb-3">AT END OF SAMPLE</h3>
             <div className="space-y-1.5">
-              {[
-                { value: 'auto-advance', label: 'Auto advance' },
-                { value: 'stop', label: 'Stop' },
-                { value: 'loop', label: 'Loop current' },
-              ].map(option => (
+              {END_BEHAVIORS.map(option => (
                 <label key={option.value} className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="radio"
                     name="endBehavior"
                     value={option.value}
                     checked={endOfSampleBehavior === option.value}
-                    onChange={() => handleBehaviorChange(option.value as EndOfSampleBehavior)}
+                    onChange={() => handleBehaviorChange(option.value)}
                     className="w-3 h-3 text-blue-500 bg-white/10 border-white/20
                       focus:ring-blue-500/30 focus:ring-offset-0"
                   />

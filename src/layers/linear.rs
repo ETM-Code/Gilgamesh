@@ -302,6 +302,24 @@ impl Linear {
         self.apply_bias_and_gain(input.dot(&self.weight))
     }
 
+    /// Weighted sum against an externally supplied weight matrix, with this
+    /// layer's sign-aware synapse drive model and bias applied (no current
+    /// gain or cap).
+    ///
+    /// Used by the timestep loop in `forward_quantized_full`, which pre-quantizes
+    /// the weights once and reuses them across timesteps. Computes
+    /// `drive(x @ weight) + b` exactly as the per-timestep inline path did.
+    pub fn forward_with_weight(&self, input: &Array2<f32>, weight: &Array2<f32>) -> Array2<f32> {
+        let mut output = input.dot(weight);
+        self.apply_synapse_drive_model_inplace(&mut output);
+        if let Some(ref bias) = self.bias {
+            for mut row in output.rows_mut() {
+                row += bias;
+            }
+        }
+        output
+    }
+
     /// Forward pass with weight quantization (for hardware simulation)
     ///
     /// Quantizes weights to n-bit resolution before computing output.

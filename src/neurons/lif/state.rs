@@ -28,76 +28,109 @@ pub struct LeakyState {
     pub reset_hold_steps: Option<Array2<u16>>,
 }
 
+/// Which optional state arrays a [`LeakyState`] should allocate.
+///
+/// Each public constructor is a thin preset over [`LeakyState::with_features`];
+/// the flags decide whether pulse tracking, threshold adaptation, and the
+/// hardware-timing counters are present.
+#[derive(Clone, Copy, Debug, Default)]
+struct StateFeatures {
+    pulse_tracking: bool,
+    adaptation: bool,
+    hardware_timing: bool,
+}
+
 impl LeakyState {
-    /// Create new state with membrane only (no pulse tracking or adaptation)
-    pub fn new(mem: Array2<f32>) -> Self {
+    /// Build a state, allocating only the optional arrays requested by `features`.
+    ///
+    /// `initial_threshold` is only used when `features.adaptation` is set.
+    fn with_features(
+        mem: Array2<f32>,
+        features: StateFeatures,
+        initial_threshold: f32,
+    ) -> Self {
+        let shape = mem.raw_dim();
+        let time_since_spike = (features.pulse_tracking || features.hardware_timing)
+            .then(|| Array2::from_elem(shape, f32::INFINITY));
+        let adaptive_threshold = features
+            .adaptation
+            .then(|| Array2::from_elem(shape, initial_threshold));
+        let pending_spike_steps = features.hardware_timing.then(|| Array2::zeros(shape));
+        let reset_hold_steps = features.hardware_timing.then(|| Array2::zeros(shape));
         Self {
             mem,
-            time_since_spike: None,
-            adaptive_threshold: None,
-            pending_spike_steps: None,
-            reset_hold_steps: None,
+            time_since_spike,
+            adaptive_threshold,
+            pending_spike_steps,
+            reset_hold_steps,
         }
+    }
+
+    /// Create new state with membrane only (no pulse tracking or adaptation)
+    pub fn new(mem: Array2<f32>) -> Self {
+        Self::with_features(mem, StateFeatures::default(), 0.0)
     }
 
     /// Create new state with pulse tracking enabled
     pub fn new_with_pulse_tracking(mem: Array2<f32>) -> Self {
-        let shape = mem.raw_dim();
-        Self {
+        Self::with_features(
             mem,
-            time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
-            adaptive_threshold: None,
-            pending_spike_steps: None,
-            reset_hold_steps: None,
-        }
+            StateFeatures {
+                pulse_tracking: true,
+                ..StateFeatures::default()
+            },
+            0.0,
+        )
     }
 
     /// Create new state with threshold adaptation enabled
     pub fn new_with_threshold_adaptation(mem: Array2<f32>, initial_threshold: f32) -> Self {
-        let shape = mem.raw_dim();
-        Self {
+        Self::with_features(
             mem,
-            time_since_spike: None,
-            adaptive_threshold: Some(Array2::from_elem(shape, initial_threshold)),
-            pending_spike_steps: None,
-            reset_hold_steps: None,
-        }
+            StateFeatures {
+                adaptation: true,
+                ..StateFeatures::default()
+            },
+            initial_threshold,
+        )
     }
 
     /// Create new state with both pulse tracking and threshold adaptation
     pub fn new_full(mem: Array2<f32>, initial_threshold: f32) -> Self {
-        let shape = mem.raw_dim();
-        Self {
+        Self::with_features(
             mem,
-            time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
-            adaptive_threshold: Some(Array2::from_elem(shape, initial_threshold)),
-            pending_spike_steps: None,
-            reset_hold_steps: None,
-        }
+            StateFeatures {
+                pulse_tracking: true,
+                adaptation: true,
+                ..StateFeatures::default()
+            },
+            initial_threshold,
+        )
     }
 
     /// Create new state with hardware timing enabled
     pub fn new_with_hardware_timing(mem: Array2<f32>) -> Self {
-        let shape = mem.raw_dim();
-        Self {
+        Self::with_features(
             mem,
-            time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
-            adaptive_threshold: None,
-            pending_spike_steps: Some(Array2::zeros(shape)),
-            reset_hold_steps: Some(Array2::zeros(shape)),
-        }
+            StateFeatures {
+                hardware_timing: true,
+                ..StateFeatures::default()
+            },
+            0.0,
+        )
     }
 
     /// Create new state with all features (pulse, adaptation, hardware timing)
     pub fn new_full_physics(mem: Array2<f32>, initial_threshold: f32) -> Self {
-        let shape = mem.raw_dim();
-        Self {
+        Self::with_features(
             mem,
-            time_since_spike: Some(Array2::from_elem(shape, f32::INFINITY)),
-            adaptive_threshold: Some(Array2::from_elem(shape, initial_threshold)),
-            pending_spike_steps: Some(Array2::zeros(shape)),
-            reset_hold_steps: Some(Array2::zeros(shape)),
-        }
+            StateFeatures {
+                pulse_tracking: true,
+                adaptation: true,
+                hardware_timing: true,
+            },
+            initial_threshold,
+        )
     }
 
     /// Reset membrane to zeros and thresholds to initial value

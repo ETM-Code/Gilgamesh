@@ -145,31 +145,26 @@ impl SimulationState {
 
         let mut synapses = Vec::new();
 
-        // FC1: input -> hidden
-        for (to_idx, row) in network.fc1.weight.outer_iter().enumerate() {
-            for (from_idx, &weight) in row.iter().enumerate() {
-                synapses.push(SynapseInfo {
-                    from_layer: 0,
-                    from_index: from_idx,
-                    to_layer: 1,
-                    to_index: to_idx,
-                    weight,
-                });
+        // A linear weight matrix is stored [target_neuron, source_neuron]: each
+        // outer row is one target neuron, each column a source neuron feeding it.
+        // Push every weight as a source->target synapse for the given layer pair.
+        let mut push_synapses = |weight_matrix: &Array2<f32>, source_layer, target_layer| {
+            for (target_index, row) in weight_matrix.outer_iter().enumerate() {
+                for (source_index, &weight) in row.iter().enumerate() {
+                    synapses.push(SynapseInfo {
+                        from_layer: source_layer,
+                        from_index: source_index,
+                        to_layer: target_layer,
+                        to_index: target_index,
+                        weight,
+                    });
+                }
             }
-        }
+        };
 
-        // FC2: hidden -> output
-        for (to_idx, row) in network.fc2.weight.outer_iter().enumerate() {
-            for (from_idx, &weight) in row.iter().enumerate() {
-                synapses.push(SynapseInfo {
-                    from_layer: 1,
-                    from_index: from_idx,
-                    to_layer: 2,
-                    to_index: to_idx,
-                    weight,
-                });
-            }
-        }
+        // FC1: input (0) -> hidden (1); FC2: hidden (1) -> output (2).
+        push_synapses(&network.fc1.weight, 0, 1);
+        push_synapses(&network.fc2.weight, 1, 2);
 
         let total_neurons: usize = self.layer_sizes.iter().sum();
 
@@ -241,6 +236,66 @@ impl SimulationState {
             self.hidden_state = Some(net.lif1.init_state(1));
             self.output_state = Some(net.lif2.init_state(1));
         }
+    }
+
+    /// Advance the inference simulation by one timestep for the current sample.
+    ///
+    /// Runs FC1 -> LIF1 -> FC2 -> LIF2 for the current sample image, updates the
+    /// hidden/output neuron states, records the per-layer spike masks for
+    /// visualization, accumulates the output spike histogram, and bumps the step
+    /// counter. No-op (returns without advancing) if no network/images are loaded
+    /// or the current sample is out of range.
+    fn advance_inference_step(&mut self) {
+        let has_network = self.network.is_some();
+        let has_images = self.test_images.is_some();
+        if !has_network || !has_images {
+            return;
+        }
+
+        let current_sample = self.current_sample;
+        let images = self.test_images.as_ref().unwrap();
+        if current_sample >= images.nrows() {
+            return;
+        }
+
+        // Get sample data
+        let sample_image = images.row(current_sample).to_owned();
+        let sample_batch = sample_image.insert_axis(Axis(0));
+
+        // Take states first to avoid borrow checker issues
+        let hidden_state = self.hidden_state.take();
+        let output_state = self.output_state.take();
+
+        // Run forward pass
+        let network = self.network.as_ref().unwrap();
+
+        // FC1 -> LIF1
+        let fc1_out = network.fc1.forward(&sample_batch);
+        let hidden_state = hidden_state.unwrap_or_else(|| network.lif1.init_state(1));
+        let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
+
+        // FC2 -> LIF2
+        let fc2_out = network.fc2.forward(&hidden_spikes);
+        let output_state = output_state.unwrap_or_else(|| network.lif2.init_state(1));
+        let (output_spikes_arr, new_output_state, _) =
+            network.lif2.forward(&fc2_out, &output_state);
+
+        // Update state
+        self.hidden_state = Some(new_hidden_state);
+        self.output_state = Some(new_output_state);
+
+        // Record spikes for visualization
+        self.last_hidden_spikes = hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
+        self.last_output_spikes = output_spikes_arr.row(0).iter().map(|&v| v > 0.5).collect();
+
+        // Accumulate output spikes
+        for (i, &spike) in output_spikes_arr.row(0).iter().enumerate() {
+            if spike > 0.5 && i < self.output_spikes.len() {
+                self.output_spikes[i] += 1;
+            }
+        }
+
+        self.current_step += 1;
     }
 
     /// Get current image pixels
@@ -337,43 +392,8 @@ async fn run_inference_step(state: &Arc<AppState>) {
         return;
     }
 
-    // Get sample data
-    let sample_image = images.row(current_sample).to_owned();
-    let sample_batch = sample_image.insert_axis(Axis(0));
-
-    // Take states first to avoid borrow checker issues
-    let hidden_state = sim.hidden_state.take();
-    let output_state = sim.output_state.take();
-
-    // Run forward pass
-    let network = sim.network.as_ref().unwrap();
-
-    // FC1 -> LIF1
-    let fc1_out = network.fc1.forward(&sample_batch);
-    let hidden_state = hidden_state.unwrap_or_else(|| network.lif1.init_state(1));
-    let (hidden_spikes, new_hidden_state, _) = network.lif1.forward(&fc1_out, &hidden_state);
-
-    // FC2 -> LIF2
-    let fc2_out = network.fc2.forward(&hidden_spikes);
-    let output_state = output_state.unwrap_or_else(|| network.lif2.init_state(1));
-    let (output_spikes_arr, new_output_state, _) = network.lif2.forward(&fc2_out, &output_state);
-
-    // Update state
-    sim.hidden_state = Some(new_hidden_state);
-    sim.output_state = Some(new_output_state);
-
-    // Record spikes for visualization
-    sim.last_hidden_spikes = hidden_spikes.row(0).iter().map(|&v| v > 0.5).collect();
-    sim.last_output_spikes = output_spikes_arr.row(0).iter().map(|&v| v > 0.5).collect();
-
-    // Accumulate output spikes
-    for (i, &spike) in output_spikes_arr.row(0).iter().enumerate() {
-        if spike > 0.5 && i < sim.output_spikes.len() {
-            sim.output_spikes[i] += 1;
-        }
-    }
-
-    sim.current_step += 1;
+    // Advance the network by one timestep (forward pass + state/spike bookkeeping).
+    sim.advance_inference_step();
     let current_step = sim.current_step;
     let total_steps = sim.total_steps;
 

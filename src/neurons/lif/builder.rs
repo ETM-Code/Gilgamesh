@@ -8,6 +8,7 @@ use super::mode::{
     NeuronMode, ResetMechanism,
 };
 use super::state::LeakyState;
+use crate::neurons::{DEFAULT_DT, DEFAULT_SPIKE_GRAD_SLOPE, DEFAULT_THRESHOLD};
 
 impl Leaky {
     /// Create a new Leaky neuron layer (defaults to Physics mode)
@@ -17,8 +18,8 @@ impl Leaky {
     pub fn new(size: usize, beta: f32) -> Self {
         Self {
             beta: beta.clamp(0.0, 1.0),
-            threshold: 1.0,
-            spike_grad: SurrogateGradient::fast_sigmoid(25.0),
+            threshold: DEFAULT_THRESHOLD,
+            spike_grad: SurrogateGradient::fast_sigmoid(DEFAULT_SPIKE_GRAD_SLOPE),
             reset_mechanism: ResetMechanism::Subtract,
             size,
             mode: NeuronMode::default(),
@@ -29,8 +30,8 @@ impl Leaky {
     pub fn new_simple(size: usize, beta: f32) -> Self {
         Self {
             beta: beta.clamp(0.0, 1.0),
-            threshold: 1.0,
-            spike_grad: SurrogateGradient::fast_sigmoid(25.0),
+            threshold: DEFAULT_THRESHOLD,
+            spike_grad: SurrogateGradient::fast_sigmoid(DEFAULT_SPIKE_GRAD_SLOPE),
             reset_mechanism: ResetMechanism::Subtract,
             size,
             mode: NeuronMode::Simple,
@@ -42,8 +43,8 @@ impl Leaky {
         let beta = (-dt / tau_m).exp();
         Self {
             beta,
-            threshold: 1.0,
-            spike_grad: SurrogateGradient::fast_sigmoid(25.0),
+            threshold: DEFAULT_THRESHOLD,
+            spike_grad: SurrogateGradient::fast_sigmoid(DEFAULT_SPIKE_GRAD_SLOPE),
             reset_mechanism: ResetMechanism::Subtract,
             size,
             mode: NeuronMode::Physics {
@@ -73,8 +74,8 @@ impl Leaky {
         let beta = (-dt / tau_m).exp();
         Self {
             beta,
-            threshold: 1.0,
-            spike_grad: SurrogateGradient::fast_sigmoid(25.0),
+            threshold: DEFAULT_THRESHOLD,
+            spike_grad: SurrogateGradient::fast_sigmoid(DEFAULT_SPIKE_GRAD_SLOPE),
             reset_mechanism: ResetMechanism::Subtract,
             size,
             mode: NeuronMode::Physics {
@@ -106,7 +107,7 @@ impl Leaky {
         Self {
             beta,
             threshold: theta_low,
-            spike_grad: SurrogateGradient::fast_sigmoid(25.0),
+            spike_grad: SurrogateGradient::fast_sigmoid(DEFAULT_SPIKE_GRAD_SLOPE),
             reset_mechanism: ResetMechanism::Subtract,
             size,
             mode: NeuronMode::Physics {
@@ -157,40 +158,42 @@ impl Leaky {
         matches!(self.mode, NeuronMode::Physics { .. })
     }
 
+    /// Allocate a zeroed membrane matrix for `batch_size` samples of this layer.
+    fn zero_mem(&self, batch_size: usize) -> Array2<f32> {
+        Array2::zeros((batch_size, self.size))
+    }
+
     /// Initialize membrane state for a batch (no pulse tracking or adaptation)
     pub fn init_state(&self, batch_size: usize) -> LeakyState {
-        LeakyState::new(Array2::zeros((batch_size, self.size)))
+        LeakyState::new(self.zero_mem(batch_size))
     }
 
     /// Initialize membrane state with pulse tracking enabled
     pub fn init_state_with_pulse(&self, batch_size: usize) -> LeakyState {
-        LeakyState::new_with_pulse_tracking(Array2::zeros((batch_size, self.size)))
+        LeakyState::new_with_pulse_tracking(self.zero_mem(batch_size))
     }
 
     /// Initialize membrane state with threshold adaptation enabled
     pub fn init_state_with_adaptation(&self, batch_size: usize) -> LeakyState {
         let initial_threshold = self.mode.theta_low();
-        LeakyState::new_with_threshold_adaptation(
-            Array2::zeros((batch_size, self.size)),
-            initial_threshold,
-        )
+        LeakyState::new_with_threshold_adaptation(self.zero_mem(batch_size), initial_threshold)
     }
 
     /// Initialize membrane state with all physics features (pulse + adaptation)
     pub fn init_state_full(&self, batch_size: usize) -> LeakyState {
         let initial_threshold = self.mode.theta_low();
-        LeakyState::new_full(Array2::zeros((batch_size, self.size)), initial_threshold)
+        LeakyState::new_full(self.zero_mem(batch_size), initial_threshold)
     }
 
     /// Initialize membrane state with hardware timing enabled
     pub fn init_state_with_hardware_timing(&self, batch_size: usize) -> LeakyState {
-        LeakyState::new_with_hardware_timing(Array2::zeros((batch_size, self.size)))
+        LeakyState::new_with_hardware_timing(self.zero_mem(batch_size))
     }
 
     /// Get the current dt for physics mode (or default 1ms for simple mode)
     pub fn get_dt(&self) -> f32 {
         match &self.mode {
-            NeuronMode::Simple => 0.001,
+            NeuronMode::Simple => DEFAULT_DT,
             NeuronMode::Physics { dt, .. } => *dt,
         }
     }
@@ -199,7 +202,7 @@ impl Leaky {
     pub fn get_tau_m(&self) -> f32 {
         match &self.mode {
             NeuronMode::Simple => {
-                let dt = 0.001;
+                let dt = DEFAULT_DT;
                 if self.beta > 0.0 && self.beta < 1.0 {
                     -dt / self.beta.ln()
                 } else {

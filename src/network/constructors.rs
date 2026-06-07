@@ -1,13 +1,12 @@
 //! Network constructor variants and shared builder helpers.
 
 use crate::layers::Linear;
-use crate::neurons::Leaky;
+use crate::neurons::{Leaky, DEFAULT_SPIKE_GRAD_SLOPE};
 use crate::surrogate::SurrogateGradient;
 
 use super::network::Network;
 
 const DEFAULT_SPIKE_SCALE: f32 = 1.0;
-const DEFAULT_SPIKE_GRAD_SLOPE: f32 = 25.0;
 
 impl Network {
     fn default_spike_grad() -> SurrogateGradient {

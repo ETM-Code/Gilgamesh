@@ -1,7 +1,7 @@
 //! Network struct and implementation
 
 use crate::layers::Linear;
-use crate::neurons::{Leaky, NeuronMode};
+use crate::neurons::{Leaky, NeuronMode, DEFAULT_DT};
 use ndarray::{Array1, Array2};
 use rand::Rng;
 
@@ -12,7 +12,14 @@ use super::trace::SimulationTrace;
 
 const SPIKING_NORMALISATION_FACTOR: f32 = 0.3081;
 const SPIKING_OFFSET: f32 = 0.1307;
-const DEFAULT_DT: f32 = 0.001;
+
+/// Binary-OR two spike arrays from a two-phase (pulse-on / pulse-off) update.
+///
+/// Each input holds non-negative spike values, so summing and thresholding at
+/// zero yields a 1.0 wherever *either* phase produced a spike, 0.0 otherwise.
+fn combine_binary_spikes(a: &Array2<f32>, b: &Array2<f32>) -> Array2<f32> {
+    (a + b).mapv(|v| if v > 0.0 { 1.0 } else { 0.0 })
+}
 const DEFAULT_SPIKE_SCALE: f32 = 1.0;
 const SPIKE_SCALE_EPSILON: f32 = 1e-6;
 
@@ -203,9 +210,7 @@ impl Network {
                     .forward_with_dt(&zero_input, &state_after_pulse, t_off);
 
             // Combine: spike if either phase produced one
-            let combined_spikes = phase2_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 })
-                + phase1_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
-            let combined_spikes = combined_spikes.mapv(|v| if v > 0.0 { 1.0 } else { 0.0 });
+            let combined_spikes = combine_binary_spikes(&phase1_spikes, &phase2_spikes);
 
             // Use phase1 cache for gradient computation (when current is nonzero)
             (combined_spikes, lif2_state, phase1_cache)
@@ -409,14 +414,7 @@ impl Network {
             );
 
             // Layer 1: FC -> LIF (using pre-quantized weights)
-            let mut hidden_current = fc1_input.dot(&fc1_weight);
-            self.fc1
-                .apply_synapse_drive_model_inplace(&mut hidden_current);
-            if let Some(ref b) = self.fc1.bias {
-                for mut row in hidden_current.rows_mut() {
-                    row += b;
-                }
-            }
+            let hidden_current = self.fc1.forward_with_weight(&fc1_input, &fc1_weight);
 
             // In physics mode with pulse stretching, use pulse output between layers
             // to match physical circuit behavior. Binary spikes are kept in cache for backward pass.
@@ -435,14 +433,7 @@ impl Network {
             };
 
             // Layer 2: FC -> LIF (using pre-quantized weights)
-            let mut output_current = hidden_output.dot(&fc2_weight);
-            self.fc2
-                .apply_synapse_drive_model_inplace(&mut output_current);
-            if let Some(ref b) = self.fc2.bias {
-                for mut row in output_current.rows_mut() {
-                    row += b;
-                }
-            }
+            let output_current = self.fc2.forward_with_weight(&hidden_output, &fc2_weight);
             let (output_spikes, lif2_state, lif2_cache) =
                 self.lif2.forward(&output_current, &state.lif2_state);
 

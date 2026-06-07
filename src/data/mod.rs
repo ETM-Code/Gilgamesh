@@ -8,6 +8,29 @@ use mnist::MnistBuilder;
 use ndarray::{Array1, Array2};
 use ndarray_npy::read_npy;
 
+/// Copy the rows at `indices` out of `images`/`labels` into a contiguous batch.
+///
+/// Shared by every dataset's `get_*_batch` implementation: builds a
+/// `[indices.len(), features]` image matrix and the matching label vector.
+fn make_batch(
+    images: &Array2<f32>,
+    labels: &[usize],
+    indices: &[usize],
+) -> (Array2<f32>, Vec<usize>) {
+    let batch_size = indices.len();
+    let features = images.shape()[1];
+
+    let mut batch_images = Array2::zeros((batch_size, features));
+    let mut batch_labels = Vec::with_capacity(batch_size);
+
+    for (i, &idx) in indices.iter().enumerate() {
+        batch_images.row_mut(i).assign(&images.row(idx));
+        batch_labels.push(labels[idx]);
+    }
+
+    (batch_images, batch_labels)
+}
+
 /// Generic dataset interface used by training and evaluation.
 pub trait Dataset {
     /// Get a batch of training data.
@@ -57,31 +80,11 @@ impl ArrayDataset {
 
 impl Dataset for ArrayDataset {
     fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
-        let batch_size = indices.len();
-        let features = self.feature_dim();
-        let mut batch_images = Array2::zeros((batch_size, features));
-        let mut batch_labels = Vec::with_capacity(batch_size);
-
-        for (i, &idx) in indices.iter().enumerate() {
-            batch_images.row_mut(i).assign(&self.train_images.row(idx));
-            batch_labels.push(self.train_labels[idx]);
-        }
-
-        (batch_images, batch_labels)
+        make_batch(&self.train_images, &self.train_labels, indices)
     }
 
     fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
-        let batch_size = indices.len();
-        let features = self.feature_dim();
-        let mut batch_images = Array2::zeros((batch_size, features));
-        let mut batch_labels = Vec::with_capacity(batch_size);
-
-        for (i, &idx) in indices.iter().enumerate() {
-            batch_images.row_mut(i).assign(&self.test_images.row(idx));
-            batch_labels.push(self.test_labels[idx]);
-        }
-
-        (batch_images, batch_labels)
+        make_batch(&self.test_images, &self.test_labels, indices)
     }
 
     fn train_len(&self) -> usize {
@@ -251,34 +254,12 @@ impl MnistDataset {
 
     /// Get a batch of training data
     pub fn get_train_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
-        let batch_size = indices.len();
-        let features = self.feature_dim();
-
-        let mut batch_images = Array2::zeros((batch_size, features));
-        let mut batch_labels = Vec::with_capacity(batch_size);
-
-        for (i, &idx) in indices.iter().enumerate() {
-            batch_images.row_mut(i).assign(&self.train_images.row(idx));
-            batch_labels.push(self.train_labels[idx]);
-        }
-
-        (batch_images, batch_labels)
+        make_batch(&self.train_images, &self.train_labels, indices)
     }
 
     /// Get a batch of test data
     pub fn get_test_batch(&self, indices: &[usize]) -> (Array2<f32>, Vec<usize>) {
-        let batch_size = indices.len();
-        let features = self.feature_dim();
-
-        let mut batch_images = Array2::zeros((batch_size, features));
-        let mut batch_labels = Vec::with_capacity(batch_size);
-
-        for (i, &idx) in indices.iter().enumerate() {
-            batch_images.row_mut(i).assign(&self.test_images.row(idx));
-            batch_labels.push(self.test_labels[idx]);
-        }
-
-        (batch_images, batch_labels)
+        make_batch(&self.test_images, &self.test_labels, indices)
     }
 
     /// Number of training samples

@@ -12,6 +12,9 @@ interface ControlPanelProps {
 const secondaryBtn =
   'px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-white/70 hover:text-white transition-colors text-sm';
 
+// Thin vertical separator between control groups.
+const Divider = () => <div className="w-px h-5 bg-white/10" />;
+
 export function ControlPanel({
   paused,
   currentStep,
@@ -41,7 +44,7 @@ export function ControlPanel({
         Next →
       </button>
 
-      <div className="w-px h-5 bg-white/10" />
+      <Divider />
 
       {/* Playback */}
       <button
@@ -69,7 +72,7 @@ export function ControlPanel({
         🎲
       </button>
 
-      <div className="w-px h-5 bg-white/10" />
+      <Divider />
 
       {/* Progress */}
       <div className="flex-1 flex items-center gap-3">
