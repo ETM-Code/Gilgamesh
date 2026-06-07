@@ -408,12 +408,6 @@ impl Linear {
     }
 }
 
-/// Cache for linear layer backward pass
-#[derive(Clone, Debug)]
-pub struct LinearCache {
-    pub input: Array2<f32>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

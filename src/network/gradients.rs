@@ -25,18 +25,6 @@ impl NetworkGradients {
         }
     }
 
-    /// Add another gradient to this one
-    pub fn add(&mut self, other: &NetworkGradients) {
-        self.fc1_weight = &self.fc1_weight + &other.fc1_weight;
-        if let (Some(ref mut acc), Some(ref other_bias)) = (&mut self.fc1_bias, &other.fc1_bias) {
-            *acc = &*acc + other_bias;
-        }
-        self.fc2_weight = &self.fc2_weight + &other.fc2_weight;
-        if let (Some(ref mut acc), Some(ref other_bias)) = (&mut self.fc2_bias, &other.fc2_bias) {
-            *acc = &*acc + other_bias;
-        }
-    }
-
     /// Scale gradients by a factor
     pub fn scale(&mut self, factor: f32) {
         self.fc1_weight *= factor;

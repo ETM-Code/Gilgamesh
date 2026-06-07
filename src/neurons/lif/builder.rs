@@ -152,16 +152,6 @@ impl Leaky {
         self
     }
 
-    /// Get tau_pulse for pulse stretching
-    pub fn get_tau_pulse(&self) -> f32 {
-        self.mode.tau_pulse()
-    }
-
-    /// Get v_peak for pulse stretching
-    pub fn get_v_peak(&self) -> f32 {
-        self.mode.v_peak()
-    }
-
     /// Check if in physics mode
     pub fn is_physics_mode(&self) -> bool {
         matches!(self.mode, NeuronMode::Physics { .. })

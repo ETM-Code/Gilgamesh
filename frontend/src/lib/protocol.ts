@@ -90,6 +90,9 @@ export interface Ack {
 // End of sample behavior
 export type EndOfSampleBehavior = 'auto-advance' | 'stop' | 'loop';
 
+// Pulse rendering style for the network visualization
+export type PulseStyle = 'ball' | 'electricity';
+
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'GetStatus' }

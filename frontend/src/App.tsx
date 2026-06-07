@@ -4,9 +4,7 @@ import { NetworkCanvas } from './components/NetworkCanvas';
 import { MnistDisplay } from './components/MnistDisplay';
 import { ControlPanel } from './components/ControlPanel';
 import { OutputSpikes } from './components/OutputSpikes';
-
-type EndOfSampleBehavior = 'auto-advance' | 'stop' | 'loop';
-type PulseStyle = 'ball' | 'electricity';
+import type { EndOfSampleBehavior, PulseStyle } from './lib/protocol';
 
 function App() {
   const wsUrl = `ws://${window.location.host}/ws`;
@@ -72,11 +70,8 @@ function App() {
 
   // Send end-of-sample behavior updates
   const handleBehaviorChange = (behavior: EndOfSampleBehavior) => {
-    console.log('Setting behavior to:', behavior);
     setEndOfSampleBehavior(behavior);
-    const msg = { type: 'SetEndOfSampleBehavior', behavior };
-    console.log('Sending message:', JSON.stringify(msg));
-    send(msg as any);
+    send({ type: 'SetEndOfSampleBehavior', behavior });
   };
 
   // Calculate stats

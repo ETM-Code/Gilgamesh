@@ -77,29 +77,29 @@ impl Leaky {
         spikes: &Array2<f32>,
         dt: f32,
     ) -> Option<Array2<f32>> {
-        if let Some(time_since_spike) = prev {
-            let mut new_time_since_spike = time_since_spike + dt;
-            new_time_since_spike
-                .iter_mut()
-                .zip(spikes.iter())
-                .for_each(|(time, &spike)| {
-                    if spike > 0.0 {
-                        *time = 0.0;
-                    }
-                });
-            Some(new_time_since_spike)
-        } else {
-            let mut time_since_spike = Array2::from_elem(spikes.raw_dim(), f32::INFINITY);
-            time_since_spike
-                .iter_mut()
-                .zip(spikes.iter())
-                .for_each(|(time, &spike)| {
-                    if spike > 0.0 {
-                        *time = 0.0;
-                    }
-                });
-            Some(time_since_spike)
-        }
+        let mut time_since_spike = prev.map_or_else(
+            || Array2::from_elem(spikes.raw_dim(), f32::INFINITY),
+            |t| t + dt,
+        );
+        time_since_spike
+            .iter_mut()
+            .zip(spikes.iter())
+            .for_each(|(time, &spike)| {
+                if spike > 0.0 {
+                    *time = 0.0;
+                }
+            });
+        Some(time_since_spike)
+    }
+
+    /// Exact average of an exponential pulse `exp(-t/tau_pulse)` over one timestep.
+    ///
+    /// `(tau_pulse / dt) * (1 - exp(-dt/tau_pulse))`, the factor that converts a
+    /// peak pulse amplitude into the average charge a continuous RC circuit would
+    /// integrate over `[t, t+dt]`.
+    #[inline]
+    fn pulse_charge_scale(tau_pulse: f32, dt: f32) -> f32 {
+        (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp())
     }
 
     /// Compute pulse output from time since spike
@@ -118,8 +118,7 @@ impl Leaky {
         dt: f32,
     ) -> Array2<f32> {
         let cutoff = 5.0 * tau_pulse;
-        // Exact average of exponential pulse over one timestep
-        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
+        let charge_scale = Self::pulse_charge_scale(tau_pulse, dt);
         time_since_spike.mapv(|elapsed| {
             if elapsed < cutoff {
                 v_peak * charge_scale * (-elapsed / tau_pulse).exp()
@@ -199,7 +198,28 @@ impl Leaky {
         membrane_noise_std: f32,
         rng: &mut R,
     ) -> (Array2<f32>, LeakyState, LeakyCache) {
-        let mut mem_new = self.compute_membrane(&state.mem, input);
+        self.forward_noisy_with_dt(
+            input,
+            state,
+            threshold_noise_std,
+            membrane_noise_std,
+            rng,
+            self.get_dt(),
+        )
+    }
+
+    /// Forward pass with noise injection AND variable timestep.
+    /// Used for the two-phase hardware pulse model during training.
+    pub fn forward_noisy_with_dt<R: Rng>(
+        &self,
+        input: &Array2<f32>,
+        state: &LeakyState,
+        threshold_noise_std: f32,
+        membrane_noise_std: f32,
+        rng: &mut R,
+        dt: f32,
+    ) -> (Array2<f32>, LeakyState, LeakyCache) {
+        let mut mem_new = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
 
         if membrane_noise_std.is_finite() && membrane_noise_std > 0.0 {
             if let Ok(normal) = Normal::new(0.0, membrane_noise_std as f64) {
@@ -241,59 +261,6 @@ impl Leaky {
         (spikes, LeakyState::new(mem_reset), cache)
     }
 
-    /// Forward pass with noise injection AND variable timestep.
-    /// Used for the two-phase hardware pulse model during training.
-    pub fn forward_noisy_with_dt<R: Rng>(
-        &self,
-        input: &Array2<f32>,
-        state: &LeakyState,
-        threshold_noise_std: f32,
-        membrane_noise_std: f32,
-        rng: &mut R,
-        dt: f32,
-    ) -> (Array2<f32>, LeakyState, LeakyCache) {
-        let mut mem_new = self.compute_membrane_with_dt(&state.mem, input, Some(dt));
-
-        if membrane_noise_std.is_finite() && membrane_noise_std > 0.0 {
-            if let Ok(normal) = Normal::new(0.0, membrane_noise_std as f64) {
-                for v in mem_new.iter_mut() {
-                    *v += normal.sample(rng) as f32;
-                }
-            }
-        }
-
-        let mem_shifted_for_grad = &mem_new - self.threshold;
-
-        let mut effective_threshold = if threshold_noise_std.is_finite()
-            && threshold_noise_std > 0.0
-            && self.threshold.is_finite()
-            && self.threshold != 0.0
-        {
-            let std = (self.threshold * threshold_noise_std).abs();
-            if let Ok(normal) = Normal::new(0.0, std as f64) {
-                self.threshold + normal.sample(rng) as f32
-            } else {
-                self.threshold
-            }
-        } else {
-            self.threshold
-        };
-        if self.threshold > 0.0 {
-            effective_threshold = effective_threshold.max(1e-6);
-        }
-
-        let mem_shifted = &mem_new - effective_threshold;
-        let spikes = Self::generate_spikes(&mem_shifted);
-        let mem_reset = self.apply_reset(&mem_new, &spikes, effective_threshold);
-
-        let cache = LeakyCache {
-            mem_shifted: mem_shifted_for_grad,
-            spikes: spikes.clone(),
-        };
-
-        (spikes, LeakyState::new(mem_reset), cache)
-    }
-
     /// Forward pass with pulse stretching (physics mode)
     pub fn forward_with_pulse(
         &self,
@@ -316,11 +283,10 @@ impl Leaky {
         let new_time_since_spike =
             Self::update_time_since_spike(state.time_since_spike.as_ref(), &spikes, dt);
 
-        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
         let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
             Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak, dt)
         } else {
-            &spikes * (v_peak * charge_scale)
+            &spikes * (v_peak * Self::pulse_charge_scale(tau_pulse, dt))
         };
 
         let cache = LeakyCache {
@@ -438,11 +404,10 @@ impl Leaky {
             theta_high,
         ));
 
-        let charge_scale = (tau_pulse / dt) * (1.0 - (-dt / tau_pulse).exp());
         let pulse_output = if let Some(ref time_since_spike) = new_time_since_spike {
             Self::compute_pulse_output(time_since_spike, tau_pulse, v_peak, dt)
         } else {
-            &spikes * (v_peak * charge_scale)
+            &spikes * (v_peak * Self::pulse_charge_scale(tau_pulse, dt))
         };
 
         let cache = LeakyCache {

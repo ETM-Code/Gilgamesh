@@ -9,6 +9,9 @@ interface ControlPanelProps {
   send: (msg: ClientMessage) => void;
 }
 
+const secondaryBtn =
+  'px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-white/70 hover:text-white transition-colors text-sm';
+
 export function ControlPanel({
   paused,
   currentStep,
@@ -22,7 +25,7 @@ export function ControlPanel({
       {/* Navigation */}
       <button
         onClick={() => send({ type: 'PrevSample' })}
-        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-white/70 hover:text-white transition-colors text-sm"
+        className={secondaryBtn}
       >
         ← Prev
       </button>
@@ -33,7 +36,7 @@ export function ControlPanel({
 
       <button
         onClick={() => send({ type: 'NextSample' })}
-        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-white/70 hover:text-white transition-colors text-sm"
+        className={secondaryBtn}
       >
         Next →
       </button>
@@ -54,14 +57,14 @@ export function ControlPanel({
 
       <button
         onClick={() => send({ type: 'RestartSample' })}
-        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-white/70 hover:text-white transition-colors text-sm"
+        className={secondaryBtn}
       >
         ↻
       </button>
 
       <button
         onClick={() => send({ type: 'RandomSample' })}
-        className="px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded text-white/70 hover:text-white transition-colors text-sm"
+        className={secondaryBtn}
       >
         🎲
       </button>

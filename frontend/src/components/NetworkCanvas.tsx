@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo, useCallback } from 'react';
-import type { NeuronState, NetworkTopology } from '../lib/protocol';
+import type { NeuronState, NetworkTopology, SynapseInfo, PulseStyle } from '../lib/protocol';
 
 interface NetworkCanvasProps {
   neurons: NeuronState[];
@@ -7,7 +7,7 @@ interface NetworkCanvasProps {
   width: number;
   height: number;
   speed: number;
-  pulseStyle: 'ball' | 'electricity';
+  pulseStyle: PulseStyle;
   showInputCurrent: boolean;
 }
 
@@ -48,7 +48,7 @@ export function NetworkCanvas({
   // Build neuron state lookup
   const neuronStates = useMemo(() => {
     const map = new Map<string, NeuronState>();
-    neurons.forEach(n => map.set(`${n.layer}-${n.index}`, n));
+    neurons.forEach(n => map.set(neuronKey(n.layer, n.index), n));
     return map;
   }, [neurons]);
 
@@ -80,7 +80,7 @@ export function NetworkCanvas({
           : Math.floor((slot / (maxVisible - 1)) * (size - 1));
 
         const y = padding + (slot + 1) * spacing;
-        const key = `${layerIdx}-${neuronIdx}`;
+        const key = neuronKey(layerIdx, neuronIdx);
 
         positions.set(key, { x, y });
         indices.push(neuronIdx);
@@ -106,7 +106,7 @@ export function NetworkCanvas({
       const nextLayerIndices = visibleNeurons.get(layerIdx + 1) || [];
 
       indices.forEach(neuronIdx => {
-        const key = `${layerIdx}-${neuronIdx}`;
+        const key = neuronKey(layerIdx, neuronIdx);
         const state = neuronStates.get(key);
         if (!state) return;
 
@@ -130,14 +130,11 @@ export function NetworkCanvas({
             const numPulses = Math.min(nextLayerIndices.length, isInput ? 3 : 8);
             for (let i = 0; i < numPulses; i++) {
               const targetIdx = nextLayerIndices[Math.floor(Math.random() * nextLayerIndices.length)];
-              const toPos = positions.get(`${layerIdx + 1}-${targetIdx}`);
+              const toPos = positions.get(neuronKey(layerIdx + 1, targetIdx));
               if (!toPos) continue;
 
               // Find weight for this connection (approximate)
-              const synapse = topology.synapses.find(
-                s => s.from_layer === layerIdx && s.from_index === neuronIdx &&
-                     s.to_layer === layerIdx + 1 && s.to_index === targetIdx
-              );
+              const synapse = findSynapse(topology, layerIdx, neuronIdx, layerIdx + 1, targetIdx);
               const weight = synapse?.weight ?? 0.5;
               const isExcitatory = weight >= 0;
 
@@ -201,23 +198,20 @@ export function NetworkCanvas({
       if (!toIndices) return;
 
       fromIndices.forEach(fromIdx => {
-        const fromKey = `${fromLayer}-${fromIdx}`;
+        const fromKey = neuronKey(fromLayer, fromIdx);
         const fromPos = positions.get(fromKey);
         if (!fromPos) return;
 
         const fromState = neuronStates.get(fromKey);
-        const isActive = fromState?.spiking || (fromState?.membrane ?? 0) > 0.3;
+        const active = isActive(fromState, 0.3);
 
         toIndices.forEach(toIdx => {
-          const toKey = `${toLayer}-${toIdx}`;
+          const toKey = neuronKey(toLayer, toIdx);
           const toPos = positions.get(toKey);
           if (!toPos) return;
 
           // Find weight
-          const synapse = topology.synapses.find(
-            s => s.from_layer === fromLayer && s.from_index === fromIdx &&
-                 s.to_layer === toLayer && s.to_index === toIdx
-          );
+          const synapse = findSynapse(topology, fromLayer, fromIdx, toLayer, toIdx);
 
           if (!synapse) return;
 
@@ -227,7 +221,7 @@ export function NetworkCanvas({
 
           // Alpha and width based on weight
           const baseAlpha = 0.05 + weightMag * 0.2;
-          const alpha = isActive ? Math.min(baseAlpha * 2.5, 0.6) : baseAlpha;
+          const alpha = active ? Math.min(baseAlpha * 2.5, 0.6) : baseAlpha;
           const lineWidth = 0.3 + weightMag * 2;
 
           ctx.strokeStyle = `rgba(${hexToRgb(synapseColor.base)}, ${alpha})`;
@@ -314,8 +308,8 @@ export function NetworkCanvas({
       const state = neuronStates.get(key);
       const membrane = state?.membrane ?? 0;
       const spiking = state?.spiking ?? false;
-      const layer = parseInt(key.split('-')[0]);
-      const layerColor = LAYER_COLORS[layer] || LAYER_COLORS[0];
+      const layer = neuronKeyLayer(key);
+      const color = layerColor(layer);
       const isInput = layer === 0;
 
       const baseRadius = 5;
@@ -327,7 +321,7 @@ export function NetworkCanvas({
         const ringRadius = radius + pulsePhase * 20;
         const ringAlpha = (1 - pulsePhase) * membrane * 0.4;
 
-        ctx.strokeStyle = `rgba(${hexToRgb(layerColor.glow)}, ${ringAlpha})`;
+        ctx.strokeStyle = `rgba(${hexToRgb(color.glow)}, ${ringAlpha})`;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, ringRadius, 0, Math.PI * 2);
@@ -338,8 +332,8 @@ export function NetworkCanvas({
       if (membrane > 0.2 || spiking) {
         const glowRadius = spiking ? 25 : 12 * membrane;
         const gradient = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowRadius);
-        gradient.addColorStop(0, `rgba(${hexToRgb(layerColor.glow)}, ${spiking ? 0.8 : 0.4 * membrane})`);
-        gradient.addColorStop(0.6, `rgba(${hexToRgb(layerColor.glow)}, ${spiking ? 0.2 : 0.1 * membrane})`);
+        gradient.addColorStop(0, `rgba(${hexToRgb(color.glow)}, ${spiking ? 0.8 : 0.4 * membrane})`);
+        gradient.addColorStop(0.6, `rgba(${hexToRgb(color.glow)}, ${spiking ? 0.2 : 0.1 * membrane})`);
         gradient.addColorStop(1, 'transparent');
 
         ctx.fillStyle = gradient;
@@ -357,11 +351,11 @@ export function NetworkCanvas({
 
       if (spiking) {
         bodyGradient.addColorStop(0, '#ffffff');
-        bodyGradient.addColorStop(0.4, layerColor.glow);
-        bodyGradient.addColorStop(1, layerColor.base);
+        bodyGradient.addColorStop(0.4, color.glow);
+        bodyGradient.addColorStop(1, color.base);
       } else {
-        bodyGradient.addColorStop(0, `rgba(${hexToRgb(layerColor.glow)}, ${0.3 + intensity * 0.7})`);
-        bodyGradient.addColorStop(1, `rgba(${hexToRgb(layerColor.base)}, ${0.2 + intensity * 0.5})`);
+        bodyGradient.addColorStop(0, `rgba(${hexToRgb(color.glow)}, ${0.3 + intensity * 0.7})`);
+        bodyGradient.addColorStop(1, `rgba(${hexToRgb(color.base)}, ${0.2 + intensity * 0.5})`);
       }
 
       ctx.fillStyle = bodyGradient;
@@ -385,20 +379,19 @@ export function NetworkCanvas({
       const layerIndices = visibleNeurons.get(idx) || [];
       if (layerIndices.length === 0) return;
 
-      const firstPos = positions.get(`${idx}-${layerIndices[0]}`);
+      const firstPos = positions.get(neuronKey(idx, layerIndices[0]));
       if (!firstPos) return;
 
-      const layerColor = LAYER_COLORS[idx] || LAYER_COLORS[0];
+      const color = layerColor(idx);
 
       let activeCount = 0;
       layerIndices.forEach(nIdx => {
-        const state = neuronStates.get(`${idx}-${nIdx}`);
-        if (state?.spiking || (state?.membrane ?? 0) > 0.5) activeCount++;
+        if (isActive(neuronStates.get(neuronKey(idx, nIdx)), 0.5)) activeCount++;
       });
       const activePercent = Math.round((activeCount / size) * 100);
 
-      ctx.fillStyle = layerColor.glow;
-      ctx.fillText(layerColor.name, firstPos.x, 25);
+      ctx.fillStyle = color.glow;
+      ctx.fillText(color.name, firstPos.x, 25);
       ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
       ctx.fillText(`${activePercent}%`, firstPos.x, 40);
     });
@@ -438,6 +431,31 @@ export function NetworkCanvas({
       className="rounded-lg"
       style={{ background: '#0a0a0f' }}
     />
+  );
+}
+
+// Stable string key for a neuron position in the `${layer}-${index}` namespace.
+const neuronKey = (layer: number, index: number) => `${layer}-${index}`;
+const neuronKeyLayer = (key: string) => parseInt(key.split('-')[0]);
+
+// LAYER_COLORS fallback: layers beyond the palette reuse the input (index 0) color.
+const layerColor = (idx: number) => LAYER_COLORS[idx] || LAYER_COLORS[0];
+
+// A neuron counts as "active" when spiking or its membrane exceeds the threshold.
+const isActive = (state: NeuronState | undefined, threshold: number) =>
+  !!state?.spiking || (state?.membrane ?? 0) > threshold;
+
+// First synapse (if any) connecting (fromLayer, fromIndex) -> (toLayer, toIndex).
+function findSynapse(
+  topology: NetworkTopology,
+  fromLayer: number,
+  fromIndex: number,
+  toLayer: number,
+  toIndex: number,
+): SynapseInfo | undefined {
+  return topology.synapses.find(
+    s => s.from_layer === fromLayer && s.from_index === fromIndex &&
+         s.to_layer === toLayer && s.to_index === toIndex,
   );
 }
 
