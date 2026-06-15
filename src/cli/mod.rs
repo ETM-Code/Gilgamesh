@@ -129,6 +129,15 @@ pub(crate) enum Commands {
         /// Max test samples to use for HW eval/selection
         #[arg(long)]
         test_samples: Option<usize>,
+        /// Hidden-layer membrane threshold in volts (GND-referenced divider).
+        /// Default is the nominal 220k R_bottom -> 1.0577 V.
+        #[arg(long)]
+        hidden_theta: Option<f64>,
+        /// Output-layer membrane threshold in volts. The nominal shared 1.0577 V
+        /// is too high for the output layer to ever fire; lower it (smaller
+        /// output R_bottom divider) so outputs can cross threshold.
+        #[arg(long)]
+        output_theta: Option<f64>,
     },
 
     /// Evaluate a trained model
@@ -403,6 +412,8 @@ impl Cli {
                 epochs,
                 train_samples,
                 test_samples,
+                hidden_theta,
+                output_theta,
             } => {
                 commands::finetune::run_finetune(
                     &std::path::PathBuf::from(checkpoint),
@@ -414,6 +425,8 @@ impl Cli {
                     epochs,
                     train_samples,
                     test_samples,
+                    hidden_theta,
+                    output_theta,
                 );
                 Ok(())
             }

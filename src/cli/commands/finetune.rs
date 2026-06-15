@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use gilgamesh::checkpoint::Checkpoint;
 use gilgamesh::config::Config;
 use gilgamesh::data::{AnyDataset, ArrayDataset, Dataset, MnistDataset};
-use gilgamesh::hw_forward::hw_forward_batch;
+use gilgamesh::hw_forward::{hw_forward_batch_with_thresholds, theta_from_r_bottom, R_BOTTOM_NOMINAL};
 use gilgamesh::layers::linear::quantize_input;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,8 +29,17 @@ pub fn run_finetune(
     epochs: usize,
     train_limit: Option<usize>,
     test_limit: Option<usize>,
+    hidden_theta_opt: Option<f64>,
+    output_theta_opt: Option<f64>,
 ) {
     let cfg = Config::load(config_path.to_str().unwrap()).expect("Failed to load config");
+
+    // Per-layer absolute membrane thresholds (GND-referenced divider voltages).
+    // Default both to the nominal 220k R_bottom (1.0577 V) to preserve legacy
+    // behaviour; the output layer normally needs a lower value to fire.
+    let nominal = theta_from_r_bottom(R_BOTTOM_NOMINAL);
+    let hidden_theta = hidden_theta_opt.unwrap_or(nominal);
+    let output_theta = output_theta_opt.unwrap_or(nominal);
 
     println!("=== Hardware-in-the-Loop Fine-Tuning ===\n");
 
@@ -68,6 +77,10 @@ pub fn run_finetune(
     println!("Loaded: {}", checkpoint_path.display());
     println!("Dataset: {}", dataset_kind);
     println!("DAC scale: {:.2}×", dac_scale);
+    println!(
+        "Thresholds (V): hidden={:.4}  output={:.4}",
+        hidden_theta, output_theta
+    );
     println!("Epochs: {}", epochs);
     if let Some(bits) = preprocess.quant_bits {
         println!("Weight quant: {}-bit", bits);
@@ -111,6 +124,8 @@ pub fn run_finetune(
         dac_scale,
         num_steps,
         preprocess,
+        hidden_theta,
+        output_theta,
     );
     println!(
         "Initial HW accuracy: {:.1}% ({} test samples)\n",
@@ -140,6 +155,8 @@ pub fn run_finetune(
                     dac_scale,
                     num_steps,
                     preprocess,
+                    hidden_theta,
+                    output_theta,
                 );
 
                 // Try +delta
@@ -152,6 +169,8 @@ pub fn run_finetune(
                     dac_scale,
                     num_steps,
                     preprocess,
+                    hidden_theta,
+                    output_theta,
                 );
 
                 // Try -delta
@@ -164,6 +183,8 @@ pub fn run_finetune(
                     dac_scale,
                     num_steps,
                     preprocess,
+                    hidden_theta,
+                    output_theta,
                 );
 
                 // Keep the best
@@ -191,6 +212,8 @@ pub fn run_finetune(
             dac_scale,
             num_steps,
             preprocess,
+            hidden_theta,
+            output_theta,
         );
         println!(
             "Epoch {:>2} | delta={:.4} | improvements={}/{} | HW Test: {:.1}%",
@@ -264,9 +287,18 @@ fn hw_accuracy(
     dac_scale: f64,
     num_steps: usize,
     preprocess: FineTunePreprocess,
+    hidden_theta: f64,
+    output_theta: f64,
 ) -> f64 {
     let fc1_out = fc1_for_hw(network, images, preprocess);
-    let hw_counts = hw_forward_batch(&fc1_out, fc2_quantized, dac_scale, num_steps);
+    let hw_counts = hw_forward_batch_with_thresholds(
+        &fc1_out,
+        fc2_quantized,
+        dac_scale,
+        num_steps,
+        hidden_theta,
+        output_theta,
+    );
 
     let mut correct = 0;
     for i in 0..images.nrows() {
