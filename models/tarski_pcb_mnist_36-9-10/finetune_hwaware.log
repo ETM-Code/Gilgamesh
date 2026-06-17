@@ -1,0 +1,18 @@
+=== Hardware-in-the-Loop Fine-Tuning ===
+
+Loaded: models/tarski_pcb_mnist_36-9-10/tarski_mnist_q3_v7_base.json
+Dataset: mnist
+DAC scale: 1.16×
+Thresholds (V): hidden=1.0577  output=0.5435
+Masked outputs (faithful as-built): [1, 9]
+Epochs: 3
+Weight quant: 3-bit
+Input quant: 12-bit DAC
+Initial HW accuracy: 55.1% (1500 test samples)
+
+Epoch  1 | delta=0.0200 | improvements=11/324 | HW Test: 56.3%
+Epoch  2 | delta=0.0140 | improvements=5/324 | HW Test: 56.1%
+Epoch  3 | delta=0.0098 | improvements=2/324 | HW Test: 56.1%
+
+Best HW test accuracy: 56.3% (was 55.1%)
+Saved to: models/tarski_pcb_mnist_36-9-10/tarski_mnist_q3_v7_hwaware.json

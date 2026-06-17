@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use gilgamesh::checkpoint::Checkpoint;
 use gilgamesh::config::Config;
 use gilgamesh::data::{AnyDataset, ArrayDataset, Dataset, MnistDataset};
-use gilgamesh::hw_forward::{hw_forward_batch_with_thresholds, theta_from_r_bottom, R_BOTTOM_NOMINAL};
+use gilgamesh::hw_forward::{
+    hw_forward_batch_cfg, theta_from_r_bottom, HwForwardConfig, R_BOTTOM_NOMINAL,
+    R_BOTTOM_OUTPUT_FAITHFUL,
+};
 use gilgamesh::layers::linear::quantize_input;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -35,11 +38,13 @@ pub fn run_finetune(
     let cfg = Config::load(config_path.to_str().unwrap()).expect("Failed to load config");
 
     // Per-layer absolute membrane thresholds (GND-referenced divider voltages).
-    // Default both to the nominal 220k R_bottom (1.0577 V) to preserve legacy
-    // behaviour; the output layer normally needs a lower value to fire.
-    let nominal = theta_from_r_bottom(R_BOTTOM_NOMINAL);
-    let hidden_theta = hidden_theta_opt.unwrap_or(nominal);
-    let output_theta = output_theta_opt.unwrap_or(nominal);
+    // Defaults are the FAITHFUL as-built board ([`HwForwardConfig::default`]):
+    // hidden at the nominal 1.0577 V (220k R_bottom), output at the real ~0.543 V
+    // (150k‖300k = 100k) — the output membrane only reaches ~0.5 V on the weak
+    // synapse mirror, so the nominal 1.058 V is unreachable. Both still overridable.
+    let hidden_theta = hidden_theta_opt.unwrap_or_else(|| theta_from_r_bottom(R_BOTTOM_NOMINAL));
+    let output_theta =
+        output_theta_opt.unwrap_or_else(|| theta_from_r_bottom(R_BOTTOM_OUTPUT_FAITHFUL));
 
     println!("=== Hardware-in-the-Loop Fine-Tuning ===\n");
 
@@ -80,6 +85,10 @@ pub fn run_finetune(
     println!(
         "Thresholds (V): hidden={:.4}  output={:.4}",
         hidden_theta, output_theta
+    );
+    println!(
+        "Masked outputs (faithful as-built): {:?}",
+        HwForwardConfig::default().masked_outputs
     );
     println!("Epochs: {}", epochs);
     if let Some(bits) = preprocess.quant_bits {
@@ -291,14 +300,16 @@ fn hw_accuracy(
     output_theta: f64,
 ) -> f64 {
     let fc1_out = fc1_for_hw(network, images, preprocess);
-    let hw_counts = hw_forward_batch_with_thresholds(
-        &fc1_out,
-        fc2_quantized,
-        dac_scale,
-        num_steps,
+    // Faithful as-built board: the matched-mirror default (which masks O2/O10),
+    // with the explicit per-layer thresholds / scale / steps for this run.
+    let cfg = HwForwardConfig {
         hidden_theta,
         output_theta,
-    );
+        dac_scale,
+        num_steps,
+        ..HwForwardConfig::default()
+    };
+    let hw_counts = hw_forward_batch_cfg(&fc1_out, fc2_quantized, &cfg);
 
     let mut correct = 0;
     for i in 0..images.nrows() {

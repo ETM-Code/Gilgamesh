@@ -29,6 +29,14 @@ const R_TOP: f64 = 820e3;
 /// supplied to [`hw_forward_batch_with_thresholds`]; this nominal is used
 /// by the legacy shared-threshold entry point.
 pub const R_BOTTOM_NOMINAL: f64 = 220e3;
+/// As-built **output**-layer R_bottom: the stock 150 kΩ divider bottom in
+/// parallel with the surgery's 300 kΩ rework (150k‖300k = 100k), which lands
+/// the output comparator threshold at ≈0.543 V. This is the *faithful* output
+/// threshold the real board operates at (the weak ~0.43 µA synapse mirror only
+/// charges the output membrane to ~0.5 V, so the nominal 1.058 V is unreachable
+/// — see `tarski-works/OUTPUT_THRESHOLD_AND_CURRENT_MATH.md`). Used as the
+/// [`HwForwardConfig`] default output threshold.
+pub const R_BOTTOM_OUTPUT_FAITHFUL: f64 = 100e3;
 const R_STRETCH: f64 = 150e3;
 const C_STRETCH: f64 = 5.8e-9;
 const DT: f64 = 0.001; // 1ms
@@ -48,6 +56,90 @@ pub fn r_bottom_for_theta(target_v: f64) -> f64 {
 /// Back-compat shared threshold. Uses the nominal 220 kΩ R_bottom.
 fn theta_0() -> f64 {
     theta_from_r_bottom(R_BOTTOM_NOMINAL)
+}
+
+/// Configuration for the hardware forward pass.
+///
+/// `Default` is the **faithful as-built board** config — the one we want
+/// training/evaluation to use so it matches the physical Tarski:
+/// - `hidden_theta` at the nominal 1.058 V (220 kΩ R_bottom, reference-faithful,
+///   DAC-injected hidden current);
+/// - `output_theta` at the **real** ≈0.543 V (150k‖300k surged output divider),
+///   *not* the unreachable 1.058 V nominal;
+/// - outputs **O2 and O10 masked** (indices 1 and 9) — physically inert on the
+///   as-built board, so they emit no spikes;
+/// - matched mirrors (`mirror_mismatch_cv = 0`) for determinism.
+///
+/// Every field is overridable, so nothing the legacy entry points could do is
+/// lost: the back-compat [`hw_forward_batch`] / [`hw_forward_batch_with_thresholds`]
+/// build a config with no masking and matched mirrors, reproducing the old
+/// numbers exactly.
+#[derive(Debug, Clone)]
+pub struct HwForwardConfig {
+    /// Hidden-neuron membrane threshold (V, GND-referenced).
+    pub hidden_theta: f64,
+    /// Output-neuron membrane threshold (V, GND-referenced).
+    pub output_theta: f64,
+    /// fc1→DAC headroom scale (1.16 is the per-board optimum).
+    pub dac_scale: f64,
+    /// Number of 1 ms integration steps.
+    pub num_steps: usize,
+    /// 0-indexed output neurons forced to zero spikes (physically masked on the
+    /// as-built board). Default: O2 and O10 → `[1, 9]`. Set empty once those
+    /// outputs are repaired on the bench.
+    pub masked_outputs: Vec<usize>,
+    /// Coefficient of variation of the per-output synapse-current gain, modelling
+    /// BJT current-mirror array mismatch (Gaussian, drawn once per call and held
+    /// across the batch — mismatch is fixed per board). `0.0` ⇒ ideal matched
+    /// mirrors (deterministic, the legacy behaviour). ~0.02–0.05 is realistic for
+    /// the dense-array mirrors and is what compresses the real board's class
+    /// margins below gilgamesh's idealised ~82%.
+    pub mirror_mismatch_cv: f64,
+    /// Seed for the deterministic mismatch draw (only consulted when cv > 0).
+    pub mismatch_seed: u64,
+}
+
+impl Default for HwForwardConfig {
+    fn default() -> Self {
+        Self {
+            hidden_theta: theta_from_r_bottom(R_BOTTOM_NOMINAL),
+            output_theta: theta_from_r_bottom(R_BOTTOM_OUTPUT_FAITHFUL),
+            dac_scale: 1.16,
+            num_steps: 25,
+            masked_outputs: vec![1, 9],
+            mirror_mismatch_cv: 0.0,
+            mismatch_seed: 0,
+        }
+    }
+}
+
+/// Per-output synapse-current gain vector from the mismatch config. With
+/// `cv == 0` every gain is exactly 1.0 (no allocation of randomness, bit-identical
+/// to the matched-mirror model). With `cv > 0`, draws 10 Gaussian gains from a
+/// deterministic splitmix64 + Box–Muller stream seeded by `mismatch_seed`.
+fn mirror_gains(cv: f64, seed: u64) -> [f64; 10] {
+    let mut gains = [1.0f64; 10];
+    if cv <= 0.0 {
+        return gains;
+    }
+    // splitmix64: deterministic, dependency-free.
+    let mut state = seed;
+    let mut unit = || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / ((1u64 << 53) as f64) // [0,1)
+    };
+    for g in gains.iter_mut() {
+        // Box–Muller; guard u1 away from 0.
+        let u1 = unit().max(1e-12);
+        let u2 = unit();
+        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+        *g = (1.0 + cv * z).max(0.0);
+    }
+    gains
 }
 
 /// Pulse duty cycle: fraction of DT that the stretched V_out pulse
@@ -109,6 +201,9 @@ pub fn hw_forward_batch(
 /// Hardware forward pass with explicit per-layer threshold voltages.
 /// `hidden_theta` and `output_theta` are absolute membrane thresholds in
 /// volts (GND-referenced), typically `theta_from_r_bottom(r_bot)`.
+///
+/// Back-compat shim: builds a [`HwForwardConfig`] with **no output masking** and
+/// **matched mirrors**, reproducing the historical numbers exactly.
 pub fn hw_forward_batch_with_thresholds(
     fc1_outputs: &Array2<f32>,
     fc2_quantized: &[Vec<i8>],
@@ -117,6 +212,35 @@ pub fn hw_forward_batch_with_thresholds(
     hidden_theta: f64,
     output_theta: f64,
 ) -> Array2<f32> {
+    let cfg = HwForwardConfig {
+        hidden_theta,
+        output_theta,
+        dac_scale,
+        num_steps,
+        masked_outputs: Vec::new(),
+        mirror_mismatch_cv: 0.0,
+        mismatch_seed: 0,
+    };
+    hw_forward_batch_cfg(fc1_outputs, fc2_quantized, &cfg)
+}
+
+/// Hardware forward pass driven by a [`HwForwardConfig`]. This is the primary
+/// entry point; [`HwForwardConfig::default()`] is the faithful as-built board.
+pub fn hw_forward_batch_cfg(
+    fc1_outputs: &Array2<f32>,
+    fc2_quantized: &[Vec<i8>],
+    cfg: &HwForwardConfig,
+) -> Array2<f32> {
+    let HwForwardConfig {
+        hidden_theta,
+        output_theta,
+        dac_scale,
+        num_steps,
+        ref masked_outputs,
+        mirror_mismatch_cv,
+        mismatch_seed,
+    } = *cfg;
+    let gains = mirror_gains(mirror_mismatch_cv, mismatch_seed);
     let batch_size = fc1_outputs.nrows();
     let mut spike_counts = Array2::zeros((batch_size, 10));
     let duty = duty_cycle();
@@ -192,6 +316,8 @@ pub fn hw_forward_batch_with_thresholds(
                             o_current[o] += w * i_unit;
                         }
                     }
+                    // Current-mirror device mismatch (gains[o] == 1.0 when cv == 0).
+                    o_current[o] *= gains[o];
                 }
 
                 // Phase 1: full current for t_on
@@ -231,6 +357,12 @@ pub fn hw_forward_batch_with_thresholds(
 
         for i in 0..10 {
             spike_counts[[b, i]] = o_spike_counts[i];
+        }
+        // Physically masked outputs emit no readable spikes.
+        for &m in masked_outputs {
+            if m < 10 {
+                spike_counts[[b, m]] = 0.0;
+            }
         }
     }
 

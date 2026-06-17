@@ -7,8 +7,9 @@ mod common;
 use common::*;
 
 use gilgamesh::hw_forward::{
-    hw_forward_batch, hw_forward_batch_with_thresholds, hw_forward_single, r_bottom_for_theta,
-    theta_from_r_bottom, R_BOTTOM_NOMINAL,
+    hw_forward_batch, hw_forward_batch_cfg, hw_forward_batch_with_thresholds, hw_forward_single,
+    r_bottom_for_theta, theta_from_r_bottom, HwForwardConfig, R_BOTTOM_NOMINAL,
+    R_BOTTOM_OUTPUT_FAITHFUL,
 };
 use ndarray::{array, Array2};
 
@@ -163,4 +164,86 @@ fn hw_forward_negative_input_yields_no_current() {
     let fc1: Array2<f32> = Array2::from_elem((1, 9), -5.0);
     let out = hw_forward_batch(&fc1, &golden_fc2(), 1.16, 25);
     eq_arr(&out, &[0.0; 10]);
+}
+
+// ---- HwForwardConfig (faithful as-built board) ----
+
+#[test]
+fn config_default_is_faithful_as_built() {
+    let cfg = HwForwardConfig::default();
+    // Hidden at nominal 1.058 V, output at the real 0.543 V (150k‖300k = 100k).
+    close64(cfg.hidden_theta, theta_from_r_bottom(R_BOTTOM_NOMINAL), 1e-12);
+    close64(cfg.output_theta, theta_from_r_bottom(R_BOTTOM_OUTPUT_FAITHFUL), 1e-12);
+    close64(cfg.output_theta, 0.5434782608695652, 1e-9);
+    assert_eq!(cfg.masked_outputs, vec![1, 9]); // O2, O10
+    assert_eq!(cfg.mirror_mismatch_cv, 0.0); // matched / deterministic by default
+    assert_eq!(cfg.dac_scale, 1.16);
+    assert_eq!(cfg.num_steps, 25);
+}
+
+#[test]
+fn config_no_mask_matched_equals_legacy_with_thresholds() {
+    // A config with empty mask + cv=0 must reproduce the legacy entry point exactly.
+    let fc1: Array2<f32> = array![[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]];
+    let cfg = HwForwardConfig {
+        hidden_theta: theta_from_r_bottom(220e3),
+        output_theta: theta_from_r_bottom(150e3),
+        dac_scale: 1.16,
+        num_steps: 25,
+        masked_outputs: Vec::new(),
+        mirror_mismatch_cv: 0.0,
+        mismatch_seed: 0,
+    };
+    let via_cfg = hw_forward_batch_cfg(&fc1, &golden_fc2(), &cfg);
+    let via_legacy = hw_forward_batch_with_thresholds(
+        &fc1,
+        &golden_fc2(),
+        1.16,
+        25,
+        theta_from_r_bottom(220e3),
+        theta_from_r_bottom(150e3),
+    );
+    eq_arr(&via_cfg, via_legacy.as_slice().unwrap());
+}
+
+#[test]
+fn config_masks_o2_and_o10() {
+    // Same as the per-layer golden, but with the default O2/O10 mask applied:
+    // indices 1 and 9 must read zero, the rest unchanged.
+    let fc1: Array2<f32> = array![[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]];
+    let cfg = HwForwardConfig {
+        hidden_theta: theta_from_r_bottom(220e3),
+        output_theta: theta_from_r_bottom(150e3),
+        masked_outputs: vec![1, 9],
+        ..HwForwardConfig::default()
+    };
+    let out = hw_forward_batch_cfg(&fc1, &golden_fc2(), &cfg);
+    // cf. hw_forward_batch_with_per_layer_thresholds_golden: [25,25,25,25,25,25,25,15,12,0]
+    // masking idx1 (O2)->0; idx9 (O10) was already 0; idx8 (O9)=12 untouched.
+    eq_arr(
+        &out,
+        &[25.0, 0.0, 25.0, 25.0, 25.0, 25.0, 25.0, 15.0, 12.0, 0.0],
+    );
+}
+
+#[test]
+fn config_mismatch_is_deterministic_and_perturbs() {
+    let fc1: Array2<f32> = array![[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]];
+    let base = HwForwardConfig {
+        masked_outputs: Vec::new(),
+        ..HwForwardConfig::default()
+    };
+    let mut mm = base.clone();
+    mm.mirror_mismatch_cv = 0.05;
+    mm.mismatch_seed = 42;
+    let a = hw_forward_batch_cfg(&fc1, &golden_fc2(), &mm);
+    let b = hw_forward_batch_cfg(&fc1, &golden_fc2(), &mm);
+    // Same seed => identical (deterministic).
+    eq_arr(&a, b.as_slice().unwrap());
+    // cv=0 baseline differs from cv=0.05 (mismatch actually does something).
+    let matched = hw_forward_batch_cfg(&fc1, &golden_fc2(), &base);
+    assert!(
+        a != matched,
+        "cv=0.05 should perturb counts vs matched mirrors"
+    );
 }

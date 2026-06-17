@@ -1,0 +1,73 @@
+=== gilgamesh Training ===
+Mode:           physics
+Learning rate:  0.002
+Epochs:         30
+Batch size:     128
+Timesteps:      25
+Hidden size:    9
+Beta:           0.9
+Seed:           123
+Slope:          25
+Quantization:   3-bit
+Noise:          weight=8.00% thresh=4.0% membrane=0.020 input=10.0% (train+eval)
+
+Loading MNIST dataset...
+Loaded 60000 training samples, 10000 test samples
+Image size: 6x6 = 36 features
+
+Using Physics mode: tau_m=0.0012s, dt=0.0010s, tau_pulse=8.7000e-4s, v_peak=4.42V
+Fixed fc2 scale: 0.134900 (hardware-matched quantization)
+HW defect:      inhibitory 1x branch disabled (negative magnitudes even-only)
+Spike scale:    0.500000 (pulse=500.00µs in dt=1.0ms step)
+DAC clamp:      fc1 output clamped to [0, 7.76]
+Current caps:   enabled (I_syn_max=3.00uA, I_total_max=50.00uA, syn_scale=1.000, total_cap_units=16.67)
+Network architecture:
+  Input:  36
+  Hidden: 9 (LIF, physics mode)
+  Output: 10 (LIF, physics mode)
+  Total parameters: 414
+  Threshold: 1
+
+Input quant:    12-bit DAC
+LR schedule:    cosine annealing (0.002000 -> 0.000020)
+Grad clipping:  max_norm=1.000
+Weight decay:   0.0100 (AdamW)
+Training...
+------------------------------------------------------------
+Epoch   1 | Loss: 1.7270 | Train Acc: 39.21% | Test Acc: 67.98% | LR: 0.001995
+Epoch   2 | Loss: 0.9741 | Train Acc: 72.34% | Test Acc: 76.01% | LR: 0.001978
+Epoch   3 | Loss: 0.8264 | Train Acc: 76.92% | Test Acc: 78.65% | LR: 0.001952
+Epoch   4 | Loss: 0.7744 | Train Acc: 78.89% | Test Acc: 80.22% | LR: 0.001914
+Epoch   5 | Loss: 0.7336 | Train Acc: 79.96% | Test Acc: 81.41% | LR: 0.001867
+Epoch   6 | Loss: 0.7145 | Train Acc: 80.64% | Test Acc: 81.71% | LR: 0.001811
+Epoch   7 | Loss: 0.6957 | Train Acc: 81.17% | Test Acc: 81.68% | LR: 0.001746
+Epoch   8 | Loss: 0.6763 | Train Acc: 81.58% | Test Acc: 82.74% | LR: 0.001672
+Epoch   9 | Loss: 0.6642 | Train Acc: 82.03% | Test Acc: 82.06% | LR: 0.001592
+Epoch  10 | Loss: 0.6553 | Train Acc: 82.16% | Test Acc: 83.18% | LR: 0.001505
+Epoch  11 | Loss: 0.6565 | Train Acc: 82.28% | Test Acc: 82.98% | LR: 0.001413
+Epoch  12 | Loss: 0.6441 | Train Acc: 82.42% | Test Acc: 83.07% | LR: 0.001316
+Epoch  13 | Loss: 0.6407 | Train Acc: 82.65% | Test Acc: 83.41% | LR: 0.001216
+Epoch  14 | Loss: 0.6341 | Train Acc: 82.80% | Test Acc: 83.10% | LR: 0.001113
+Epoch  15 | Loss: 0.6315 | Train Acc: 83.01% | Test Acc: 83.31% | LR: 0.001010
+Epoch  16 | Loss: 0.6314 | Train Acc: 82.80% | Test Acc: 83.95% | LR: 0.000907
+Epoch  17 | Loss: 0.6206 | Train Acc: 83.10% | Test Acc: 83.67% | LR: 0.000804
+Epoch  18 | Loss: 0.6279 | Train Acc: 82.94% | Test Acc: 83.41% | LR: 0.000704
+Epoch  19 | Loss: 0.6193 | Train Acc: 83.33% | Test Acc: 84.07% | LR: 0.000607
+Epoch  20 | Loss: 0.6200 | Train Acc: 83.29% | Test Acc: 84.14% | LR: 0.000515
+Epoch  21 | Loss: 0.6203 | Train Acc: 83.28% | Test Acc: 84.10% | LR: 0.000428
+Epoch  22 | Loss: 0.6169 | Train Acc: 83.36% | Test Acc: 84.14% | LR: 0.000348
+Epoch  23 | Loss: 0.6114 | Train Acc: 83.64% | Test Acc: 83.79% | LR: 0.000274
+Epoch  24 | Loss: 0.6090 | Train Acc: 83.67% | Test Acc: 83.91% | LR: 0.000209
+Epoch  25 | Loss: 0.6168 | Train Acc: 83.38% | Test Acc: 83.55% | LR: 0.000153
+Epoch  26 | Loss: 0.6119 | Train Acc: 83.39% | Test Acc: 84.15% | LR: 0.000106
+Epoch  27 | Loss: 0.6096 | Train Acc: 83.45% | Test Acc: 84.11% | LR: 0.000068
+Epoch  28 | Loss: 0.6100 | Train Acc: 83.44% | Test Acc: 84.02% | LR: 0.000042
+Epoch  29 | Loss: 0.6109 | Train Acc: 83.40% | Test Acc: 84.02% | LR: 0.000025
+Epoch  30 | Loss: 0.6121 | Train Acc: 83.47% | Test Acc: 84.21% | LR: 0.000020
+------------------------------------------------------------
+
+=== Training Complete ===
+Best Test Accuracy: 84.21%
+Final Test Accuracy: 83.54%
+Checkpoint saved to: models/tarski_pcb_mnist_36-9-10/tarski_mnist_q3_v7_base.json
+Quantized weights included: 3-bit magnitude integers for hardware
