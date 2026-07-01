@@ -180,6 +180,7 @@ Input (36) → Linear → LIF (12) → Linear → LIF (10) → Spike Count → P
 
 ### Architecture Comparison
 
+These are full-precision, no-noise software results. They are the ceiling, not the board. For the hardware-realistic numbers with 3-bit weights and noise (roughly 83 to 87% on 6x6), see the Quantization-Aware Training section just below.
 
 | Architecture | Image   | Synapses | Test Accuracy |
 | ------------ | ------- | -------- | ------------- |
@@ -193,7 +194,7 @@ Input (36) → Linear → LIF (12) → Linear → LIF (10) → Spike Count → P
 
 ### Minimum Synapses by Target Accuracy
 
-Results from automated synapse search across non-square image dimensions:
+Results from automated synapse search across non-square image dimensions. These are full-precision, no-noise software results (the ceiling), not hardware figures. See the Quantization-Aware Training section below for 3-bit and noise numbers.
 
 
 | Target | Architecture | Image | Synapses | Achieved |
@@ -240,7 +241,7 @@ Noise improves robustness to hardware variation. 7x7 input captures more spatial
 | 36-9-10      | 6x6     | 414      | 87.39%     | &nbsp;             |
 
 
-**4-bit QAT results** (rate-coded, physics mode, 4-bit split-sign weights, 12-bit input, noise enabled):
+**4-bit QAT results** (rate-coded, physics mode, 4-bit split-sign weights, 12-bit input, noise enabled). Note the as-built board is 3-bit, so these 4-bit numbers are a what-if ceiling for a future revision, not what the current hardware does:
 
 
 | Architecture | Image     | Synapses | Accuracy   |
@@ -426,17 +427,23 @@ All parameters are configurable via JSON:
 All tests on MNIST (60k train, 10k test, 6x6 downsampled), 15 epochs:
 
 
-| Test | Mode    | Input Encoding | Analog | Best Test Acc | Notes              |
-| ---- | ------- | -------------- | ------ | ------------- | ------------------ |
-| 1    | Physics | Rate-coded     | No     | **96.43%**    | Best overall       |
-| 2    | Physics | Rate-coded     | 0.1    | **96.03%**    | Minimal impact     |
-| 3    | Physics | Temporal       | No     | 38.72%        | Severe overfitting |
-| 4    | Physics | Temporal       | 0.1    | 35.32%        | Analog hurts here  |
+| Test | Mode    | Input Encoding | Analog | Best Test Acc | Notes                       |
+| ---- | ------- | -------------- | ------ | ------------- | --------------------------- |
+| 1    | Physics | Rate-coded     | No     | 96.43%        | Full-precision, no noise    |
+| 2    | Physics | Rate-coded     | 0.1    | 96.03%        | Full-precision, small noise |
+| 3    | Physics | Temporal       | No     | 38.72%        | Severe overfitting          |
+| 4    | Physics | Temporal       | 0.1    | 35.32%        | Analog hurts here           |
 
+**Read these as the software ceiling, not what the board does.** Rows 1 and 2 use
+full-precision weights and no hardware constraints. Once you quantize weights to the
+3 bits the synapses actually support and inject component noise, accuracy on 6x6 MNIST
+lands around 83 to 87% (see the quantization results below, and the PCB fix at the top
+of this README). The 96% figure is the best the model can do on paper. The 83 to 87%
+figure is the one that reflects the real analogue hardware.
 
 ### Key Findings
 
-1. **Physics mode with rate-coded input achieves 96%+ accuracy**, matching snnTorch performance
+1. **Physics mode with rate-coded input reaches ~96% at full precision on 6x6.** That is the software ceiling. The hardware-realistic number, with 3-bit weights and noise, is lower.
 2. **Analog output has minimal impact** on rate-coded input (+/- 0.4%)
 3. **Temporal encoding causes severe overfitting**: 89% train vs 37% test accuracy
 4. **Analog output slightly hurts temporal encoding** (35% vs 39% test)
@@ -668,11 +675,9 @@ Features:
 
 Performance benchmark (full network, sample 42, physics_6x6_fixed checkpoint):
 
-- **gilgamesh is 12005x faster than ngspice** for the timed simulation kernel in this setup.
-- Measured with `network_spice_bench` using `--duration-ms 1.0`, where:
-  - gilgamesh in-process average: **0.027 ms**
-  - ngspice average: **327.149 ms**
-- Startup-inclusive CLI comparison in the same run: ngspice was **3.5x** slower than `gilgamesh spice` CLI average.
+- End to end, including startup, gilgamesh is about **3.5x faster** than ngspice on the same run. That is the number that matters if you are running the CLI.
+- The simulation kernel on its own is much faster still. In-process, gilgamesh averaged **0.027 ms** against ngspice's **327 ms** per step, so the compute inner loop is roughly four orders of magnitude quicker. Most of ngspice's wall-clock time is process startup and parsing, not maths, which is why the honest end-to-end figure is far smaller.
+- Measured with `network_spice_bench` using `--duration-ms 1.0` on the `physics_6x6_fixed` checkpoint.
 
 ```bash
 cargo build --release --bin network_spice_bench --bin gilgamesh
@@ -786,7 +791,7 @@ Results (wall-clock `real` time):
 | PyTorch ANN (`ann`)       | 40.83s    | 88.51%             | **8.38x slower**      |
 
 
-For this workload, gilgamesh is absolutely goated on training speed.
+For this workload, gilgamesh is substantially faster to train.
 
 Why the gap is large on this benchmark:
 
