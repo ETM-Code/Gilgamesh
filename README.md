@@ -16,7 +16,7 @@ The synapse pulse stretcher capacitor C_stretch must be changed from **10pF to ~
 
 These accuracy figures are from simulation and the hardware-accurate emulator, not a bench measurement. The physical board has been powered and reworked and it spikes on stimulation, but end-to-end classification on hardware is still being brought up. Treat ~83% as what the fixed board is expected to reach, not a measured result.
 
-See `configs/tarski_pcb.json` for the hardware-matched training configuration. Validation context is documented in the companion [Tarski-Emulator](https://github.com/ETM-Code/Tarski-Emulator) repository (`DEVLOG.md` and report files).
+See `configs/tarski_pcb.json` for the hardware-matched training configuration. Validation context lives in the companion [Tarski-Emulator](https://github.com/ETM-Code/Tarski-Emulator) repository and in the Project Tarski report ([Project-Tarski](https://github.com/ETM-Code/Project-Tarski)).
 
 ## Features
 
