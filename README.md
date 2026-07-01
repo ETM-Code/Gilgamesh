@@ -11,8 +11,10 @@ It is a spiking neural network stack written in Rust, built around one idea. Tra
 The synapse pulse stretcher capacitor C_stretch must be changed from **10pF to ~5.8nF** (same 0402 footprint). Without this fix, the output neurons cannot fire. The spike pulse (τ_pulse=1.5µs) is too brief for the 10MΩ current mirrors to deliver enough charge to the 10nF membrane.
 
 - **With 10pF (current schematic):** output layer dead, 10% accuracy (random chance)
-- **With 5.8nF (fixed):** output layer works, 83% accuracy on 6×6 MNIST
-- **Everything else is correct:** R_set=10MΩ gives ~3µA max per synapse (matching gilgamesh), threshold divider, membrane RC, shift registers all verified
+- **With 5.8nF (fixed):** output layer works, ~83% on 6×6 MNIST
+- **Everything else checks out:** R_set=10MΩ gives ~3µA max per synapse (matching gilgamesh), plus the threshold divider, membrane RC, and shift registers
+
+These accuracy figures are from simulation and the hardware-accurate emulator, not a bench measurement. The physical board has been powered and reworked and it spikes on stimulation, but end-to-end classification on hardware is still being brought up. Treat ~83% as what the fixed board is expected to reach, not a measured result.
 
 See `configs/tarski_pcb.json` for the hardware-matched training configuration. Validation context is documented in the companion [Tarski-Emulator](https://github.com/ETM-Code/Tarski-Emulator) repository (`DEVLOG.md` and report files).
 
