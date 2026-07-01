@@ -1,13 +1,14 @@
-# gilgamesh
+# Gilgamesh
 
+Gilgamesh trains the neural networks for [Project Tarski](https://github.com/ETM-Code/Project-Tarski), an attempt to build an analogue neuromorphic spiking neural network accelerator for low-power computing.
 
-A Rust implementation of hardware-accurate spiking neural networks (SNNs). Features dual-mode operation: a simple beta-decay model (snnTorch-compatible) for fast prototyping and a physics-accurate RC membrane model for chip deployment.
+It is a spiking neural network stack written in Rust, built around one idea. Train against the hardware you actually have, not an idealised version of it. It runs in two modes. A simple beta-decay model, snnTorch-compatible, for fast prototyping. And a physics-accurate RC membrane model that matches what the analogue board really does.
 
-## ⚠️ Hardware Deployment: Critical PCB Fix Required
+## Hardware deployment: a PCB fix comes first
 
 **The Tarski InputSystem PCB requires a component change before the output layer can function.**
 
-The synapse pulse stretcher capacitor C_stretch must be changed from **10pF to ~5.8nF** (same 0402 footprint). Without this fix, the output neurons cannot fire — the spike pulse (τ_pulse=1.5µs) is too brief for the 10MΩ current mirrors to deliver enough charge to the 10nF membrane.
+The synapse pulse stretcher capacitor C_stretch must be changed from **10pF to ~5.8nF** (same 0402 footprint). Without this fix, the output neurons cannot fire. The spike pulse (τ_pulse=1.5µs) is too brief for the 10MΩ current mirrors to deliver enough charge to the 10nF membrane.
 
 - **With 10pF (current schematic):** output layer dead, 10% accuracy (random chance)
 - **With 5.8nF (fixed):** output layer works, 83% accuracy on 6×6 MNIST
@@ -265,14 +266,14 @@ Noise improves robustness to hardware variation. 7x7 input captures more spatial
 **Key findings:**
 
 - **4-bit weights raise the accuracy ceiling** to ~92% (vs ~90% for 3-bit at 7x7)
-- With 3-bit weights, accuracy saturates around **87% for 6x6** and **90% for 7x7** — weight precision is the bottleneck, not network capacity
+- With 3-bit weights, accuracy saturates around **87% for 6x6** and **90% for 7x7**. Weight precision is the bottleneck, not network capacity
 - **9x9 is the most efficient** for 90%+ accuracy: 81-9-10 hits 91.32% at 819 synapses vs 100-9-10 at 92.03% with 990 synapses
-- Larger images help but with diminishing returns — 9x9 and 10x10 are within ~1% at same hidden sizes, while 8x8 lags ~2%
+- Larger images help but with diminishing returns. 9x9 and 10x10 are within ~1% at the same hidden sizes, while 8x8 lags ~2%
 - Noise is enabled by default for all training
 
 Saved model: `models/rate_quant_3bit_6x6_h8.json`
 
-**Post-training quantization** (for comparison — quantizing after full-precision training):
+**Post-training quantization** (for comparison, quantizing after full-precision training):
 
 
 | Network      | Bits  | Original   | Quantized  | Accuracy Drop |
@@ -886,8 +887,6 @@ python comparison/training workflow:
     └── results*/               # Output directories
 ```
 
-Copyright (c) 2026 Eoghan Collins. All rights reserved.
+## License
 
-No permission is granted to use, copy, modify, distribute, or sublicense this software without explicit prior written permission from the copyright holder.
-
-&nbsp;
+Apache License 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
